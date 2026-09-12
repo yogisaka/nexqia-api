@@ -1,2 +1,4 @@
 .env
 /bin/
+/api
+/internal/db/sqlcgen/
