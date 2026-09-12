@@ -31,12 +31,12 @@ func TenantMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 		}
 
 		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID); err != nil {
-			tx.Rollback(ctx)
+			_ = tx.Rollback(ctx)
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
 			return
 		}
 		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_merchant_id', $1, true)", merchantID); err != nil {
-			tx.Rollback(ctx)
+			_ = tx.Rollback(ctx)
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
 			return
 		}
@@ -45,7 +45,7 @@ func TenantMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 		c.Next()
 
 		if c.IsAborted() || len(c.Errors) > 0 {
-			tx.Rollback(ctx)
+			_ = tx.Rollback(ctx)
 			return
 		}
 		if err := tx.Commit(ctx); err != nil {

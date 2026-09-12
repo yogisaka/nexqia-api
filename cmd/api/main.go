@@ -24,7 +24,7 @@ func main() {
 	defer pool.Close()
 
 	redisClient := cache.NewRedisClient(cfg)
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	router := server.NewRouter(pool)
 	if err := router.Run(":" + cfg.HTTPPort); err != nil {
