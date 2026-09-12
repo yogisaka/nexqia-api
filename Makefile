@@ -1,4 +1,4 @@
-.PHONY: migrate-up migrate-down test test-integration lint run sqlc-generate
+.PHONY: migrate-up migrate-down test test-integration lint fmt run sqlc-generate
 
 migrate-up:
 	migrate -path migrations -database "$$DATABASE_URL" up
@@ -15,6 +15,9 @@ test-integration:
 
 lint:
 	golangci-lint run
+
+fmt:
+	golangci-lint fmt
 
 run:
 	go run ./cmd/api

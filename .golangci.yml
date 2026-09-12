@@ -5,3 +5,7 @@ linters:
     - staticcheck
     - unused
     - errcheck
+formatters:
+  enable:
+    - gofmt
+    - goimports
