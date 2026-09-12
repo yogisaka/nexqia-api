@@ -79,4 +79,16 @@ func TestSharedPreludeMigration_CreatesExtensionsFunctionsAndSchemas(t *testing.
 	if schemaCount != 2 {
 		t.Errorf("expected 2 schemas (core, terminology), got %d", schemaCount)
 	}
+
+	var rolsuper, rolbypassrls bool
+	err = conn.QueryRow(ctx, `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'app_runtime'`).Scan(&rolsuper, &rolbypassrls)
+	if err != nil {
+		t.Fatalf("failed to query app_runtime role: %v", err)
+	}
+	if rolsuper {
+		t.Error("app_runtime must not be superuser")
+	}
+	if rolbypassrls {
+		t.Error("app_runtime must not bypass row level security")
+	}
 }
