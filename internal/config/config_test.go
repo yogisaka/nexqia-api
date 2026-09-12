@@ -28,6 +28,20 @@ func TestLoad_UsesEnvOverridesAndDefaults(t *testing.T) {
 	}
 }
 
+func TestLoad_ReadsRedisConfig(t *testing.T) {
+	os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
+	defer os.Unsetenv("APP_RUNTIME_PASSWORD")
+
+	cfg := Load()
+
+	if cfg.RedisHost != "localhost" {
+		t.Errorf("expected default RedisHost localhost, got %q", cfg.RedisHost)
+	}
+	if cfg.RedisPort != "6379" {
+		t.Errorf("expected default RedisPort 6379, got %q", cfg.RedisPort)
+	}
+}
+
 func TestAppRuntimeDSN_FormatsPostgresURL(t *testing.T) {
 	cfg := Config{
 		DBHost:             "localhost",

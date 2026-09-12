@@ -13,6 +13,8 @@ type Config struct {
 	AppRuntimeUser     string
 	AppRuntimePassword string
 	HTTPPort           string
+	RedisHost          string
+	RedisPort          string
 }
 
 func Load() Config {
@@ -23,6 +25,8 @@ func Load() Config {
 		AppRuntimeUser:     getEnv("APP_RUNTIME_USER", "app_runtime"),
 		AppRuntimePassword: mustGetEnv("APP_RUNTIME_PASSWORD"),
 		HTTPPort:           getEnv("HTTP_PORT", "8080"),
+		RedisHost:          getEnv("REDIS_HOST", "localhost"),
+		RedisPort:          getEnv("REDIS_PORT", "6379"),
 	}
 }
 
