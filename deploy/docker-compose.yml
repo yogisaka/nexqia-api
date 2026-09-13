@@ -1,0 +1,26 @@
+# Deploy only (server produksi): jalankan setelah infra (postgres/redis/pgbouncer) up
+# dan network `nexqia_net` sudah ada (dibuat otomatis oleh infra/docker-compose.deploy.yml).
+# Butuh .env di folder ini (copy dari .env.example). Reverse proxy: lihat nginx.conf.
+name: nexqia-api
+
+services:
+  api:
+    image: ghcr.io/${GITHUB_USERNAME}/nexqia-api:${API_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      APP_RUNTIME_USER: app_runtime
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - nexqia_net
+
+networks:
+  nexqia_net:
+    external: true

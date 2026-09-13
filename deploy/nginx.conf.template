@@ -1,0 +1,23 @@
+# Reverse proxy host nginx untuk nexqia-api. Domain di-set dari .env (API_DOMAIN).
+# Generate config final lalu pasang:
+#   set -a && source .env && set +a
+#   envsubst '${API_DOMAIN}' < nginx.conf.template | sudo tee /etc/nginx/sites-available/nexqia-api
+#   sudo ln -s /etc/nginx/sites-available/nexqia-api /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d ${API_DOMAIN}   # TLS
+upstream nexqia_api {
+    server 127.0.0.1:8080;
+}
+
+server {
+    listen 80;
+    server_name ${API_DOMAIN};
+
+    location / {
+        proxy_pass http://nexqia_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

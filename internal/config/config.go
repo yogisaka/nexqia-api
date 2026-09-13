@@ -15,6 +15,7 @@ type Config struct {
 	HTTPPort           string
 	RedisHost          string
 	RedisPort          string
+	RedisPassword      string
 }
 
 func Load() Config {
@@ -27,6 +28,7 @@ func Load() Config {
 		HTTPPort:           getEnv("HTTP_PORT", "8080"),
 		RedisHost:          getEnv("REDIS_HOST", "localhost"),
 		RedisPort:          getEnv("REDIS_PORT", "6379"),
+		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
 	}
 }
 
