@@ -28,7 +28,7 @@ func Load() Config {
 		HTTPPort:           getEnv("HTTP_PORT", "8080"),
 		RedisHost:          getEnv("REDIS_HOST", "localhost"),
 		RedisPort:          getEnv("REDIS_PORT", "6379"),
-		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
+		RedisPassword:      mustGetEnv("REDIS_PASSWORD"),
 	}
 }
 

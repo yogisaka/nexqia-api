@@ -9,8 +9,10 @@ import (
 func TestLoad_UsesEnvOverridesAndDefaults(t *testing.T) {
 	_ = os.Setenv("DB_HOST", "db.internal")
 	_ = os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
+	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	defer func() { _ = os.Unsetenv("DB_HOST") }()
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
+	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 
 	cfg := Load()
 
@@ -30,7 +32,9 @@ func TestLoad_UsesEnvOverridesAndDefaults(t *testing.T) {
 
 func TestLoad_ReadsRedisConfig(t *testing.T) {
 	_ = os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
+	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
+	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 
 	cfg := Load()
 
