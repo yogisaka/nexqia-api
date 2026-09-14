@@ -1,10 +1,13 @@
-.PHONY: migrate-up migrate-down test test-integration lint fmt run sqlc-generate
+.PHONY: migrate-up migrate-down seed test test-integration lint fmt run dev sqlc-generate
 
 migrate-up:
-	migrate -path migrations -database "$$DATABASE_URL" up
+	set -a && . ./.env && set +a && $$(go env GOPATH)/bin/migrate -path migrations -database "$$DATABASE_URL" up
 
 migrate-down:
-	migrate -path migrations -database "$$DATABASE_URL" down 1
+	set -a && . ./.env && set +a && $$(go env GOPATH)/bin/migrate -path migrations -database "$$DATABASE_URL" down 1
+
+seed:
+	set -a && . ./.env && set +a && psql "$$DATABASE_URL" -v nik_key="'$$NIK_ENCRYPTION_KEY'" -f seed/001_core_seed.sql
 
 test:
 	go test ./... -short
@@ -21,6 +24,9 @@ fmt:
 
 run:
 	go run ./cmd/api
+
+dev:
+	$$(go env GOPATH)/bin/air
 
 sqlc-generate:
 	go tool sqlc generate
