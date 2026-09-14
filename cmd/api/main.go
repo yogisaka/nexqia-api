@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 
 	"github.com/yogisaka/nexqia-api/internal/cache"
 	"github.com/yogisaka/nexqia-api/internal/config"
@@ -14,6 +15,8 @@ import (
 )
 
 func main() {
+	_ = godotenv.Load() // dev: baca .env kalau ada; produksi pakai env asli dari compose/systemd, file gak ada = no-op
+
 	cfg := config.Load()
 
 	pool, err := pgxpool.New(context.Background(), cfg.AppRuntimeDSN())
