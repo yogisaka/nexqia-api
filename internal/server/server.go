@@ -6,11 +6,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/yogisaka/nexqia-api/internal/version"
 )
 
 func NewRouter(pool *pgxpool.Pool) *gin.Engine {
 	router := gin.Default()
 	router.GET("/healthz", HealthzHandler)
+	router.GET("/version", VersionHandler)
 
 	v1 := router.Group("/api/v1")
 	v1.Use(TenantMiddleware(pool))
@@ -21,6 +24,10 @@ func NewRouter(pool *pgxpool.Pool) *gin.Engine {
 
 func HealthzHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func VersionHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"version": version.Version})
 }
 
 func PingHandler(c *gin.Context) {

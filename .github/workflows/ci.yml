@@ -2,8 +2,10 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore: ['**.md', 'docs/**']
   push:
-    branches: [master]
+    branches: [master, develop]
+    paths-ignore: ['**.md', 'docs/**']
 
 jobs:
   lint-and-test:
@@ -17,14 +19,15 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          only-new-issues: true
       - name: Unit tests
         run: make test
       - name: Integration tests
         run: make test-integration
 
-  build-and-push:
+  build-and-push-dev:
     needs: lint-and-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,5 +42,14 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          build-args: VERSION=develop-${{ github.sha }}
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/nexqia-api:latest,ghcr.io/${{ github.repository_owner }}/nexqia-api:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository_owner }}/nexqia-api:develop,ghcr.io/${{ github.repository_owner }}/nexqia-api:develop-${{ github.sha }}
+
+  deploy-dev:
+    needs: build-and-push-dev
+    runs-on: [self-hosted, develop-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f deploy/docker-compose.yml pull
+      - run: docker compose -f deploy/docker-compose.yml up -d
