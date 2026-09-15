@@ -29,7 +29,7 @@ func main() {
 	redisClient := cache.NewRedisClient(cfg)
 	defer func() { _ = redisClient.Close() }()
 
-	router := server.NewRouter(pool)
+	router := server.NewRouter(pool, redisClient, cfg)
 	if err := router.Run(":" + cfg.HTTPPort); err != nil {
 		slog.Error("server exited", "error", err)
 		os.Exit(1)
