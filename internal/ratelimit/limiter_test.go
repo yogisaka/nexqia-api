@@ -60,6 +60,18 @@ func TestAllowTokenBucket_AllowsBurstThenBlocksThenRefills(t *testing.T) {
 	if result.RetryAfter <= 0 {
 		t.Error("expected positive RetryAfter when blocked")
 	}
+
+	// refillPerMinute=60 == 1 token/second; sleep past one refill interval and
+	// confirm the bucket actually allows again (this is the "refills" half of
+	// the test name).
+	time.Sleep(1100 * time.Millisecond)
+	result, err = limiter.AllowTokenBucket(ctx, "test:bucket", 3, 60)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("expected request to be allowed after refill interval elapsed")
+	}
 }
 
 func TestAllowSlidingWindow_BlocksAfterMaxAttemptsWithinWindow(t *testing.T) {
@@ -116,6 +128,5 @@ func TestAllowTokenBucket_ConcurrentRequestsNeverExceedCapacity(t *testing.T) {
 	if allowedCount != capacity {
 		t.Errorf("expected exactly %d allowed under concurrent load (atomic script), got %d", capacity, allowedCount)
 	}
-	_ = time.Second
 	_ = testcontainers.SkipIfProviderIsNotHealthy
 }

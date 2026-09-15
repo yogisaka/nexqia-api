@@ -62,8 +62,14 @@ func (l *Limiter) run(ctx context.Context, script *redis.Script, key string, arg
 	if !ok || len(values) != 2 {
 		return Result{}, errUnexpectedScriptResult
 	}
-	allowed, _ := values[0].(int64)
-	retryAfterSeconds, _ := values[1].(int64)
+	allowed, ok := values[0].(int64)
+	if !ok {
+		return Result{}, errUnexpectedScriptResult
+	}
+	retryAfterSeconds, ok := values[1].(int64)
+	if !ok {
+		return Result{}, errUnexpectedScriptResult
+	}
 	return Result{
 		Allowed:    allowed == 1,
 		RetryAfter: time.Duration(retryAfterSeconds) * time.Second,
