@@ -30,6 +30,10 @@ local retry_after = 0
 if tokens >= 1 then
   tokens = tokens - 1
   allowed = 1
+elseif refill_per_second <= 0 then
+  -- refill disabled (capacity effectively exhausted forever) — avoid dividing by
+  -- zero, cap retry hint at the bucket's own TTL instead of an infinite value.
+  retry_after = 3600
 else
   local deficit = 1 - tokens
   retry_after = math.ceil(deficit / refill_per_second)

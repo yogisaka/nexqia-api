@@ -49,9 +49,16 @@ func verifyArgon2(encodedHash, password string) (bool, error) {
 	if len(parts) != 6 {
 		return false, ErrInvalidHashFormat
 	}
+	var version int
+	if n, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil || n != 1 {
+		return false, ErrInvalidHashFormat
+	}
+	if version != argon2.Version {
+		return false, ErrInvalidHashFormat
+	}
 	var memory, iterations uint32
 	var parallelism uint8
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil {
+	if n, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism); err != nil || n != 3 {
 		return false, ErrInvalidHashFormat
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
