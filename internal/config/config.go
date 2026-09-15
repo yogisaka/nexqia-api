@@ -25,12 +25,17 @@ type Config struct {
 	RateLimitAPITokensPerMinute int
 	RateLimitAPIBurst           int
 
-	Argon2MemoryKiB    uint32
-	Argon2Iterations   uint32
-	Argon2Parallelism  uint8
+	Argon2MemoryKiB   uint32
+	Argon2Iterations  uint32
+	Argon2Parallelism uint8
 
 	PasswordHashMaxConcurrent  int
 	PasswordHashQueueTimeoutMS int
+
+	AccessTokenTTLMinutes        int
+	RefreshTokenIdleTimeoutHours int
+	RefreshTokenAbsoluteTTLDays  int
+	CookieSecure                 bool
 }
 
 func Load() Config {
@@ -57,6 +62,11 @@ func Load() Config {
 
 		PasswordHashMaxConcurrent:  getEnvInt("PASSWORD_HASH_MAX_CONCURRENT", runtime.NumCPU()),
 		PasswordHashQueueTimeoutMS: getEnvInt("PASSWORD_HASH_QUEUE_TIMEOUT_MS", 2000),
+
+		AccessTokenTTLMinutes:        getEnvInt("ACCESS_TOKEN_TTL_MINUTES", 15),
+		RefreshTokenIdleTimeoutHours: getEnvInt("REFRESH_TOKEN_IDLE_TIMEOUT_HOURS", 24),
+		RefreshTokenAbsoluteTTLDays:  getEnvInt("REFRESH_TOKEN_ABSOLUTE_TTL_DAYS", 30),
+		CookieSecure:                 getEnvBool("COOKIE_SECURE", true),
 	}
 }
 
@@ -77,6 +87,18 @@ func mustGetEnv(key string) string {
 		panic(fmt.Sprintf("required environment variable %s is not set", key))
 	}
 	return v
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		panic(fmt.Sprintf("environment variable %s must be a boolean, got %q", key, v))
+	}
+	return b
 }
 
 func getEnvInt(key string, fallback int) int {

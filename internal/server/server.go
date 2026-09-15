@@ -32,13 +32,20 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	)
 
 	v1 := router.Group("/api/v1")
-	v1.Use(TenantMiddleware(pool))
-	v1.POST("/auth/login", LoginHandler(cfg.JWTSecret, limiter, cfg, hasher))
 
-	protected := v1.Group("")
-	protected.Use(AuthMiddleware(cfg.JWTSecret))
-	protected.Use(RateLimitAPIMiddleware(limiter, cfg))
+	// Merchant isn't known yet on these routes (spec §3a) — company-scoped RLS only.
+	companyOnly := v1.Group("", CompanyOnlyMiddleware(pool))
+	companyOnly.POST("/auth/login", LoginHandler(cfg.JWTSecret, limiter, cfg, hasher))
+	companyOnly.POST("/auth/select-merchant", SelectMerchantHandler(cfg.JWTSecret, cfg))
+	companyOnly.POST("/auth/refresh", RefreshHandler(cfg))
+	companyOnly.POST("/auth/logout", LogoutHandler(cfg))
+
+	tenant := v1.Group("", TenantMiddleware(pool))
+	protected := tenant.Group("", AuthMiddleware(cfg.JWTSecret), RateLimitAPIMiddleware(limiter, cfg))
 	protected.GET("/ping", PingHandler)
+	protected.POST("/auth/switch-merchant", SwitchMerchantHandler(cfg))
+	protected.GET("/auth/sessions", ListSessionsHandler)
+	protected.DELETE("/auth/sessions/:id", RevokeSessionHandler)
 	RegisterTenancyRoutes(protected)
 	RegisterRBACRoutes(protected, hasher)
 

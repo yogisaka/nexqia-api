@@ -105,6 +105,9 @@ VALUES ($1, $2, $3, $4)
 ON CONFLICT (user_id, merchant_id, role_id) DO NOTHING
 RETURNING *;
 
+-- name: GetUserMerchantRoleByID :one
+SELECT * FROM core.user_merchant_role WHERE id = $1;
+
 -- name: RemoveUserMerchantRole :exec
 DELETE FROM core.user_merchant_role WHERE id = $1;
 
@@ -115,3 +118,13 @@ WHERE umr.user_id = $1 AND umr.merchant_id = $2 AND r.deleted_at IS NULL;
 
 -- name: ListUserMerchantRolesByUser :many
 SELECT * FROM core.user_merchant_role WHERE user_id = $1;
+
+-- name: UserHasPermission :one
+SELECT EXISTS (
+    SELECT 1
+    FROM core.user_merchant_role umr
+    JOIN core.role r ON r.id = umr.role_id AND r.deleted_at IS NULL
+    JOIN core.role_permission rp ON rp.role_id = r.id
+    JOIN core.permission p ON p.id = rp.permission_id
+    WHERE umr.user_id = $1 AND umr.merchant_id = $2 AND p.code = $3
+) AS has_permission;

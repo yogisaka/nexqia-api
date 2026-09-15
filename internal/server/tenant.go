@@ -58,3 +58,43 @@ func TenantMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 func TxFromContext(c *gin.Context) pgx.Tx {
 	return c.MustGet(txContextKey).(pgx.Tx)
 }
+
+// CompanyOnlyMiddleware is TenantMiddleware without the X-Merchant-ID requirement —
+// for /auth/login, /auth/select-merchant and /auth/refresh, where the active merchant
+// isn't known yet (spec §3a: a user can belong to >1 merchant, chosen at login).
+// app.current_merchant_id is left unset; anything scoped only by company_id (app_user,
+// core.list_user_merchants) still works, anything RLS-scoped by merchant does not —
+// those tables must not be queried on this path.
+func CompanyOnlyMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		companyID := c.GetHeader("X-Company-ID")
+		if companyID == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "X-Company-ID header is required"})
+			return
+		}
+
+		ctx := c.Request.Context()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to open transaction"})
+			return
+		}
+
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID); err != nil {
+			_ = tx.Rollback(ctx)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
+			return
+		}
+
+		c.Set(txContextKey, tx)
+		c.Next()
+
+		if c.IsAborted() || len(c.Errors) > 0 {
+			_ = tx.Rollback(ctx)
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to commit transaction"})
+		}
+	}
+}

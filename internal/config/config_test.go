@@ -101,6 +101,48 @@ func TestLoad_ReadsRateLimitAndHashingConfig(t *testing.T) {
 	}
 }
 
+func TestLoad_ReadsSessionConfig(t *testing.T) {
+	_ = os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
+	_ = os.Setenv("REDIS_PASSWORD", "redispw")
+	_ = os.Setenv("JWT_SECRET", "test-secret")
+	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
+	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
+	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
+
+	cfg := Load()
+
+	if cfg.AccessTokenTTLMinutes != 15 {
+		t.Errorf("expected default AccessTokenTTLMinutes 15, got %d", cfg.AccessTokenTTLMinutes)
+	}
+	if cfg.RefreshTokenIdleTimeoutHours != 24 {
+		t.Errorf("expected default RefreshTokenIdleTimeoutHours 24, got %d", cfg.RefreshTokenIdleTimeoutHours)
+	}
+	if cfg.RefreshTokenAbsoluteTTLDays != 30 {
+		t.Errorf("expected default RefreshTokenAbsoluteTTLDays 30, got %d", cfg.RefreshTokenAbsoluteTTLDays)
+	}
+	if !cfg.CookieSecure {
+		t.Error("expected default CookieSecure true")
+	}
+}
+
+func TestGetEnvBool_OverridesDefaultAndPanicsOnInvalid(t *testing.T) {
+	_ = os.Setenv("COOKIE_SECURE", "false")
+	defer func() { _ = os.Unsetenv("COOKIE_SECURE") }()
+	if got := getEnvBool("COOKIE_SECURE", true); got != false {
+		t.Errorf("expected override false, got %v", got)
+	}
+	_ = os.Unsetenv("COOKIE_SECURE")
+
+	_ = os.Setenv("COOKIE_SECURE", "not-a-bool")
+	defer func() { _ = os.Unsetenv("COOKIE_SECURE") }()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic on invalid boolean env var, got none")
+		}
+	}()
+	getEnvBool("COOKIE_SECURE", true)
+}
+
 func TestGetEnvInt_OverridesDefaultAndPanicsOnInvalid(t *testing.T) {
 	_ = os.Setenv("RATE_LIMIT_API_BURST", "42")
 	defer func() { _ = os.Unsetenv("RATE_LIMIT_API_BURST") }()

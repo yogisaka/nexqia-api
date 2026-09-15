@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -25,16 +26,20 @@ const testJWTSecret = "test-secret"
 
 func testConfig() config.Config {
 	return config.Config{
-		JWTSecret:                   testJWTSecret,
-		RateLimitLoginMaxAttempts:   5,
-		RateLimitLoginWindowSeconds: 900,
-		RateLimitAPITokensPerMinute: 100,
-		RateLimitAPIBurst:           20,
-		Argon2MemoryKiB:             19456,
-		Argon2Iterations:            2,
-		Argon2Parallelism:           1,
-		PasswordHashMaxConcurrent:   4,
-		PasswordHashQueueTimeoutMS:  2000,
+		JWTSecret:                    testJWTSecret,
+		RateLimitLoginMaxAttempts:    5,
+		RateLimitLoginWindowSeconds:  900,
+		RateLimitAPITokensPerMinute:  100,
+		RateLimitAPIBurst:            20,
+		Argon2MemoryKiB:              19456,
+		Argon2Iterations:             2,
+		Argon2Parallelism:            1,
+		PasswordHashMaxConcurrent:    4,
+		PasswordHashQueueTimeoutMS:   2000,
+		AccessTokenTTLMinutes:        15,
+		RefreshTokenIdleTimeoutHours: 24,
+		RefreshTokenAbsoluteTTLDays:  30,
+		CookieSecure:                 true,
 	}
 }
 
@@ -85,7 +90,7 @@ func TestTenantMiddleware_IsTransactionScopedAcrossRequests(t *testing.T) {
 
 	redisClient := newTestRedisClient(t, ctx)
 	router := server.NewRouter(pool, redisClient, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, "99999999-9999-9999-9999-999999999999", "11111111-1111-1111-1111-111111111111", "tester")
+	token, err := auth.GenerateToken(testJWTSecret, "99999999-9999-9999-9999-999999999999", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "tester", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate test token: %v", err)
 	}
@@ -181,7 +186,7 @@ func TestRateLimitAPIMiddleware_FailsClosedWhenRedisUnreachable(t *testing.T) {
 	defer unreachableRedis.Close()
 
 	router := server.NewRouter(pool, unreachableRedis, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, "99999999-9999-9999-9999-999999999999", "11111111-1111-1111-1111-111111111111", "tester")
+	token, err := auth.GenerateToken(testJWTSecret, "99999999-9999-9999-9999-999999999999", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "tester", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate test token: %v", err)
 	}
