@@ -67,3 +67,16 @@ func TestParseMerchantSelectionToken_RejectsNormalAccessToken(t *testing.T) {
 		t.Errorf("expected ErrNotMerchantSelectionToken, got %v", err)
 	}
 }
+
+func TestParseToken_RejectsMerchantSelectionToken(t *testing.T) {
+	// A merchant-selection token must never be usable as a real access token
+	// even though it's a validly signed JWT (token-confusion guard, see
+	// accessTokenPurpose in token.go).
+	token, err := GenerateMerchantSelectionToken(testTokenSecret, "user-1", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ParseToken(testTokenSecret, token); err == nil {
+		t.Error("expected error parsing merchant-selection token as an access token")
+	}
+}

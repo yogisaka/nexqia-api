@@ -83,12 +83,27 @@ func AuthCompanyID(c *gin.Context) pgtype.UUID {
 // RequirePermission checks the caller holds `code` in the merchant from X-Merchant-ID
 // (already required by TenantMiddleware). On failure it writes the response and returns false —
 // callers must `return` immediately when this returns false.
+//
+// Only use this when the request has no single mutation target that could differ from
+// the header (e.g. listing, or creating a brand-new resource). When a handler mutates
+// an existing resource scoped to a specific merchant, check RequirePermissionForMerchant
+// against that resource's actual merchant instead — otherwise a caller with permission
+// at merchant A (declared via header) could mutate merchant B's data merely by sharing
+// a company, which breaks the per-merchant role isolation merger scenarios require.
 func RequirePermission(c *gin.Context, code string) bool {
 	merchantID, ok := parseUUID(c.GetHeader("X-Merchant-ID"))
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid X-Merchant-ID"})
 		return false
 	}
+	return RequirePermissionForMerchant(c, code, merchantID)
+}
+
+// RequirePermissionForMerchant checks the caller holds `code` at merchantID specifically —
+// use this for mutations on an existing resource so the permission check is scoped to the
+// resource being mutated, not whatever merchant the caller happened to declare in X-Merchant-ID.
+// On failure it writes the response and returns false — callers must `return` immediately.
+func RequirePermissionForMerchant(c *gin.Context, code string, merchantID pgtype.UUID) bool {
 	q := sqlcgen.New(TxFromContext(c))
 	has, err := q.UserHasPermission(c.Request.Context(), sqlcgen.UserHasPermissionParams{
 		UserID: AuthUserID(c), MerchantID: merchantID, Code: code,

@@ -14,11 +14,18 @@ import (
 // MerchantID here is informational (session identity, shown in UI) — it is NOT the
 // source of authorization; server.RequirePermission independently checks X-Merchant-ID
 // against user_merchant_role on every request, unchanged by this field.
+// accessTokenPurpose marks a real access token so it can never be accepted
+// where a narrow-purpose token (e.g. merchant-selection) is expected, or vice
+// versa — tokens are positively typed, not distinguished by which fields
+// happen to be empty (see MerchantSelectionClaims below).
+const accessTokenPurpose = "access"
+
 type Claims struct {
 	UserID     string `json:"uid"`
 	CompanyID  string `json:"cid"`
 	MerchantID string `json:"mid"`
 	Username   string `json:"username"`
+	Purpose    string `json:"purpose"`
 	jwt.RegisteredClaims
 }
 
@@ -30,6 +37,7 @@ func GenerateToken(secret, userID, companyID, merchantID, username string, ttl t
 		CompanyID:  companyID,
 		MerchantID: merchantID,
 		Username:   username,
+		Purpose:    accessTokenPurpose,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -102,6 +110,9 @@ func ParseToken(secret, tokenString string) (*Claims, error) {
 	}
 	if !token.Valid {
 		return nil, errors.New("invalid token")
+	}
+	if claims.Purpose != accessTokenPurpose {
+		return nil, errors.New("not an access token")
 	}
 	return claims, nil
 }
