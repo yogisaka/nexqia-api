@@ -10,13 +10,19 @@ BEGIN;
 -- 1. Tenancy root
 -- ============================================================
 INSERT INTO core.company (id, code, name) VALUES
-    ('00000000-0000-0000-0000-000000000001', 'RSSS', 'RS Sehat Sentosa Group')
+    ('00000000-0000-0000-0000-000000000001', '100001', 'RS Sehat Sentosa Group')
 ON CONFLICT (id) DO NOTHING;
 
+-- fix up code on already-seeded rows from before the 6-digit format was enforced
+UPDATE core.company SET code = '100001' WHERE id = '00000000-0000-0000-0000-000000000001' AND code <> '100001';
+
 INSERT INTO core.merchant (id, company_id, code, name, kemkes_facility_code, bpjs_ppk_code) VALUES
-    ('00000000-0000-0000-0001-000000000001', '00000000-0000-0000-0000-000000000001', 'RSSS-PST', 'RS Sehat Sentosa Pusat', '3273011', '0001R001'),
-    ('00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0000-000000000001', 'RSSS-KLN', 'Klinik Sehat Sentosa Kalinjuhang', '3273012', '0002R001')
+    ('00000000-0000-0000-0001-000000000001', '00000000-0000-0000-0000-000000000001', '100011', 'RS Sehat Sentosa Pusat', '3273011', '0001R001'),
+    ('00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0000-000000000001', '100012', 'Klinik Sehat Sentosa Kalinjuhang', '3273012', '0002R001')
 ON CONFLICT (id) DO NOTHING;
+
+UPDATE core.merchant SET code = '100011' WHERE id = '00000000-0000-0000-0001-000000000001' AND code <> '100011';
+UPDATE core.merchant SET code = '100012' WHERE id = '00000000-0000-0000-0001-000000000002' AND code <> '100012';
 
 -- ============================================================
 -- 2. Terminology (value set internal: spesialisasi, agama, pendidikan, etnis)
@@ -89,7 +95,18 @@ INSERT INTO core.permission (id, code, description, module) VALUES
     ('00000000-0000-0000-0004-000000000009', 'reporting.dashboard.view', 'Melihat dashboard laporan', 'reporting'),
     ('00000000-0000-0000-0004-000000000010', 'procurement.po.create', 'Membuat purchase order', 'procurement'),
     ('00000000-0000-0000-0004-000000000011', 'notification.manage', 'Kelola notifikasi inbox', 'notification'),
-    ('00000000-0000-0000-0004-000000000012', 'audit.log.view', 'Melihat log audit dan akses', 'audit')
+    ('00000000-0000-0000-0004-000000000012', 'audit.log.view', 'Melihat log audit dan akses', 'audit'),
+    ('00000000-0000-0000-0004-000000000013', 'core.company.manage', 'Kelola company (platform-admin)', 'core'),
+    ('00000000-0000-0000-0004-000000000014', 'core.merchant.manage', 'Kelola merchant', 'core'),
+    ('00000000-0000-0000-0004-000000000015', 'core.user.manage', 'Kelola user dan akses', 'core'),
+    ('00000000-0000-0000-0004-000000000016', 'core.role.manage', 'Kelola role dan permission', 'core'),
+    ('00000000-0000-0000-0004-000000000017', 'core.person.manage', 'Kelola data master person', 'core'),
+    ('00000000-0000-0000-0004-000000000018', 'core.department.manage', 'Kelola master data poli/departemen', 'core'),
+    ('00000000-0000-0000-0004-000000000019', 'core.tariff.manage', 'Kelola katalog layanan dan tarif', 'core'),
+    ('00000000-0000-0000-0004-000000000020', 'core.physician.manage', 'Kelola data dokter', 'core'),
+    ('00000000-0000-0000-0004-000000000021', 'operations.schedule.manage', 'Kelola jadwal praktik dokter', 'operations'),
+    ('00000000-0000-0000-0004-000000000022', 'operations.counter.manage', 'Kelola loket dan panggil antrian', 'operations'),
+    ('00000000-0000-0000-0004-000000000023', 'operations.visit.manage', 'Kelola kunjungan rajal dan antrian', 'operations')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO core.role (id, company_id, name, description, is_system) VALUES
@@ -104,7 +121,11 @@ SELECT '00000000-0000-0000-0005-000000000001'::uuid, p FROM unnest(ARRAY[
     '00000000-0000-0000-0004-000000000001','00000000-0000-0000-0004-000000000002','00000000-0000-0000-0004-000000000003',
     '00000000-0000-0000-0004-000000000004','00000000-0000-0000-0004-000000000005','00000000-0000-0000-0004-000000000006',
     '00000000-0000-0000-0004-000000000007','00000000-0000-0000-0004-000000000008','00000000-0000-0000-0004-000000000009',
-    '00000000-0000-0000-0004-000000000010','00000000-0000-0000-0004-000000000011','00000000-0000-0000-0004-000000000012'
+    '00000000-0000-0000-0004-000000000010','00000000-0000-0000-0004-000000000011','00000000-0000-0000-0004-000000000012',
+    '00000000-0000-0000-0004-000000000013','00000000-0000-0000-0004-000000000014','00000000-0000-0000-0004-000000000015',
+    '00000000-0000-0000-0004-000000000016','00000000-0000-0000-0004-000000000017','00000000-0000-0000-0004-000000000018',
+    '00000000-0000-0000-0004-000000000019','00000000-0000-0000-0004-000000000020','00000000-0000-0000-0004-000000000021',
+    '00000000-0000-0000-0004-000000000022','00000000-0000-0000-0004-000000000023'
 ]::uuid[]) AS p
 UNION ALL
 SELECT '00000000-0000-0000-0005-000000000002'::uuid, p FROM unnest(ARRAY[
@@ -279,5 +300,40 @@ INSERT INTO core.notification (id, company_id, merchant_id, channel, reference_t
     ('00000000-0000-0000-0016-000000000002', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000001', 'laboratorium', 'person', '00000000-0000-0000-0006-000000000010', 'Hasil lab pasien Dewi Lestari sudah tersedia', NULL, true),
     ('00000000-0000-0000-0016-000000000003', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', 'radiologi', 'person', '00000000-0000-0000-0006-000000000012', 'Hasil USG pasien Maya Puspita siap diambil', NULL, false)
 ON CONFLICT (id) DO NOTHING;
+
+-- ============================================================
+-- 13. Operations: jadwal dokter + loket (Poli Umum, FO Rajal e2e)
+-- ============================================================
+INSERT INTO operations.physician_schedule
+    (id, company_id, merchant_id, physician_id, department_id, day_of_week, start_time, end_time, slot_quota, effective_from, effective_to) VALUES
+    ('00000000-0000-0000-0030-000000000001', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 0, '08:00', '12:00', 20, '2026-01-01', NULL),
+    ('00000000-0000-0000-0030-000000000002', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 1, '08:00', '12:00', 20, '2026-01-01', NULL),
+    ('00000000-0000-0000-0030-000000000003', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 2, '08:00', '12:00', 20, '2026-01-01', NULL),
+    ('00000000-0000-0000-0030-000000000004', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 3, '08:00', '12:00', 20, '2026-01-01', NULL),
+    ('00000000-0000-0000-0030-000000000005', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 4, '08:00', '12:00', 20, '2026-01-01', NULL),
+    ('00000000-0000-0000-0030-000000000006', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 5, '08:00', '12:00', 20, '2026-01-01', NULL),
+    ('00000000-0000-0000-0030-000000000007', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 6, '08:00', '12:00', 20, '2026-01-01', NULL)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO operations.counter (id, company_id, merchant_id, queue_type, department_id, code, name) VALUES
+    ('00000000-0000-0000-0031-000000000001', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', 'pendaftaran', NULL, 'LOKET-1', 'Loket Pendaftaran 1')
+ON CONFLICT (id) DO NOTHING;
+
+UPDATE operations.physician_schedule SET start_time = '08:00', end_time = '12:00', slot_quota = 20
+    WHERE id = '00000000-0000-0000-0030-000000000001' AND (start_time <> '08:00' OR end_time <> '12:00' OR slot_quota <> 20);
+UPDATE operations.physician_schedule SET start_time = '08:00', end_time = '12:00', slot_quota = 20
+    WHERE id = '00000000-0000-0000-0030-000000000002' AND (start_time <> '08:00' OR end_time <> '12:00' OR slot_quota <> 20);
+UPDATE operations.physician_schedule SET start_time = '08:00', end_time = '12:00', slot_quota = 20
+    WHERE id = '00000000-0000-0000-0030-000000000003' AND (start_time <> '08:00' OR end_time <> '12:00' OR slot_quota <> 20);
+UPDATE operations.physician_schedule SET start_time = '08:00', end_time = '12:00', slot_quota = 20
+    WHERE id = '00000000-0000-0000-0030-000000000004' AND (start_time <> '08:00' OR end_time <> '12:00' OR slot_quota <> 20);
+UPDATE operations.physician_schedule SET start_time = '08:00', end_time = '12:00', slot_quota = 20
+    WHERE id = '00000000-0000-0000-0030-000000000005' AND (start_time <> '08:00' OR end_time <> '12:00' OR slot_quota <> 20);
+UPDATE operations.physician_schedule SET start_time = '08:00', end_time = '12:00', slot_quota = 20
+    WHERE id = '00000000-0000-0000-0030-000000000006' AND (start_time <> '08:00' OR end_time <> '12:00' OR slot_quota <> 20);
+UPDATE operations.physician_schedule SET start_time = '08:00', end_time = '12:00', slot_quota = 20
+    WHERE id = '00000000-0000-0000-0030-000000000007' AND (start_time <> '08:00' OR end_time <> '12:00' OR slot_quota <> 20);
+UPDATE operations.counter SET code = 'LOKET-1', name = 'Loket Pendaftaran 1'
+    WHERE id = '00000000-0000-0000-0031-000000000001' AND (code <> 'LOKET-1' OR name <> 'Loket Pendaftaran 1');
 
 COMMIT;

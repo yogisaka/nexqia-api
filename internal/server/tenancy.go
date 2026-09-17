@@ -2,15 +2,40 @@
 package server
 
 import (
+	"crypto/rand"
 	"errors"
 	"net/http"
+	"regexp"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
+
+var companyCodeFormat = regexp.MustCompile(`^[A-Z0-9]{6}$`)
+
+const codeCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const codeGenerateMaxAttempts = 5
+
+// generateCode returns a random 6-char uppercase alphanumeric code (company/merchant identifier).
+func generateCode() (string, error) {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	for i, v := range b {
+		b[i] = codeCharset[int(v)%len(codeCharset)]
+	}
+	return string(b), nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 // RegisterTenancyRoutes wires core.company and core.merchant CRUD (docs/07-core-ddl.md §1).
 // All routes require AuthMiddleware; company-level mutation/list requires PermCompanyManage
@@ -32,10 +57,20 @@ func RegisterTenancyRoutes(rg *gin.RouterGroup) {
 }
 
 type createCompanyRequest struct {
-	Code string `json:"code" binding:"required"`
 	Name string `json:"name" binding:"required"`
 }
 
+// CreateCompanyHandler godoc
+// @Summary Create a company
+// @Description Platform-admin scope — company creation spans tenants by nature.
+// @Tags tenancy
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body createCompanyRequest true "Company data"
+// @Success 201 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Router /companies [post]
 func CreateCompanyHandler(c *gin.Context) {
 	if !RequirePermission(c, PermCompanyManage) {
 		return
@@ -46,17 +81,38 @@ func CreateCompanyHandler(c *gin.Context) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
-	company, err := q.CreateCompany(c.Request.Context(), sqlcgen.CreateCompanyParams{
-		Code: req.Code, Name: req.Name, CreatedBy: AuthUserID(c),
-	})
-	if err != nil {
+	var company sqlcgen.CoreCompany
+	for attempt := 0; ; attempt++ {
+		code, err := generateCode()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		company, err = q.CreateCompany(c.Request.Context(), sqlcgen.CreateCompanyParams{
+			Code: code, Name: req.Name, CreatedBy: AuthUserID(c),
+		})
+		if err == nil {
+			break
+		}
+		if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
+			continue
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": company, "meta": gin.H{}})
 }
 
-// ListCompaniesHandler lists across ALL tenants — platform-admin only.
+// ListCompaniesHandler godoc
+// @Summary List companies
+// @Description Lists across ALL tenants — platform-admin only.
+// @Tags tenancy
+// @Produce json
+// @Security BearerAuth
+// @Param limit query int false "Page size"
+// @Param offset query int false "Page offset"
+// @Success 200 {object} apiResponse
+// @Router /companies [get]
 func ListCompaniesHandler(c *gin.Context) {
 	if !RequirePermission(c, PermCompanyManage) {
 		return
@@ -71,6 +127,15 @@ func ListCompaniesHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": companies, "meta": gin.H{"limit": limit, "offset": offset}})
 }
 
+// GetCompanyHandler godoc
+// @Summary Get a company by id
+// @Tags tenancy
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Company UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /companies/{id} [get]
 func GetCompanyHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -98,6 +163,17 @@ type updateCompanyRequest struct {
 	IsActive bool   `json:"is_active"`
 }
 
+// UpdateCompanyHandler godoc
+// @Summary Update a company
+// @Tags tenancy
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Company UUID"
+// @Param request body updateCompanyRequest true "Company data"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /companies/{id} [patch]
 func UpdateCompanyHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -131,6 +207,15 @@ func UpdateCompanyHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": company, "meta": gin.H{}})
 }
 
+// DeleteCompanyHandler godoc
+// @Summary Soft-delete a company
+// @Tags tenancy
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Company UUID"
+// @Success 204 "No Content"
+// @Failure 404 {object} apiErrorResponse
+// @Router /companies/{id} [delete]
 func DeleteCompanyHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -154,13 +239,22 @@ func DeleteCompanyHandler(c *gin.Context) {
 
 type createMerchantRequest struct {
 	CompanyID          string `json:"company_id" binding:"required"`
-	Code               string `json:"code" binding:"required"`
 	Name               string `json:"name" binding:"required"`
 	KemkesFacilityCode string `json:"kemkes_facility_code"`
 	BpjsPpkCode        string `json:"bpjs_ppk_code"`
 	Timezone           string `json:"timezone" binding:"required"`
 }
 
+// CreateMerchantHandler godoc
+// @Summary Create a merchant
+// @Tags tenancy
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body createMerchantRequest true "Merchant data"
+// @Success 201 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Router /merchants [post]
 func CreateMerchantHandler(c *gin.Context) {
 	var req createMerchantRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -180,22 +274,44 @@ func CreateMerchantHandler(c *gin.Context) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
-	merchant, err := q.CreateMerchant(c.Request.Context(), sqlcgen.CreateMerchantParams{
-		CompanyID:          companyID,
-		Code:               req.Code,
-		Name:               req.Name,
-		KemkesFacilityCode: pgtype.Text{String: req.KemkesFacilityCode, Valid: req.KemkesFacilityCode != ""},
-		BpjsPpkCode:        pgtype.Text{String: req.BpjsPpkCode, Valid: req.BpjsPpkCode != ""},
-		Timezone:           req.Timezone,
-		CreatedBy:          AuthUserID(c),
-	})
-	if err != nil {
+	var merchant sqlcgen.CoreMerchant
+	for attempt := 0; ; attempt++ {
+		code, err := generateCode()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		merchant, err = q.CreateMerchant(c.Request.Context(), sqlcgen.CreateMerchantParams{
+			CompanyID:          companyID,
+			Code:               code,
+			Name:               req.Name,
+			KemkesFacilityCode: pgtype.Text{String: req.KemkesFacilityCode, Valid: req.KemkesFacilityCode != ""},
+			BpjsPpkCode:        pgtype.Text{String: req.BpjsPpkCode, Valid: req.BpjsPpkCode != ""},
+			Timezone:           req.Timezone,
+			CreatedBy:          AuthUserID(c),
+		})
+		if err == nil {
+			break
+		}
+		if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
+			continue
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": merchant, "meta": gin.H{}})
 }
 
+// ListMerchantsHandler godoc
+// @Summary List merchants under a company
+// @Tags tenancy
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Company UUID"
+// @Param limit query int false "Page size"
+// @Param offset query int false "Page offset"
+// @Success 200 {object} apiResponse
+// @Router /companies/{id}/merchants [get]
 func ListMerchantsHandler(c *gin.Context) {
 	companyID, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -217,6 +333,15 @@ func ListMerchantsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": merchants, "meta": gin.H{"limit": limit, "offset": offset}})
 }
 
+// GetMerchantHandler godoc
+// @Summary Get a merchant by id
+// @Tags tenancy
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /merchants/{id} [get]
 func GetMerchantHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -248,6 +373,17 @@ type updateMerchantRequest struct {
 	IsActive           bool   `json:"is_active"`
 }
 
+// UpdateMerchantHandler godoc
+// @Summary Update a merchant
+// @Tags tenancy
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Param request body updateMerchantRequest true "Merchant data"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /merchants/{id} [patch]
 func UpdateMerchantHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -296,6 +432,15 @@ func UpdateMerchantHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": merchant, "meta": gin.H{}})
 }
 
+// DeleteMerchantHandler godoc
+// @Summary Soft-delete a merchant
+// @Tags tenancy
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Success 204 "No Content"
+// @Failure 404 {object} apiErrorResponse
+// @Router /merchants/{id} [delete]
 func DeleteMerchantHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
