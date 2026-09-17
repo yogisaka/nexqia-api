@@ -14,6 +14,10 @@ import (
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
+// @title NEXQIA API
+// @version 1.0
+// @description Backend service for the NEXQIA Healthcare Operating Platform. All routes are under /api/v1. Response envelope: {"data": ..., "meta": {...}}.
+// @BasePath /api/v1
 func main() {
 	_ = godotenv.Load() // dev: baca .env kalau ada; produksi pakai env asli dari compose/systemd, file gak ada = no-op
 

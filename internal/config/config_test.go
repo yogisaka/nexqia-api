@@ -11,10 +11,12 @@ func TestLoad_UsesEnvOverridesAndDefaults(t *testing.T) {
 	_ = os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
+	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
 	defer func() { _ = os.Unsetenv("DB_HOST") }()
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
+	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 
@@ -36,9 +38,11 @@ func TestLoad_ReadsRedisConfig(t *testing.T) {
 	_ = os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
+	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
+	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 
@@ -69,9 +73,11 @@ func TestLoad_ReadsRateLimitAndHashingConfig(t *testing.T) {
 	_ = os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
+	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
+	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 
@@ -105,9 +111,11 @@ func TestLoad_ReadsSessionConfig(t *testing.T) {
 	_ = os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
+	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
+	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 
@@ -122,6 +130,32 @@ func TestLoad_ReadsSessionConfig(t *testing.T) {
 	}
 	if !cfg.CookieSecure {
 		t.Error("expected default CookieSecure true")
+	}
+	if cfg.MFASecretEncryptionKey != "test-mfa-key" {
+		t.Errorf("expected MFASecretEncryptionKey from env, got %q", cfg.MFASecretEncryptionKey)
+	}
+}
+
+func TestLoad_ReadsAppLockConfig(t *testing.T) {
+	_ = os.Setenv("APP_RUNTIME_PASSWORD", "secret123")
+	_ = os.Setenv("REDIS_PASSWORD", "redispw")
+	_ = os.Setenv("JWT_SECRET", "test-secret")
+	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
+	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
+	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
+	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
+	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
+
+	cfg := Load()
+
+	if cfg.AppLockDefaultIdleMinutes != 5 {
+		t.Errorf("expected default AppLockDefaultIdleMinutes 5, got %d", cfg.AppLockDefaultIdleMinutes)
+	}
+	if cfg.AppLockMaxPinAttempts != 5 {
+		t.Errorf("expected default AppLockMaxPinAttempts 5, got %d", cfg.AppLockMaxPinAttempts)
+	}
+	if cfg.AppLockAttemptWindowMinutes != 15 {
+		t.Errorf("expected default AppLockAttemptWindowMinutes 15, got %d", cfg.AppLockAttemptWindowMinutes)
 	}
 }
 

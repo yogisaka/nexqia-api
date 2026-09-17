@@ -36,6 +36,25 @@ type Config struct {
 	RefreshTokenIdleTimeoutHours int
 	RefreshTokenAbsoluteTTLDays  int
 	CookieSecure                 bool
+
+	// MFASecretEncryptionKey is base64-encoded, decodes to 32 raw bytes (AES-256-GCM
+	// key for core.app_user.mfa_secret) — deliberately a dedicated key, separate from
+	// any future field-encryption key. See docs/design/specs/2026-09-15-totp-2fa-design.md §6.
+	MFASecretEncryptionKey string
+
+	// NIKEncryptionKey is the pgcrypto pgp_sym_encrypt/pgp_sym_decrypt symmetric key
+	// for core.person.nik (env NIK_ENCRYPTION_KEY, see .env.example) — must be identical
+	// across every environment that needs to decrypt the same data; rotating it makes
+	// existing NIK values undecryptable.
+	NIKEncryptionKey string
+
+	// AppLockDefaultIdleMinutes/AppLockMaxPinAttempts/AppLockAttemptWindowMinutes —
+	// PIN-unlock tunables, see docs/design/specs/2026-09-15-pin-unlock-design.md §10.
+	// AppLockDefaultIdleMinutes is only a fallback: a merchant's own idle_minutes
+	// (core.feature_flag "auth.pin_lock" flag_value) always wins when set.
+	AppLockDefaultIdleMinutes   int
+	AppLockMaxPinAttempts       int
+	AppLockAttemptWindowMinutes int
 }
 
 func Load() Config {
@@ -67,6 +86,13 @@ func Load() Config {
 		RefreshTokenIdleTimeoutHours: getEnvInt("REFRESH_TOKEN_IDLE_TIMEOUT_HOURS", 24),
 		RefreshTokenAbsoluteTTLDays:  getEnvInt("REFRESH_TOKEN_ABSOLUTE_TTL_DAYS", 30),
 		CookieSecure:                 getEnvBool("COOKIE_SECURE", true),
+
+		MFASecretEncryptionKey: mustGetEnv("MFA_SECRET_ENCRYPTION_KEY"),
+		NIKEncryptionKey:       mustGetEnv("NIK_ENCRYPTION_KEY"),
+
+		AppLockDefaultIdleMinutes:   getEnvInt("APP_LOCK_DEFAULT_IDLE_MINUTES", 5),
+		AppLockMaxPinAttempts:       getEnvInt("APP_LOCK_MAX_PIN_ATTEMPTS", 5),
+		AppLockAttemptWindowMinutes: getEnvInt("APP_LOCK_ATTEMPT_WINDOW_MINUTES", 15),
 	}
 }
 
