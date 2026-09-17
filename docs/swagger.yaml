@@ -1,0 +1,2984 @@
+basePath: /api/v1
+definitions:
+  server.addRolePermissionRequest:
+    properties:
+      permission_id:
+        type: string
+    required:
+    - permission_id
+    type: object
+  server.addUserMerchantRoleRequest:
+    properties:
+      merchant_id:
+        type: string
+      role_id:
+        type: string
+    required:
+    - merchant_id
+    - role_id
+    type: object
+  server.apiErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  server.apiResponse:
+    properties:
+      data: {}
+      meta: {}
+    type: object
+  server.createAdmissionRequest:
+    properties:
+      department_id:
+        type: string
+      person_id:
+        type: string
+      physician_id:
+        type: string
+    required:
+    - department_id
+    - person_id
+    type: object
+  server.createAppUserRequest:
+    properties:
+      company_id:
+        type: string
+      email:
+        type: string
+      password:
+        minLength: 8
+        type: string
+      person_id:
+        type: string
+      username:
+        type: string
+    required:
+    - company_id
+    - password
+    - person_id
+    - username
+    type: object
+  server.createCompanyRequest:
+    properties:
+      code:
+        type: string
+      name:
+        type: string
+    required:
+    - code
+    - name
+    type: object
+  server.createCounterRequest:
+    properties:
+      code:
+        type: string
+      department_id:
+        type: string
+      merchant_id:
+        type: string
+      name:
+        type: string
+      queue_type:
+        type: string
+    required:
+    - code
+    - merchant_id
+    - queue_type
+    type: object
+  server.createDepartmentRequest:
+    properties:
+      code:
+        type: string
+      merchant_id:
+        type: string
+      name:
+        type: string
+      specialty_concept_id:
+        type: string
+    required:
+    - code
+    - merchant_id
+    - name
+    type: object
+  server.createMerchantRequest:
+    properties:
+      bpjs_ppk_code:
+        type: string
+      code:
+        type: string
+      company_id:
+        type: string
+      kemkes_facility_code:
+        type: string
+      name:
+        type: string
+      timezone:
+        type: string
+    required:
+    - code
+    - company_id
+    - name
+    - timezone
+    type: object
+  server.createPhysicianRequest:
+    properties:
+      merchant_id:
+        type: string
+      person_id:
+        type: string
+      sip_number:
+        type: string
+      specialty_concept_id:
+        type: string
+      str_number:
+        type: string
+    required:
+    - merchant_id
+    - person_id
+    type: object
+  server.createPhysicianScheduleRequest:
+    properties:
+      day_of_week:
+        maximum: 6
+        minimum: 0
+        type: integer
+      department_id:
+        type: string
+      effective_from:
+        type: string
+      effective_to:
+        type: string
+      end_time:
+        type: string
+      merchant_id:
+        type: string
+      physician_id:
+        type: string
+      slot_quota:
+        type: integer
+      start_time:
+        type: string
+    required:
+    - department_id
+    - effective_from
+    - end_time
+    - merchant_id
+    - physician_id
+    - start_time
+    type: object
+  server.createRateComponentRequest:
+    properties:
+      code:
+        type: string
+      merchant_id:
+        type: string
+      name:
+        type: string
+    required:
+    - code
+    - merchant_id
+    - name
+    type: object
+  server.createRoleRequest:
+    properties:
+      company_id:
+        type: string
+      description:
+        type: string
+      name:
+        type: string
+    required:
+    - company_id
+    - name
+    type: object
+  server.createServiceItemRequest:
+    properties:
+      code:
+        type: string
+      item_type:
+        type: string
+      merchant_id:
+        type: string
+      name:
+        type: string
+    required:
+    - code
+    - item_type
+    - merchant_id
+    - name
+    type: object
+  server.createServiceRateRequest:
+    properties:
+      amount:
+        type: string
+      effective_from:
+        type: string
+      effective_to:
+        type: string
+      merchant_id:
+        type: string
+      payer_class:
+        type: string
+      rate_component_id:
+        type: string
+      service_item_id:
+        type: string
+    required:
+    - amount
+    - effective_from
+    - merchant_id
+    - payer_class
+    - rate_component_id
+    - service_item_id
+    type: object
+  server.loginRequest:
+    properties:
+      password:
+        type: string
+      totp_code:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  server.mfaConfirmRequest:
+    properties:
+      code:
+        type: string
+      password:
+        type: string
+      secret:
+        type: string
+    required:
+    - code
+    - password
+    - secret
+    type: object
+  server.mfaDisableRequest:
+    properties:
+      password:
+        type: string
+    required:
+    - password
+    type: object
+  server.personRequest:
+    properties:
+      address:
+        type: string
+      birth_date:
+        type: string
+      birth_place:
+        type: string
+      blood_type:
+        type: string
+      education_concept_id:
+        type: string
+      email:
+        type: string
+      ethnicity_concept_id:
+        type: string
+      family_id:
+        type: string
+      full_name:
+        type: string
+      gender:
+        type: string
+      marital_status:
+        type: string
+      medical_record_no:
+        type: string
+      nik:
+        type: string
+      phone:
+        type: string
+      religion_concept_id:
+        type: string
+    required:
+    - full_name
+    - gender
+    type: object
+  server.pinDisableRequest:
+    properties:
+      password:
+        type: string
+    required:
+    - password
+    type: object
+  server.pinSetRequest:
+    properties:
+      password:
+        type: string
+      pin:
+        type: string
+    required:
+    - password
+    - pin
+    type: object
+  server.pinVerifyRequest:
+    properties:
+      pin:
+        type: string
+    required:
+    - pin
+    type: object
+  server.selectMerchantRequest:
+    properties:
+      merchant_id:
+        type: string
+      selection_token:
+        type: string
+    required:
+    - merchant_id
+    - selection_token
+    type: object
+  server.switchMerchantRequest:
+    properties:
+      merchant_id:
+        type: string
+    required:
+    - merchant_id
+    type: object
+  server.updateAdmissionRequest:
+    properties:
+      discharge_at:
+        type: string
+      physician_id:
+        type: string
+      status:
+        type: string
+    required:
+    - status
+    type: object
+  server.updateAppUserPasswordRequest:
+    properties:
+      password:
+        minLength: 8
+        type: string
+    required:
+    - password
+    type: object
+  server.updateAppUserRequest:
+    properties:
+      email:
+        type: string
+      is_active:
+        type: boolean
+      person_id:
+        type: string
+    required:
+    - person_id
+    type: object
+  server.updateCompanyRequest:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  server.updateCounterRequest:
+    properties:
+      code:
+        type: string
+      is_active:
+        type: boolean
+      name:
+        type: string
+    required:
+    - code
+    type: object
+  server.updateDepartmentRequest:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+      specialty_concept_id:
+        type: string
+    required:
+    - name
+    type: object
+  server.updateMerchantRequest:
+    properties:
+      bpjs_ppk_code:
+        type: string
+      is_active:
+        type: boolean
+      kemkes_facility_code:
+        type: string
+      name:
+        type: string
+      timezone:
+        type: string
+    required:
+    - name
+    - timezone
+    type: object
+  server.updatePhysicianRequest:
+    properties:
+      is_active:
+        type: boolean
+      sip_number:
+        type: string
+      specialty_concept_id:
+        type: string
+      str_number:
+        type: string
+    type: object
+  server.updatePhysicianScheduleRequest:
+    properties:
+      day_of_week:
+        maximum: 6
+        minimum: 0
+        type: integer
+      effective_from:
+        type: string
+      effective_to:
+        type: string
+      end_time:
+        type: string
+      is_active:
+        type: boolean
+      slot_quota:
+        type: integer
+      start_time:
+        type: string
+    required:
+    - effective_from
+    - end_time
+    - start_time
+    type: object
+  server.updateQueueStatusRequest:
+    properties:
+      status:
+        type: string
+    required:
+    - status
+    type: object
+  server.updateRateComponentRequest:
+    properties:
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  server.updateRoleRequest:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  server.updateServiceItemRequest:
+    properties:
+      is_active:
+        type: boolean
+      item_type:
+        type: string
+      name:
+        type: string
+    required:
+    - item_type
+    - name
+    type: object
+  server.updateServiceRateRequest:
+    properties:
+      amount:
+        type: string
+      effective_to:
+        type: string
+    required:
+    - amount
+    type: object
+info:
+  contact: {}
+  description: 'Backend service for the NEXQIA Healthcare Operating Platform. All
+    routes are under /api/v1. Response envelope: {"data": ..., "meta": {...}}.'
+  title: NEXQIA API
+  version: "1.0"
+paths:
+  /admissions:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Department UUID
+        in: query
+        name: department_id
+        required: true
+        type: string
+      - description: Admission status
+        in: query
+        name: status
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List admissions for a work queue
+      tags:
+      - admission
+    post:
+      consumes:
+      - application/json
+      description: Registers the kunjungan (admission, outpatient) and its first queue
+        row (pendaftaran) atomically.
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Admission data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createAdmissionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Check in a patient (FO)
+      tags:
+      - admission
+  /admissions/{id}:
+    get:
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get an admission by id
+      tags:
+      - admission
+    patch:
+      consumes:
+      - application/json
+      description: Generic column writes (physician reassignment, status, discharge_at)
+        — "discharge" as a business action belongs to a future CPPT/resume sub-project.
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Admission data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateAdmissionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update an admission
+      tags:
+      - admission
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Rate-limited by username/IP. Returns totp_required if the account
+        has TOTP enabled and no/invalid code was given, or requires_merchant_selection
+        if the user belongs to more than one merchant.
+      parameters:
+      - description: Company UUID
+        in: header
+        name: X-Company-ID
+        required: true
+        type: string
+      - description: Credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.loginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      summary: Log in
+      tags:
+      - auth
+  /auth/logout:
+    post:
+      description: Revokes the session tied to the refresh_token cookie. Does not
+        require a valid access token.
+      parameters:
+      - description: Company UUID
+        in: header
+        name: X-Company-ID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      summary: Log out
+      tags:
+      - auth
+  /auth/mfa/confirm:
+    post:
+      consumes:
+      - application/json
+      description: Verifies the code against the secret from MFASetupHandler, persists
+        it, and returns one-time recovery codes. Requires password re-confirmation.
+      parameters:
+      - description: Secret, code, password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.mfaConfirmRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Confirm TOTP enrollment
+      tags:
+      - mfa
+  /auth/mfa/disable:
+    post:
+      consumes:
+      - application/json
+      description: Requires password re-confirmation and revokes every other active
+        session for the user as defense-in-depth.
+      parameters:
+      - description: Password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.mfaDisableRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Disable TOTP
+      tags:
+      - mfa
+  /auth/mfa/setup:
+    post:
+      description: Writes nothing to the database — the secret only persists once
+        MFAConfirmHandler verifies it.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Generate a new TOTP secret
+      tags:
+      - mfa
+  /auth/pin/disable:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.pinDisableRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Clear the caller's app-lock PIN
+      tags:
+      - pin
+  /auth/pin/set:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Password + new 6-digit PIN
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.pinSetRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Set or replace the caller's app-lock PIN
+      tags:
+      - pin
+  /auth/pin/verify:
+    post:
+      consumes:
+      - application/json
+      description: Tracks consecutive failures in Redis; force-revokes the device
+        session after APP_LOCK_MAX_PIN_ATTEMPTS.
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: 6-digit PIN
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.pinVerifyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: too_many_attempts, requires re-login
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Verify PIN to unlock the device
+      tags:
+      - pin
+  /auth/refresh:
+    post:
+      description: Reads the refresh_token HttpOnly cookie, rotates it, and reissues
+        an access token.
+      parameters:
+      - description: Company UUID
+        in: header
+        name: X-Company-ID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      summary: Rotate access token
+      tags:
+      - auth
+  /auth/select-merchant:
+    post:
+      consumes:
+      - application/json
+      description: Used after LoginHandler returns requires_merchant_selection — consumes
+        the short-lived selection_token instead of re-sending a password.
+      parameters:
+      - description: Company UUID
+        in: header
+        name: X-Company-ID
+        required: true
+        type: string
+      - description: Selection token + merchant_id
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.selectMerchantRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      summary: Complete login by selecting a merchant
+      tags:
+      - auth
+  /auth/sessions:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List active sessions/devices
+      tags:
+      - auth
+  /auth/sessions/{id}:
+    delete:
+      parameters:
+      - description: Session (refresh token) UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Revoke one of the caller's own sessions/devices
+      tags:
+      - auth
+  /auth/switch-merchant:
+    post:
+      consumes:
+      - application/json
+      description: Reissues the access token bound to a different merchant the user
+        is assigned to, without re-authenticating.
+      parameters:
+      - description: Target merchant_id
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.switchMerchantRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Switch active merchant
+      tags:
+      - auth
+  /companies:
+    get:
+      description: Lists across ALL tenants — platform-admin only.
+      parameters:
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List companies
+      tags:
+      - tenancy
+    post:
+      consumes:
+      - application/json
+      description: Platform-admin scope — company creation spans tenants by nature.
+      parameters:
+      - description: Company data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createCompanyRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a company
+      tags:
+      - tenancy
+  /companies/{id}:
+    delete:
+      parameters:
+      - description: Company UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a company
+      tags:
+      - tenancy
+    get:
+      parameters:
+      - description: Company UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a company by id
+      tags:
+      - tenancy
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Company UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Company data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateCompanyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a company
+      tags:
+      - tenancy
+  /companies/{id}/merchants:
+    get:
+      parameters:
+      - description: Company UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List merchants under a company
+      tags:
+      - tenancy
+  /counters:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Counter data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createCounterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a counter (loket)
+      tags:
+      - counter
+  /counters/{id}:
+    get:
+      parameters:
+      - description: Counter UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a counter by id
+      tags:
+      - counter
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Counter UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Counter data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateCounterRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a counter
+      tags:
+      - counter
+  /counters/{id}/call-next:
+    post:
+      description: Pulls the oldest 'waiting' queue row matching this counter's queue_type/department
+        scope, marks it 'called', and logs the transition.
+      parameters:
+      - description: Counter UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: no waiting queue for this counter
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Call the next waiting queue entry at this counter
+      tags:
+      - counter
+  /departments:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Department data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createDepartmentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a department (poli)
+      tags:
+      - department
+  /departments/{id}:
+    delete:
+      parameters:
+      - description: Department UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a department
+      tags:
+      - department
+    get:
+      parameters:
+      - description: Department UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a department by id
+      tags:
+      - department
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Department UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Department data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateDepartmentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a department
+      tags:
+      - department
+  /display/queue:
+    get:
+      description: Read-only, no real-time push in v1.
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Filter by department UUID
+        in: query
+        name: department_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Poll-based queue board for a merchant
+      tags:
+      - display
+  /display/schedule:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Department UUID
+        in: query
+        name: department_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Today's active physician schedules for a department
+      tags:
+      - display
+  /healthz:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      summary: Liveness check
+      tags:
+      - system
+  /merchant-roles/{id}:
+    delete:
+      parameters:
+      - description: Assignment UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Remove a user-merchant role assignment
+      tags:
+      - rbac
+  /merchants:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createMerchantRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a merchant
+      tags:
+      - tenancy
+  /merchants/{id}:
+    delete:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a merchant
+      tags:
+      - tenancy
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a merchant by id
+      tags:
+      - tenancy
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Merchant data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateMerchantRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a merchant
+      tags:
+      - tenancy
+  /merchants/{id}/counters:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List counters under a merchant
+      tags:
+      - counter
+  /merchants/{id}/departments:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List departments under a merchant
+      tags:
+      - department
+  /merchants/{id}/physician-schedules:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List physician schedules under a merchant
+      tags:
+      - physician_schedule
+  /merchants/{id}/physicians:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List physicians under a merchant
+      tags:
+      - physician
+  /merchants/{id}/rate-components:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List rate components under a merchant
+      tags:
+      - tariff
+  /merchants/{id}/service-items:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List service items under a merchant
+      tags:
+      - tariff
+  /permissions:
+    get:
+      description: Not company-scoped, no elevated permission required (read-only).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the global permission catalog
+      tags:
+      - rbac
+  /persons:
+    get:
+      description: NIK is omitted from list responses (PII minimization).
+      parameters:
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List persons in the caller's company
+      tags:
+      - person
+    post:
+      consumes:
+      - application/json
+      description: NIK is encrypted at rest via pgcrypto — echoed back plaintext in
+        this response only.
+      parameters:
+      - description: Person data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.personRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a person
+      tags:
+      - person
+  /persons/{id}:
+    delete:
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a person
+      tags:
+      - person
+    get:
+      description: Decrypts and returns NIK — only this endpoint does, list/search
+        omit it.
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a person by id
+      tags:
+      - person
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Person data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.personRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a person
+      tags:
+      - person
+  /persons/search:
+    get:
+      description: NIK is omitted from search responses (PII minimization).
+      parameters:
+      - description: Name search query
+        in: query
+        name: q
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Search persons by name
+      tags:
+      - person
+  /physician-schedules:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Schedule data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createPhysicianScheduleRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a physician schedule (weekly recurring template)
+      tags:
+      - physician_schedule
+  /physician-schedules/{id}:
+    delete:
+      parameters:
+      - description: Physician schedule UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a physician schedule
+      tags:
+      - physician_schedule
+    get:
+      parameters:
+      - description: Physician schedule UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a physician schedule by id
+      tags:
+      - physician_schedule
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Physician schedule UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Schedule data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updatePhysicianScheduleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a physician schedule
+      tags:
+      - physician_schedule
+  /physicians:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Physician data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createPhysicianRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a physician
+      tags:
+      - physician
+  /physicians/{id}:
+    delete:
+      parameters:
+      - description: Physician UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a physician
+      tags:
+      - physician
+    get:
+      parameters:
+      - description: Physician UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a physician by id
+      tags:
+      - physician
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Physician UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Physician data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updatePhysicianRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a physician
+      tags:
+      - physician
+  /ping:
+    get:
+      description: Returns the company_id/merchant_id bound to the current session
+        — sanity check after login/switch-merchant.
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Check active tenant context
+      tags:
+      - system
+  /queue:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Queue stage (pendaftaran/perawat/dokter)
+        in: query
+        name: queue_type
+        required: true
+        type: string
+      - description: Queue status
+        in: query
+        name: status
+        required: true
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List queue entries for a work stage
+      tags:
+      - queue
+  /queue/{id}:
+    get:
+      parameters:
+      - description: Queue UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a queue entry by id
+      tags:
+      - queue
+    patch:
+      consumes:
+      - application/json
+      description: Drives the queue state machine. On a transition into "done" it
+        also creates the next pipeline stage's queue row — response includes both
+        queue and next_stage_queue.
+      parameters:
+      - description: Queue UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New status
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateQueueStatusRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: invalid status transition
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Advance a queue entry's status
+      tags:
+      - queue
+  /rate-components:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Rate component data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createRateComponentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a rate component
+      tags:
+      - tariff
+  /rate-components/{id}:
+    delete:
+      parameters:
+      - description: Rate component UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a rate component
+      tags:
+      - tariff
+    get:
+      parameters:
+      - description: Rate component UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a rate component by id
+      tags:
+      - tariff
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Rate component UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Rate component data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateRateComponentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a rate component
+      tags:
+      - tariff
+  /roles:
+    get:
+      parameters:
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List roles in the caller's company
+      tags:
+      - rbac
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Role data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a role
+      tags:
+      - rbac
+  /roles/{id}:
+    delete:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a role
+      tags:
+      - rbac
+    get:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a role by id
+      tags:
+      - rbac
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Role UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Role data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: role not found (or is a system role)
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a role
+      tags:
+      - rbac
+  /roles/{id}/permissions:
+    get:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List permissions granted to a role
+      tags:
+      - rbac
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Role UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Permission id
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.addRolePermissionRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Grant a permission to a role
+      tags:
+      - rbac
+  /roles/{id}/permissions/{permission_id}:
+    delete:
+      parameters:
+      - description: Role UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Permission UUID
+        in: path
+        name: permission_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Revoke a permission from a role
+      tags:
+      - rbac
+  /service-items:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Service item data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createServiceItemRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a service item
+      tags:
+      - tariff
+  /service-items/{id}:
+    delete:
+      parameters:
+      - description: Service item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a service item
+      tags:
+      - tariff
+    get:
+      parameters:
+      - description: Service item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a service item by id
+      tags:
+      - tariff
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Service item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Service item data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateServiceItemRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a service item
+      tags:
+      - tariff
+  /service-items/{id}/rates:
+    get:
+      parameters:
+      - description: Service item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List rates for a service item
+      tags:
+      - tariff
+  /service-rates:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Service rate data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createServiceRateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a service rate
+      tags:
+      - tariff
+  /service-rates/{id}:
+    delete:
+      parameters:
+      - description: Service rate UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a service rate
+      tags:
+      - tariff
+    get:
+      parameters:
+      - description: Service rate UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a service rate by id
+      tags:
+      - tariff
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Service rate UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Service rate data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateServiceRateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a service rate
+      tags:
+      - tariff
+  /users:
+    get:
+      parameters:
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List app users in the caller's company
+      tags:
+      - rbac
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: App user data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createAppUserRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create an app user
+      tags:
+      - rbac
+  /users/{id}:
+    delete:
+      parameters:
+      - description: App user UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete an app user
+      tags:
+      - rbac
+    get:
+      description: Self-access allowed without PermUserManage.
+      parameters:
+      - description: App user UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get an app user by id
+      tags:
+      - rbac
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: App user UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: App user data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateAppUserRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update an app user
+      tags:
+      - rbac
+  /users/{id}/merchant-roles:
+    get:
+      description: Self-access allowed without PermUserManage.
+      parameters:
+      - description: App user UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List a user's role assignments across merchants
+      tags:
+      - rbac
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: App user UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Merchant id + role id
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.addUserMerchantRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Assign a role to a user within a merchant
+      tags:
+      - rbac
+  /users/{id}/password:
+    put:
+      consumes:
+      - application/json
+      description: Self-change allowed, or an admin (PermUserManage) resetting someone
+        else's.
+      parameters:
+      - description: App user UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateAppUserPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Change an app user's password
+      tags:
+      - rbac
+  /users/{id}/roles:
+    get:
+      description: Self-access allowed without PermUserManage.
+      parameters:
+      - description: App user UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Merchant UUID
+        in: query
+        name: merchant_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List a user's roles within a specific merchant
+      tags:
+      - rbac
+  /version:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      summary: Build version
+      tags:
+      - system
+swagger: "2.0"
