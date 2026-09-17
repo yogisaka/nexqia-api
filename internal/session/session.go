@@ -96,7 +96,7 @@ func Issue(ctx context.Context, q *sqlcgen.Queries, cfg Config, p IssueParams) (
 	if err != nil {
 		return Issued{}, err
 	}
-	accessToken, err := auth.GenerateToken(cfg.JWTSecret, p.UserID.String(), p.CompanyID.String(), p.MerchantID.String(), p.Username, cfg.AccessTokenTTL)
+	accessToken, err := auth.GenerateToken(cfg.JWTSecret, p.UserID.String(), p.CompanyID.String(), p.MerchantID.String(), p.Username, p.DeviceID, cfg.AccessTokenTTL)
 	if err != nil {
 		return Issued{}, err
 	}
@@ -171,7 +171,7 @@ func SwitchMerchant(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToke
 	if err != nil {
 		return "", err
 	}
-	return auth.GenerateToken(cfg.JWTSecret, userID.String(), row.CompanyID.String(), newMerchantID.String(), user.Username, cfg.AccessTokenTTL)
+	return auth.GenerateToken(cfg.JWTSecret, userID.String(), row.CompanyID.String(), newMerchantID.String(), user.Username, row.DeviceID, cfg.AccessTokenTTL)
 }
 
 // MerchantOption is one entry of the merchant list shown at login when a user
@@ -218,6 +218,23 @@ func MerchantIsAssigned(ctx context.Context, tx pgx.Tx, userID, merchantID pgtyp
 		}
 	}
 	return false, nil
+}
+
+// RevokeAllExceptCurrent revokes every active refresh-token row for userID except
+// the one identified by currentRawToken (if any) — used by the MFA-disable flow
+// (docs/design/specs/2026-09-15-totp-2fa-design.md §8) to cut off other
+// devices/sessions as a defense-in-depth measure without logging the caller out
+// of the request they're currently making. An empty currentRawToken (no refresh
+// cookie on this request) revokes every active session.
+func RevokeAllExceptCurrent(ctx context.Context, q *sqlcgen.Queries, userID pgtype.UUID, currentRawToken string) error {
+	var exceptHash string
+	if currentRawToken != "" {
+		exceptHash = hashToken(currentRawToken)
+	}
+	return q.RevokeAllRefreshTokensForUserExcept(ctx, sqlcgen.RevokeAllRefreshTokensForUserExceptParams{
+		UserID:    userID,
+		TokenHash: exceptHash,
+	})
 }
 
 // RevokeByRawToken logs out the device that presented rawToken — used by LogoutHandler.

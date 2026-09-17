@@ -2,6 +2,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/netip"
@@ -11,10 +12,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/config"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
+	"github.com/yogisaka/nexqia-api/internal/mfa"
 	"github.com/yogisaka/nexqia-api/internal/ratelimit"
 	"github.com/yogisaka/nexqia-api/internal/session"
 )
@@ -22,9 +25,14 @@ import (
 const (
 	authUserIDContextKey    = "auth_user_id"
 	authCompanyIDContextKey = "auth_company_id"
+	authDeviceIDContextKey  = "auth_device_id"
 
 	refreshCookieName = "refresh_token"
-	refreshCookiePath = "/auth"
+	// Must match the actual mounted prefix of every route that reads this cookie
+	// (/api/v1/auth/refresh, /switch-merchant, /logout) — browsers only send a
+	// cookie back when the request path matches or is nested under its Set-Cookie
+	// Path, so a narrower value here silently breaks refresh/switch/logout.
+	refreshCookiePath = "/api/v1/auth"
 
 	merchantSelectionTokenTTL = 5 * time.Minute
 )
@@ -66,6 +74,7 @@ func AuthMiddleware(secret string) gin.HandlerFunc {
 		}
 		c.Set(authUserIDContextKey, userID)
 		c.Set(authCompanyIDContextKey, companyID)
+		c.Set(authDeviceIDContextKey, claims.DeviceID)
 		c.Next()
 	}
 }
@@ -78,6 +87,12 @@ func AuthUserID(c *gin.Context) pgtype.UUID {
 // AuthCompanyID returns the authenticated caller's company id. Only valid on routes behind AuthMiddleware.
 func AuthCompanyID(c *gin.Context) pgtype.UUID {
 	return c.MustGet(authCompanyIDContextKey).(pgtype.UUID)
+}
+
+// AuthDeviceID returns the authenticated caller's device id (spec §4). Only valid
+// on routes behind AuthMiddleware.
+func AuthDeviceID(c *gin.Context) string {
+	return c.MustGet(authDeviceIDContextKey).(string)
 }
 
 // RequirePermission checks the caller holds `code` in the merchant from X-Merchant-ID
@@ -184,36 +199,124 @@ func checkDeviceLimit(c *gin.Context, q *sqlcgen.Queries, userID, companyID pgty
 	return true
 }
 
+// mfaNudgeFlagKey is the core.feature_flag key a merchant can enable to nudge
+// (never block) users who haven't enrolled TOTP yet (spec §3) — soft, informational
+// only, distinct from mfaEnabled below which is per-user and does block.
+const mfaNudgeFlagKey = "auth.require_totp"
+
+// checkMFANudge reports whether merchantID has the soft-nudge flag on. LoginHandler
+// and SelectMerchantHandler run under CompanyOnlyMiddleware, where
+// app.current_merchant_id is deliberately left unset (see tenant.go) — this sets it
+// locally (third set_config arg true = transaction-scoped) for this one lookup only,
+// the same pattern TenantMiddleware uses for merchant-scoped routes.
+func checkMFANudge(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) bool {
+	ctx := c.Request.Context()
+	if _, err := TxFromContext(c).Exec(ctx, "SELECT set_config('app.current_merchant_id', $1, true)", merchantID.String()); err != nil {
+		return false
+	}
+	flag, err := q.GetFeatureFlag(ctx, sqlcgen.GetFeatureFlagParams{MerchantID: merchantID, FlagKey: mfaNudgeFlagKey})
+	if err != nil {
+		return false
+	}
+	var enabled bool
+	if err := json.Unmarshal(flag.FlagValue, &enabled); err != nil {
+		return false
+	}
+	return enabled
+}
+
+// verifyLoginTOTP checks code against the user's decrypted TOTP secret, falling
+// back to their one-time recovery codes (spec §4, §7). A matched recovery code is
+// marked used so it can't be replayed.
+func verifyLoginTOTP(c *gin.Context, q *sqlcgen.Queries, enc *mfa.Encryptor, hasher *auth.PasswordHasher, userID pgtype.UUID, encryptedSecret, code string) bool {
+	ctx := c.Request.Context()
+	secret, err := enc.Decrypt(encryptedSecret)
+	if err == nil && mfa.Validate(code, secret) {
+		return true
+	}
+	recoveryCodes, err := q.ListActiveMFARecoveryCodes(ctx, userID)
+	if err != nil {
+		return false
+	}
+	for _, rc := range recoveryCodes {
+		ok, err := hasher.Verify(ctx, rc.CodeHash, code)
+		if err == nil && ok {
+			_ = q.MarkMFARecoveryCodeUsed(ctx, rc.ID)
+			return true
+		}
+	}
+	return false
+}
+
+// getPinLockFlagAtLogin is getPinLockFlag for the login path, which runs under
+// CompanyOnlyMiddleware where app.current_merchant_id isn't set yet (the active
+// merchant is only just now being chosen) — same set_config workaround as
+// checkMFANudge above, for the same reason.
+func getPinLockFlagAtLogin(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) pinLockFlag {
+	if _, err := TxFromContext(c).Exec(c.Request.Context(), "SELECT set_config('app.current_merchant_id', $1, true)", merchantID.String()); err != nil {
+		return pinLockFlag{}
+	}
+	return getPinLockFlag(c, q, merchantID)
+}
+
 // issueLoginSession finishes login once the active merchant is known (either the
 // user's only merchant, or one chosen via SelectMerchantHandler) — shared by both.
-func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, userID, companyID, merchantID pgtype.UUID, username string) {
+// user is the caller's already-loaded core.app_user row: mfa_secret drives the
+// mfa_nudge signal, pin_hash drives pin_nudge and — if the merchant's auth.pin_lock
+// flag is enabled and the user already has a PIN — seeds the applock Redis key so
+// the very first request after login isn't spuriously treated as locked.
+func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, redisClient *redis.Client, user sqlcgen.CoreAppUser, merchantID pgtype.UUID) {
 	deviceID, deviceLabel, ip, err := deviceHeaders(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if !checkDeviceLimit(c, q, userID, companyID) {
+	if !checkDeviceLimit(c, q, user.ID, user.CompanyID) {
 		return
 	}
 	issued, err := session.Issue(c.Request.Context(), q, sessionConfig(cfg), session.IssueParams{
-		UserID: userID, CompanyID: companyID, MerchantID: merchantID,
-		Username: username, DeviceID: deviceID, DeviceLabel: deviceLabel, IP: ip,
+		UserID: user.ID, CompanyID: user.CompanyID, MerchantID: merchantID,
+		Username: user.Username, DeviceID: deviceID, DeviceLabel: deviceLabel, IP: ip,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue session"})
 		return
 	}
 	setRefreshCookie(c, cfg, issued.RefreshToken, issued.RefreshExpiresAt)
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	data := gin.H{
 		"token":       issued.AccessToken,
 		"expires_in":  int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
 		"merchant_id": merchantID.String(),
-	}, "meta": gin.H{}})
+		"username":    user.Username,
+	}
+	// Topbar identity (spec: current user needs a real name/photo, not the
+	// company name) — person_id is nullable (system/API-only accounts have none).
+	if user.PersonID.Valid {
+		if person, err := q.GetPersonByID(c.Request.Context(), user.PersonID); err == nil {
+			data["full_name"] = person.FullName
+			if person.PhotoUrl.Valid {
+				data["photo_url"] = person.PhotoUrl.String
+			}
+		}
+	}
+	if !user.MfaSecret.Valid && checkMFANudge(c, q, merchantID) {
+		data["mfa_nudge"] = true
+	}
+	if pinFlag := getPinLockFlagAtLogin(c, q, merchantID); pinFlag.Enabled {
+		if user.PinHash.Valid {
+			idleMinutes := pinLockIdleMinutes(cfg, pinFlag)
+			_ = redisClient.Set(c.Request.Context(), applockKey(user.ID, deviceID), "1", time.Duration(idleMinutes)*time.Minute).Err()
+		} else {
+			data["pin_nudge"] = true
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }
 
 type loginRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
+	TotpCode string `json:"totp_code"`
 }
 
 // LoginHandler authenticates against core.app_user scoped to the X-Company-ID header
@@ -223,7 +326,18 @@ type loginRequest struct {
 // access token plus an HttpOnly refresh-token cookie (spec §3a, §6).
 // On successful login with a legacy bcrypt hash, transparently rehashes to Argon2id
 // (see docs/design/specs/2026-09-15-ratelimit-hardening-design.md §11).
-func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, hasher *auth.PasswordHasher) gin.HandlerFunc {
+// LoginHandler godoc
+// @Summary Log in
+// @Description Rate-limited by username/IP. Returns totp_required if the account has TOTP enabled and no/invalid code was given, or requires_merchant_selection if the user belongs to more than one merchant.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param X-Company-ID header string true "Company UUID"
+// @Param request body loginRequest true "Credentials"
+// @Success 200 {object} apiResponse
+// @Failure 401 {object} apiErrorResponse
+// @Router /auth/login [post]
+func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, hasher *auth.PasswordHasher, enc *mfa.Encryptor, redisClient *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		companyID, ok := parseUUID(c.GetHeader("X-Company-ID"))
 		if !ok {
@@ -276,6 +390,20 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 		}
 		_ = q.TouchAppUserLastLogin(c.Request.Context(), user.ID)
 
+		// TOTP check happens once here, before merchant enumeration — password is
+		// already confirmed above, so it's safe to reveal 2FA-enrollment status now
+		// (spec §4). SelectMerchantHandler needs no separate check as a result.
+		if user.MfaSecret.Valid {
+			if req.TotpCode == "" {
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"totp_required": true}, "meta": gin.H{}})
+				return
+			}
+			if !verifyLoginTOTP(c, q, enc, hasher, user.ID, user.MfaSecret.String, req.TotpCode) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
+				return
+			}
+		}
+
 		merchants, err := session.ListUserMerchants(c.Request.Context(), TxFromContext(c), user.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -299,7 +427,7 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 			return
 		}
 
-		issueLoginSession(c, cfg, q, user.ID, user.CompanyID, merchants[0].ID, user.Username)
+		issueLoginSession(c, cfg, q, redisClient, user, merchants[0].ID)
 	}
 }
 
@@ -313,7 +441,18 @@ type selectMerchantRequest struct {
 // asking for the password again, validates the chosen merchant against
 // core.user_merchant_role, then issues the session exactly like a single-merchant
 // login would. Must run behind CompanyOnlyMiddleware (same X-Company-ID as login).
-func SelectMerchantHandler(secret string, cfg config.Config) gin.HandlerFunc {
+// SelectMerchantHandler godoc
+// @Summary Complete login by selecting a merchant
+// @Description Used after LoginHandler returns requires_merchant_selection — consumes the short-lived selection_token instead of re-sending a password.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param X-Company-ID header string true "Company UUID"
+// @Param request body selectMerchantRequest true "Selection token + merchant_id"
+// @Success 200 {object} apiResponse
+// @Failure 401 {object} apiErrorResponse
+// @Router /auth/select-merchant [post]
+func SelectMerchantHandler(secret string, cfg config.Config, redisClient *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req selectMerchantRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -354,13 +493,22 @@ func SelectMerchantHandler(secret string, cfg config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		issueLoginSession(c, cfg, q, user.ID, user.CompanyID, merchantID, user.Username)
+		issueLoginSession(c, cfg, q, redisClient, user, merchantID)
 	}
 }
 
 // RefreshHandler rotates the refresh-token cookie and reissues an access token
 // (spec §7). Must run behind CompanyOnlyMiddleware (needs X-Company-ID for
 // core.refresh_token's RLS; the active merchant is read back off the stored row).
+// RefreshHandler godoc
+// @Summary Rotate access token
+// @Description Reads the refresh_token HttpOnly cookie, rotates it, and reissues an access token.
+// @Tags auth
+// @Produce json
+// @Param X-Company-ID header string true "Company UUID"
+// @Success 200 {object} apiResponse
+// @Failure 401 {object} apiErrorResponse
+// @Router /auth/refresh [post]
 func RefreshHandler(cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rawToken, err := c.Cookie(refreshCookieName)
@@ -396,6 +544,14 @@ func RefreshHandler(cfg config.Config) gin.HandlerFunc {
 // does not require a valid access token (a user with an expired access token but
 // still-valid refresh token must still be able to log out) — runs behind
 // CompanyOnlyMiddleware only.
+// LogoutHandler godoc
+// @Summary Log out
+// @Description Revokes the session tied to the refresh_token cookie. Does not require a valid access token.
+// @Tags auth
+// @Produce json
+// @Param X-Company-ID header string true "Company UUID"
+// @Success 200 {object} apiResponse
+// @Router /auth/logout [post]
 func LogoutHandler(cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rawToken, err := c.Cookie(refreshCookieName)
@@ -415,6 +571,17 @@ type switchMerchantRequest struct {
 // SwitchMerchantHandler lets an already-logged-in user change their session's
 // active merchant without re-entering a password (spec §3a) — only the access
 // token is reissued, the refresh token is not rotated. Runs behind AuthMiddleware.
+// SwitchMerchantHandler godoc
+// @Summary Switch active merchant
+// @Description Reissues the access token bound to a different merchant the user is assigned to, without re-authenticating.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body switchMerchantRequest true "Target merchant_id"
+// @Success 200 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Router /auth/switch-merchant [post]
 func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req switchMerchantRequest
@@ -463,6 +630,13 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 
 // ListSessionsHandler lists the caller's active devices (spec §6, for a
 // "log out this device" UI). Runs behind AuthMiddleware.
+// ListSessionsHandler godoc
+// @Summary List active sessions/devices
+// @Tags auth
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} apiResponse
+// @Router /auth/sessions [get]
 func ListSessionsHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	sessions, err := q.ListActiveRefreshTokens(c.Request.Context(), AuthUserID(c))
@@ -476,6 +650,15 @@ func ListSessionsHandler(c *gin.Context) {
 // RevokeSessionHandler revokes one of the caller's own devices by refresh-token
 // row id — ownership-checked so a user can only revoke their own sessions.
 // Runs behind AuthMiddleware.
+// RevokeSessionHandler godoc
+// @Summary Revoke one of the caller's own sessions/devices
+// @Tags auth
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Session (refresh token) UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /auth/sessions/{id} [delete]
 func RevokeSessionHandler(c *gin.Context) {
 	sessionID, ok := parseUUID(c.Param("id"))
 	if !ok {

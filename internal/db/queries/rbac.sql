@@ -35,6 +35,26 @@ UPDATE core.app_user
 SET last_login_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: SetAppUserMFASecret :exec
+UPDATE core.app_user
+SET mfa_secret = $2, updated_by = $3
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: ClearAppUserMFASecret :exec
+UPDATE core.app_user
+SET mfa_secret = NULL, updated_by = $2
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: SetAppUserPin :exec
+UPDATE core.app_user
+SET pin_hash = $2, updated_by = $3
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: ClearAppUserPin :exec
+UPDATE core.app_user
+SET pin_hash = NULL, updated_by = $2
+WHERE id = $1 AND deleted_at IS NULL;
+
 -- name: SoftDeleteAppUser :exec
 UPDATE core.app_user
 SET deleted_at = now(), deleted_by = $2

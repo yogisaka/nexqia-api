@@ -25,18 +25,23 @@ type Claims struct {
 	CompanyID  string `json:"cid"`
 	MerchantID string `json:"mid"`
 	Username   string `json:"username"`
+	DeviceID   string `json:"did"`
 	Purpose    string `json:"purpose"`
 	jwt.RegisteredClaims
 }
 
 // GenerateToken issues a short-lived access token. ttl comes from
 // config.Config.AccessTokenTTLMinutes — see docs/design/specs/2026-09-15-session-refresh-token-design.md.
-func GenerateToken(secret, userID, companyID, merchantID, username string, ttl time.Duration) (string, error) {
+// deviceID is the same value stored on core.refresh_token.device_id (stable across
+// refresh rotations) — embedded here so protected routes can identify a device
+// without a new header, see docs/design/specs/2026-09-15-pin-unlock-design.md §4.
+func GenerateToken(secret, userID, companyID, merchantID, username, deviceID string, ttl time.Duration) (string, error) {
 	claims := Claims{
 		UserID:     userID,
 		CompanyID:  companyID,
 		MerchantID: merchantID,
 		Username:   username,
+		DeviceID:   deviceID,
 		Purpose:    accessTokenPurpose,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),

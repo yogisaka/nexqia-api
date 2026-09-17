@@ -12,6 +12,9 @@ SELECT * FROM core.company WHERE id = $1 AND deleted_at IS NULL;
 -- name: GetCompanyByCode :one
 SELECT * FROM core.company WHERE code = $1 AND deleted_at IS NULL;
 
+-- name: LookupCompanyByCode :one
+SELECT id, name FROM core.lookup_company_by_code($1);
+
 -- name: ListCompanies :many
 SELECT * FROM core.company
 WHERE deleted_at IS NULL

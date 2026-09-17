@@ -2,6 +2,7 @@
 package server
 
 import (
+	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -27,4 +28,17 @@ func paginationParams(c *gin.Context) (limit, offset int32) {
 		offset = int32(v)
 	}
 	return limit, offset
+}
+
+// requireMerchantHeader parses X-Merchant-ID and writes a 400 response if
+// missing/invalid. Use for list/display endpoints that need the merchant id
+// itself (not just a permission check) but have no :id path param to source it
+// from — mirrors the header-parsing RequirePermission already does internally.
+func requireMerchantHeader(c *gin.Context) (pgtype.UUID, bool) {
+	merchantID, ok := parseUUID(c.GetHeader("X-Merchant-ID"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid X-Merchant-ID"})
+		return pgtype.UUID{}, false
+	}
+	return merchantID, true
 }

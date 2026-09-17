@@ -35,3 +35,10 @@ WHERE user_id = $1 AND device_id = $2 AND revoked_at IS NULL;
 
 -- name: UpdateRefreshTokenMerchant :exec
 UPDATE core.refresh_token SET merchant_id = $2 WHERE id = $1;
+
+-- name: RevokeAllRefreshTokensForUserExcept :exec
+-- token_hash is always a non-empty sha256 hex digest, so passing "" for the except
+-- parameter (no current session, e.g. no refresh cookie on this request) revokes
+-- every active row — see internal/session.RevokeAllExceptCurrent.
+UPDATE core.refresh_token SET revoked_at = now()
+WHERE user_id = $1 AND revoked_at IS NULL AND token_hash != $2;

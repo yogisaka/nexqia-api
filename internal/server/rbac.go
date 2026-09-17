@@ -50,6 +50,16 @@ type createAppUserRequest struct {
 	Password  string `json:"password" binding:"required,min=8"`
 }
 
+// CreateAppUserHandler godoc
+// @Summary Create an app user
+// @Tags rbac
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body createAppUserRequest true "App user data"
+// @Success 201 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Router /users [post]
 func CreateAppUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createAppUserRequest
@@ -101,6 +111,15 @@ func CreateAppUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 	}
 }
 
+// ListAppUsersHandler godoc
+// @Summary List app users in the caller's company
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param limit query int false "Page size"
+// @Param offset query int false "Page offset"
+// @Success 200 {object} apiResponse
+// @Router /users [get]
 func ListAppUsersHandler(c *gin.Context) {
 	if !RequirePermission(c, PermUserManage) {
 		return
@@ -120,6 +139,16 @@ func ListAppUsersHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": users, "meta": gin.H{"limit": limit, "offset": offset}})
 }
 
+// GetAppUserHandler godoc
+// @Summary Get an app user by id
+// @Description Self-access allowed without PermUserManage.
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "App user UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id} [get]
 func GetAppUserHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -153,6 +182,17 @@ type updateAppUserRequest struct {
 	IsActive bool   `json:"is_active"`
 }
 
+// UpdateAppUserHandler godoc
+// @Summary Update an app user
+// @Tags rbac
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "App user UUID"
+// @Param request body updateAppUserRequest true "App user data"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id} [patch]
 func UpdateAppUserHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -208,6 +248,18 @@ type updateAppUserPasswordRequest struct {
 
 // UpdateAppUserPasswordHandler allows a user to change their own password, or an
 // admin (PermUserManage) to reset someone else's — never a bare client-supplied actor.
+// UpdateAppUserPasswordHandler godoc
+// @Summary Change an app user's password
+// @Description Self-change allowed, or an admin (PermUserManage) resetting someone else's.
+// @Tags rbac
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "App user UUID"
+// @Param request body updateAppUserPasswordRequest true "New password"
+// @Success 204 "No Content"
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id}/password [put]
 func UpdateAppUserPasswordHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, ok := parseUUID(c.Param("id"))
@@ -256,6 +308,15 @@ func UpdateAppUserPasswordHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 	}
 }
 
+// DeleteAppUserHandler godoc
+// @Summary Soft-delete an app user
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "App user UUID"
+// @Success 204 "No Content"
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id} [delete]
 func DeleteAppUserHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -288,6 +349,14 @@ func DeleteAppUserHandler(c *gin.Context) {
 
 // ListPermissionsHandler exposes the global permission catalog — not company-scoped,
 // no elevated permission required (read-only, needed by any admin UI to build role forms).
+// ListPermissionsHandler godoc
+// @Summary List the global permission catalog
+// @Description Not company-scoped, no elevated permission required (read-only).
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} apiResponse
+// @Router /permissions [get]
 func ListPermissionsHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	permissions, err := q.ListPermissions(c.Request.Context())
@@ -304,6 +373,16 @@ type createRoleRequest struct {
 	Description string `json:"description"`
 }
 
+// CreateRoleHandler godoc
+// @Summary Create a role
+// @Tags rbac
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body createRoleRequest true "Role data"
+// @Success 201 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Router /roles [post]
 func CreateRoleHandler(c *gin.Context) {
 	var req createRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -337,6 +416,15 @@ func CreateRoleHandler(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"data": role, "meta": gin.H{}})
 }
 
+// ListRolesHandler godoc
+// @Summary List roles in the caller's company
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param limit query int false "Page size"
+// @Param offset query int false "Page offset"
+// @Success 200 {object} apiResponse
+// @Router /roles [get]
 func ListRolesHandler(c *gin.Context) {
 	if !RequirePermission(c, PermRoleManage) {
 		return
@@ -353,6 +441,15 @@ func ListRolesHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": roles, "meta": gin.H{"limit": limit, "offset": offset}})
 }
 
+// GetRoleHandler godoc
+// @Summary Get a role by id
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Role UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /roles/{id} [get]
 func GetRoleHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -384,6 +481,17 @@ type updateRoleRequest struct {
 	Description string `json:"description"`
 }
 
+// UpdateRoleHandler godoc
+// @Summary Update a role
+// @Tags rbac
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Role UUID"
+// @Param request body updateRoleRequest true "Role data"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse "role not found (or is a system role)"
+// @Router /roles/{id} [patch]
 func UpdateRoleHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -427,6 +535,15 @@ func UpdateRoleHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": role, "meta": gin.H{}})
 }
 
+// DeleteRoleHandler godoc
+// @Summary Soft-delete a role
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Role UUID"
+// @Success 204 "No Content"
+// @Failure 404 {object} apiErrorResponse
+// @Router /roles/{id} [delete]
 func DeleteRoleHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -457,6 +574,15 @@ func DeleteRoleHandler(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// ListRolePermissionsHandler godoc
+// @Summary List permissions granted to a role
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Role UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /roles/{id}/permissions [get]
 func ListRolePermissionsHandler(c *gin.Context) {
 	roleID, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -492,6 +618,17 @@ type addRolePermissionRequest struct {
 	PermissionID string `json:"permission_id" binding:"required"`
 }
 
+// AddRolePermissionHandler godoc
+// @Summary Grant a permission to a role
+// @Tags rbac
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Role UUID"
+// @Param request body addRolePermissionRequest true "Permission id"
+// @Success 204 "No Content"
+// @Failure 404 {object} apiErrorResponse
+// @Router /roles/{id}/permissions [post]
 func AddRolePermissionHandler(c *gin.Context) {
 	roleID, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -534,6 +671,16 @@ func AddRolePermissionHandler(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// RemoveRolePermissionHandler godoc
+// @Summary Revoke a permission from a role
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Role UUID"
+// @Param permission_id path string true "Permission UUID"
+// @Success 204 "No Content"
+// @Failure 404 {object} apiErrorResponse
+// @Router /roles/{id}/permissions/{permission_id} [delete]
 func RemoveRolePermissionHandler(c *gin.Context) {
 	roleID, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -576,6 +723,18 @@ type addUserMerchantRoleRequest struct {
 	RoleID     string `json:"role_id" binding:"required"`
 }
 
+// AddUserMerchantRoleHandler godoc
+// @Summary Assign a role to a user within a merchant
+// @Tags rbac
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "App user UUID"
+// @Param request body addUserMerchantRoleRequest true "Merchant id + role id"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id}/merchant-roles [post]
 func AddUserMerchantRoleHandler(c *gin.Context) {
 	userID, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -654,6 +813,16 @@ func AddUserMerchantRoleHandler(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"data": assignment, "meta": gin.H{}})
 }
 
+// ListUserMerchantRolesHandler godoc
+// @Summary List a user's role assignments across merchants
+// @Description Self-access allowed without PermUserManage.
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "App user UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id}/merchant-roles [get]
 func ListUserMerchantRolesHandler(c *gin.Context) {
 	userID, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -685,6 +854,17 @@ func ListUserMerchantRolesHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": assignments, "meta": gin.H{}})
 }
 
+// ListUserRolesInMerchantHandler godoc
+// @Summary List a user's roles within a specific merchant
+// @Description Self-access allowed without PermUserManage.
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "App user UUID"
+// @Param merchant_id query string true "Merchant UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id}/roles [get]
 func ListUserRolesInMerchantHandler(c *gin.Context) {
 	userID, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -723,6 +903,15 @@ func ListUserRolesInMerchantHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": roles, "meta": gin.H{}})
 }
 
+// RemoveUserMerchantRoleHandler godoc
+// @Summary Remove a user-merchant role assignment
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Assignment UUID"
+// @Success 204 "No Content"
+// @Failure 404 {object} apiErrorResponse
+// @Router /merchant-roles/{id} [delete]
 func RemoveUserMerchantRoleHandler(c *gin.Context) {
 	id, ok := parseUUID(c.Param("id"))
 	if !ok {

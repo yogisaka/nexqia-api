@@ -9,7 +9,7 @@ import (
 const testTokenSecret = "test-secret"
 
 func TestGenerateToken_RoundTrip(t *testing.T) {
-	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", time.Hour)
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -17,13 +17,13 @@ func TestGenerateToken_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error parsing: %v", err)
 	}
-	if claims.UserID != "user-1" || claims.CompanyID != "company-1" || claims.MerchantID != "merchant-1" || claims.Username != "alice" {
+	if claims.UserID != "user-1" || claims.CompanyID != "company-1" || claims.MerchantID != "merchant-1" || claims.Username != "alice" || claims.DeviceID != "device-1" {
 		t.Errorf("unexpected claims: %+v", claims)
 	}
 }
 
 func TestParseToken_RejectsExpired(t *testing.T) {
-	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", -time.Minute)
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", "device-1", -time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestParseToken_RejectsExpired(t *testing.T) {
 }
 
 func TestParseToken_RejectsWrongSecret(t *testing.T) {
-	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", time.Hour)
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestMerchantSelectionToken_RoundTrip(t *testing.T) {
 func TestParseMerchantSelectionToken_RejectsNormalAccessToken(t *testing.T) {
 	// A regular access token has no "purpose" claim — ParseMerchantSelectionToken
 	// must reject it even though the signature is valid (see token.go's purpose check).
-	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", time.Hour)
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
