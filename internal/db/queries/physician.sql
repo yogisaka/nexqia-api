@@ -13,9 +13,15 @@ SELECT * FROM core.physician WHERE id = $1 AND deleted_at IS NULL;
 SELECT * FROM core.physician WHERE merchant_id = $1 AND person_id = $2 AND deleted_at IS NULL;
 
 -- name: ListPhysiciansByMerchant :many
-SELECT * FROM core.physician
-WHERE merchant_id = $1 AND deleted_at IS NULL
-ORDER BY created_at
+SELECT p.*,
+       pe.full_name AS person_full_name,
+       pe.photo_url AS person_photo_url,
+       c.display    AS specialty_display
+FROM core.physician p
+JOIN core.person pe ON pe.id = p.person_id
+LEFT JOIN terminology.concept c ON c.id = p.specialty_concept_id
+WHERE p.merchant_id = $1 AND p.deleted_at IS NULL
+ORDER BY pe.full_name
 LIMIT $2 OFFSET $3;
 
 -- name: UpdatePhysician :one

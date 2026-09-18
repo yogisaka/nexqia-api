@@ -22,9 +22,15 @@ func RegisterAdmissionRoutes(rg *gin.RouterGroup) {
 }
 
 type createAdmissionRequest struct {
-	PersonID     string `json:"person_id" binding:"required"`
-	DepartmentID string `json:"department_id" binding:"required"`
-	PhysicianID  string `json:"physician_id"`
+	PersonID       string `json:"person_id" binding:"required"`
+	DepartmentID   string `json:"department_id" binding:"required"`
+	PhysicianID    string `json:"physician_id"`
+	PrimaryPayerID string `json:"primary_payer_id"`
+	Complaint      string `json:"complaint"`
+	ReferralSource string `json:"referral_source"`
+	Note           string `json:"note"`
+	PolicyNumber   string `json:"policy_number"`
+	GuarantorName  string `json:"guarantor_name"`
 }
 
 // CreateAdmissionHandler is FO check-in (spec §4 point 1): registers the
@@ -64,6 +70,15 @@ func CreateAdmissionHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid department_id"})
 		return
 	}
+	var primaryPayerID pgtype.UUID
+	if req.PrimaryPayerID != "" {
+		id, ok := parseUUID(req.PrimaryPayerID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid primary_payer_id"})
+			return
+		}
+		primaryPayerID = id
+	}
 	merchantID, ok := requireMerchantHeader(c)
 	if !ok {
 		return
@@ -93,11 +108,28 @@ func CreateAdmissionHandler(c *gin.Context) {
 	admission, err := q.CreateAdmission(ctx, sqlcgen.CreateAdmissionParams{
 		CompanyID: AuthCompanyID(c), MerchantID: merchantID, VisitNo: visitNo, PersonID: personID,
 		AdmissionType: "outpatient", DepartmentID: departmentID, PhysicianID: optUUID(req.PhysicianID),
+		PrimaryPayerID: primaryPayerID, Complaint: optText(req.Complaint),
+		ReferralSource: optText(req.ReferralSource), Note: optText(req.Note),
 		CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Second write in the request: admission already inserted, so any failure
+	// here must c.Error(err) to make TenantMiddleware roll back the whole tx
+	// rather than commit an admission without its guarantor row.
+	if primaryPayerID.Valid {
+		if _, err := q.CreateAdmissionGuarantor(ctx, sqlcgen.CreateAdmissionGuarantorParams{
+			AdmissionID: admission.ID, PayerID: primaryPayerID,
+			PolicyNumber: optText(req.PolicyNumber), GuarantorName: optText(req.GuarantorName),
+			CreatedBy: AuthUserID(c),
+		}); err != nil {
+			c.Error(err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	queueSeq, err := q.CountTodayQueueByType(ctx, sqlcgen.CountTodayQueueByTypeParams{

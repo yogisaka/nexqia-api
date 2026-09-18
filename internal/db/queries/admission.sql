@@ -3,8 +3,19 @@
 -- docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §2/§3.
 
 -- name: CreateAdmission :one
-INSERT INTO operations.admission (company_id, merchant_id, visit_no, person_id, admission_type, department_id, physician_id, created_by, updated_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+-- Param order: $1 company_id, $2 merchant_id, $3 visit_no, $4 person_id,
+-- $5 admission_type, $6 department_id, $7 physician_id, $8 primary_payer_id,
+-- $9 complaint, $10 referral_source, $11 note, $12 created_by/updated_by.
+INSERT INTO operations.admission (
+    company_id, merchant_id, visit_no, person_id, admission_type, department_id,
+    physician_id, primary_payer_id, complaint, referral_source, note, created_by, updated_by
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+RETURNING *;
+
+-- name: CreateAdmissionGuarantor :one
+INSERT INTO operations.admission_guarantor (admission_id, payer_id, policy_number, guarantor_name, sequence, created_by)
+VALUES ($1, $2, $3, $4, 1, $5)
 RETURNING *;
 
 -- name: GetAdmissionByID :one

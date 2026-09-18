@@ -48,6 +48,12 @@ type Config struct {
 	// existing NIK values undecryptable.
 	NIKEncryptionKey string
 
+	// NIKSearchKey is the HMAC-SHA256 key for core.person.nik_search_hash (env
+	// NIK_SEARCH_KEY, see .env.example) — deliberately separate from
+	// NIK_ENCRYPTION_KEY so the two can be rotated independently; used only for
+	// exact-match search, never stored or logged as plaintext.
+	NIKSearchKey string
+
 	// AppLockDefaultIdleMinutes/AppLockMaxPinAttempts/AppLockAttemptWindowMinutes —
 	// PIN-unlock tunables, see docs/design/specs/2026-09-15-pin-unlock-design.md §10.
 	// AppLockDefaultIdleMinutes is only a fallback: a merchant's own idle_minutes
@@ -89,6 +95,7 @@ func Load() Config {
 
 		MFASecretEncryptionKey: mustGetEnv("MFA_SECRET_ENCRYPTION_KEY"),
 		NIKEncryptionKey:       mustGetEnv("NIK_ENCRYPTION_KEY"),
+		NIKSearchKey:           mustGetEnv("NIK_SEARCH_KEY"),
 
 		AppLockDefaultIdleMinutes:   getEnvInt("APP_LOCK_DEFAULT_IDLE_MINUTES", 5),
 		AppLockMaxPinAttempts:       getEnvInt("APP_LOCK_MAX_PIN_ATTEMPTS", 5),

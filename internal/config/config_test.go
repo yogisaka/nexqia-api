@@ -12,11 +12,15 @@ func TestLoad_UsesEnvOverridesAndDefaults(t *testing.T) {
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
 	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
+	_ = os.Setenv("NIK_SEARCH_KEY", "test-nik-search-key")
+	_ = os.Setenv("NIK_ENCRYPTION_KEY", "test-nik-key")
 	defer func() { _ = os.Unsetenv("DB_HOST") }()
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
 	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_SEARCH_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 
@@ -39,10 +43,14 @@ func TestLoad_ReadsRedisConfig(t *testing.T) {
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
 	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
+	_ = os.Setenv("NIK_SEARCH_KEY", "test-nik-search-key")
+	_ = os.Setenv("NIK_ENCRYPTION_KEY", "test-nik-key")
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
 	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_SEARCH_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 
@@ -74,10 +82,14 @@ func TestLoad_ReadsRateLimitAndHashingConfig(t *testing.T) {
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
 	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
+	_ = os.Setenv("NIK_SEARCH_KEY", "test-nik-search-key")
+	_ = os.Setenv("NIK_ENCRYPTION_KEY", "test-nik-key")
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
 	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_SEARCH_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 
@@ -112,10 +124,14 @@ func TestLoad_ReadsSessionConfig(t *testing.T) {
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
 	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
+	_ = os.Setenv("NIK_SEARCH_KEY", "test-nik-search-key")
+	_ = os.Setenv("NIK_ENCRYPTION_KEY", "test-nik-key")
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
 	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_SEARCH_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 
@@ -141,10 +157,14 @@ func TestLoad_ReadsAppLockConfig(t *testing.T) {
 	_ = os.Setenv("REDIS_PASSWORD", "redispw")
 	_ = os.Setenv("JWT_SECRET", "test-secret")
 	_ = os.Setenv("MFA_SECRET_ENCRYPTION_KEY", "test-mfa-key")
+	_ = os.Setenv("NIK_SEARCH_KEY", "test-nik-search-key")
+	_ = os.Setenv("NIK_ENCRYPTION_KEY", "test-nik-key")
 	defer func() { _ = os.Unsetenv("APP_RUNTIME_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("REDIS_PASSWORD") }()
 	defer func() { _ = os.Unsetenv("JWT_SECRET") }()
 	defer func() { _ = os.Unsetenv("MFA_SECRET_ENCRYPTION_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_SEARCH_KEY") }()
+	defer func() { _ = os.Unsetenv("NIK_ENCRYPTION_KEY") }()
 
 	cfg := Load()
 

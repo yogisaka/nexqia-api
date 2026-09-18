@@ -3,3 +3,4 @@
 /api
 /tmp/
 /internal/db/sqlcgen/
+/cmd/migrate-data/
