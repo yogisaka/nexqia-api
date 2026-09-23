@@ -22,15 +22,21 @@ func RegisterAdmissionRoutes(rg *gin.RouterGroup) {
 }
 
 type createAdmissionRequest struct {
-	PersonID       string `json:"person_id" binding:"required"`
-	DepartmentID   string `json:"department_id" binding:"required"`
-	PhysicianID    string `json:"physician_id"`
-	PrimaryPayerID string `json:"primary_payer_id"`
-	Complaint      string `json:"complaint"`
-	ReferralSource string `json:"referral_source"`
-	Note           string `json:"note"`
-	PolicyNumber   string `json:"policy_number"`
-	GuarantorName  string `json:"guarantor_name"`
+	PersonID          string `json:"person_id" binding:"required"`
+	DepartmentID      string `json:"department_id" binding:"required"`
+	PhysicianID       string `json:"physician_id"`
+	PrimaryPayerID    string `json:"primary_payer_id"`
+	Complaint         string `json:"complaint"`
+	ReferralSource    string `json:"referral_source"`
+	Note              string `json:"note"`
+	PolicyNumber      string `json:"policy_number"`
+	GuarantorName     string `json:"guarantor_name"`
+	DiagnosisText     string `json:"diagnosis_text"`
+	TreatmentBarriers string `json:"treatment_barriers"`
+	SpecialPatientType string `json:"special_patient_type"`
+	NeedsCompanion    bool   `json:"needs_companion"`
+	CompanionName     string `json:"companion_name"`
+	ReferralOrigin    string `json:"referral_origin"`
 }
 
 // CreateAdmissionHandler is FO check-in (spec §4 point 1): registers the

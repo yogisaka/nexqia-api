@@ -22,15 +22,19 @@ func RegisterPatientAllergyRoutes(rg *gin.RouterGroup) {
 }
 
 type patientAllergyRequest struct {
-	AllergyType   string `json:"allergy_type" binding:"required"`
-	SubstanceName string `json:"substance_name" binding:"required"`
-	Reaction      string `json:"reaction"`
-	Severity      string `json:"severity"`
+	AllergyType    string `json:"allergy_type" binding:"required"`
+	SubstanceName  string `json:"substance_name" binding:"required"`
+	Reaction       string `json:"reaction"`
+	Severity       string `json:"severity"`
+	EffectSide     string `json:"effect_side"`
+	EventDate      string `json:"event_date"`
 }
 
 type updatePatientAllergyRequest struct {
-	Reaction string `json:"reaction"`
-	Severity string `json:"severity"`
+	Reaction   string `json:"reaction"`
+	Severity   string `json:"severity"`
+	EffectSide string `json:"effect_side"`
+	EventDate  string `json:"event_date"`
 }
 
 // ListPatientAllergiesHandler godoc
@@ -84,6 +88,13 @@ func CreatePatientAllergyHandler(c *gin.Context) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
+
+	eventDate, err := optDate(req.EventDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid event_date, expected YYYY-MM-DD"})
+		return
+	}
+
 	allergy, err := q.CreatePatientAllergy(c.Request.Context(), sqlcgen.CreatePatientAllergyParams{
 		CompanyID:     AuthCompanyID(c),
 		PersonID:      personID,
@@ -92,6 +103,8 @@ func CreatePatientAllergyHandler(c *gin.Context) {
 		Reaction:      optText(req.Reaction),
 		Severity:      optText(req.Severity),
 		RecordedBy:    AuthUserID(c),
+		EffectSide:    optText(req.EffectSide),
+		EventDate:     eventDate,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -139,8 +152,20 @@ func UpdatePatientAllergyHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	eventDate, err := optDate(req.EventDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid event_date, expected YYYY-MM-DD"})
+		return
+	}
+
 	allergy, err := q.UpdatePatientAllergy(c.Request.Context(), sqlcgen.UpdatePatientAllergyParams{
-		ID: id, Reaction: optText(req.Reaction), Severity: optText(req.Severity), UpdatedBy: AuthUserID(c),
+		ID:         id,
+		Reaction:   optText(req.Reaction),
+		Severity:   optText(req.Severity),
+		UpdatedBy:  AuthUserID(c),
+		EffectSide: optText(req.EffectSide),
+		EventDate:  eventDate,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "allergy not found"})

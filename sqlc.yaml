@@ -8,3 +8,4 @@ sql:
         package: "sqlcgen"
         out: "internal/db/sqlcgen"
         sql_package: "pgx/v5"
+        emit_empty_slices: true

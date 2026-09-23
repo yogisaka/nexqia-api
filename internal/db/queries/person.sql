@@ -74,8 +74,8 @@ SET deleted_at = now(), deleted_by = $2
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: CreatePatientAllergy :one
-INSERT INTO core.patient_allergy (company_id, person_id, allergy_type, substance_name, reaction, severity, recorded_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO core.patient_allergy (company_id, person_id, allergy_type, substance_name, reaction, severity, recorded_by, effect_side, event_date)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetPatientAllergyByID :one
@@ -88,7 +88,7 @@ ORDER BY recorded_at DESC;
 
 -- name: UpdatePatientAllergy :one
 UPDATE core.patient_allergy
-SET reaction = $2, severity = $3, updated_by = $4
+SET reaction = $2, severity = $3, updated_by = $4, effect_side = $5, event_date = $6
 WHERE id = $1
 RETURNING *;
 
