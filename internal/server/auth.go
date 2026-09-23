@@ -307,6 +307,10 @@ func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, re
 		if user.PinHash.Valid {
 			idleMinutes := pinLockIdleMinutes(cfg, pinFlag)
 			_ = redisClient.Set(c.Request.Context(), applockKey(user.ID, deviceID), "1", time.Duration(idleMinutes)*time.Minute).Err()
+			// Lets the frontend mirror the server's idle window with its own
+			// window-activity timer instead of guessing a value — see
+			// nexqia-his src/auth/IdleLock.tsx.
+			data["pin_lock_idle_minutes"] = idleMinutes
 		} else {
 			data["pin_nudge"] = true
 		}
@@ -686,47 +690,4 @@ func RevokeSessionHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
-}
-
-// HeartbeatHandler rotates the refresh token cookie (same logic as RefreshHandler)
-// but does NOT require a valid access token — it only needs the refresh_token cookie
-// and X-Company-ID. Must run behind CompanyOnlyMiddleware only.
-// HeartbeatHandler godoc
-// @Summary Rotate access token (keep-alive)
-// @Description Lightweight token rotation for session keep-alive. Same semantics as /auth/refresh.
-// @Tags auth
-// @Produce json
-// @Param X-Company-ID header string true "Company UUID"
-// @Success 200 {object} apiResponse
-// @Failure 401 {object} apiErrorResponse
-// @Router /auth/heartbeat [post]
-func HeartbeatHandler(cfg config.Config) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		rawToken, err := c.Cookie(refreshCookieName)
-		if err != nil || rawToken == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing refresh token"})
-			return
-		}
-		ip, parseErr := netip.ParseAddr(c.ClientIP())
-		if parseErr != nil {
-			ip = netip.IPv4Unspecified()
-		}
-		q := sqlcgen.New(TxFromContext(c))
-		issued, err := session.Refresh(c.Request.Context(), q, sessionConfig(cfg), rawToken, ip)
-		if err != nil {
-			clearRefreshCookie(c, cfg)
-			switch {
-			case errors.Is(err, session.ErrNoSession), errors.Is(err, session.ErrSessionExpired), errors.Is(err, session.ErrSessionRevoked):
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or revoked, please log in again"})
-			default:
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			}
-			return
-		}
-		setRefreshCookie(c, cfg, issued.RefreshToken, issued.RefreshExpiresAt)
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"token":      issued.AccessToken,
-			"expires_in": int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
-		}, "meta": gin.H{}})
-	}
 }

@@ -54,8 +54,11 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	companyOnly := v1.Group("", CompanyOnlyMiddleware(pool))
 	companyOnly.POST("/auth/login", LoginHandler(cfg.JWTSecret, limiter, cfg, hasher, enc, redisClient))
 	companyOnly.POST("/auth/select-merchant", SelectMerchantHandler(cfg.JWTSecret, cfg, redisClient))
+	// Keep-alive (nexqia-his KeepAlive.tsx) also hits /auth/refresh, not a
+	// separate endpoint — a duplicate /auth/heartbeat existed briefly but was
+	// functionally identical and let a caller accidentally bypass the
+	// frontend's single-flight refresh dedup (see apiClient.ts refreshOnce).
 	companyOnly.POST("/auth/refresh", RefreshHandler(cfg))
-	companyOnly.POST("/auth/heartbeat", HeartbeatHandler(cfg))
 	companyOnly.POST("/auth/logout", LogoutHandler(cfg))
 
 	tenant := v1.Group("", TenantMiddleware(pool))
