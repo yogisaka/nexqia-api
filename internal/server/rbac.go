@@ -39,6 +39,7 @@ func RegisterRBACRoutes(rg *gin.RouterGroup, hasher *auth.PasswordHasher) {
 	rg.POST("/users/:id/merchant-roles", AddUserMerchantRoleHandler)
 	rg.GET("/users/:id/merchant-roles", ListUserMerchantRolesHandler)
 	rg.GET("/users/:id/roles", ListUserRolesInMerchantHandler)
+	rg.GET("/users/:id/permissions", ListUserPermissionsHandler)
 	rg.DELETE("/merchant-roles/:id", RemoveUserMerchantRoleHandler)
 }
 
@@ -945,4 +946,53 @@ func RemoveUserMerchantRoleHandler(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// ListUserPermissionsHandler godoc
+// @Summary List a user's effective permission codes within a specific merchant (union across roles)
+// @Description Self-access allowed without PermUserManage. For permission-driven frontend UI (nav/dashboard gating) — a regular user has no PermRoleManage, so ListRolePermissions alone can't answer "what can I do".
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "App user UUID"
+// @Param merchant_id query string true "Merchant UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id}/permissions [get]
+func ListUserPermissionsHandler(c *gin.Context) {
+	userID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	merchantID, ok := parseUUID(c.Query("merchant_id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "merchant_id query param required"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	targetUser, err := q.GetAppUserByID(c.Request.Context(), userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if targetUser.CompanyID != AuthCompanyID(c) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	if userID != AuthUserID(c) && !RequirePermission(c, PermUserManage) {
+		return
+	}
+	codes, err := q.ListPermissionCodesByUserMerchant(c.Request.Context(), sqlcgen.ListPermissionCodesByUserMerchantParams{
+		UserID: userID, MerchantID: merchantID,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": codes, "meta": gin.H{}})
 }

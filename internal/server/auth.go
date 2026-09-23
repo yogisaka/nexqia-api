@@ -287,6 +287,7 @@ func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, re
 		"token":       issued.AccessToken,
 		"expires_in":  int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
 		"merchant_id": merchantID.String(),
+		"user_id":     user.ID.String(),
 		"username":    user.Username,
 	}
 	// Topbar identity (spec: current user needs a real name/photo, not the
@@ -624,6 +625,7 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			"token":       token,
 			"expires_in":  int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
 			"merchant_id": merchantID.String(),
+			"user_id":     userID.String(),
 		}, "meta": gin.H{}})
 	}
 }

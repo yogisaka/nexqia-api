@@ -148,3 +148,17 @@ SELECT EXISTS (
     JOIN core.permission p ON p.id = rp.permission_id
     WHERE umr.user_id = $1 AND umr.merchant_id = $2 AND p.code = $3
 ) AS has_permission;
+
+-- name: ListPermissionCodesByUserMerchant :many
+-- Effective permission codes for a user at a merchant (union across all
+-- their roles there) -- self-access endpoint for permission-driven frontend
+-- UI (nav/dashboard gating), since ListRolePermissions itself requires
+-- PermRoleManage and a regular user can't read their own role's permission
+-- list through it.
+SELECT DISTINCT p.code
+FROM core.user_merchant_role umr
+JOIN core.role r ON r.id = umr.role_id AND r.deleted_at IS NULL
+JOIN core.role_permission rp ON rp.role_id = r.id
+JOIN core.permission p ON p.id = rp.permission_id
+WHERE umr.user_id = $1 AND umr.merchant_id = $2
+ORDER BY p.code;
