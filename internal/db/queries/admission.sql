@@ -31,6 +31,16 @@ LIMIT $4 OFFSET $5;
 SELECT count(*) FROM operations.admission
 WHERE merchant_id = $1 AND department_id = $2 AND admission_at::date = current_date;
 
+-- name: SummarizeTodayAdmissionsByPayerType :many
+-- "Jenis Pasien" dashboard widget. NULL primary_payer_id (walk-in, belum
+-- pilih penjamin) dihitung sebagai 'self_pay' -- default yang sama artinya
+-- (bayar sendiri), bukan kategori terpisah.
+SELECT COALESCE(p.payer_type, 'self_pay') AS payer_type, count(*) AS total
+FROM operations.admission a
+LEFT JOIN core.payer p ON p.id = a.primary_payer_id
+WHERE a.merchant_id = $1 AND a.admission_at::date = current_date AND a.deleted_at IS NULL
+GROUP BY COALESCE(p.payer_type, 'self_pay');
+
 -- name: UpdateAdmission :one
 UPDATE operations.admission
 SET physician_id = $2, status = $3, discharge_at = $4, updated_by = $5

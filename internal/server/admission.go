@@ -17,8 +17,34 @@ import (
 func RegisterAdmissionRoutes(rg *gin.RouterGroup) {
 	rg.POST("/admissions", CreateAdmissionHandler)
 	rg.GET("/admissions", ListAdmissionsHandler)
+	rg.GET("/admissions/payer-summary", PayerSummaryHandler)
 	rg.GET("/admissions/:id", GetAdmissionHandler)
 	rg.PATCH("/admissions/:id", UpdateAdmissionHandler)
+}
+
+// PayerSummaryHandler godoc
+// @Summary Today's admission count grouped by payer type (dashboard "Jenis Pasien" widget)
+// @Tags admission
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Success 200 {object} apiResponse
+// @Router /admissions/payer-summary [get]
+func PayerSummaryHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermVisitManage, merchantID) {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	summary, err := q.SummarizeTodayAdmissionsByPayerType(c.Request.Context(), merchantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": summary, "meta": gin.H{}})
 }
 
 type createAdmissionRequest struct {
