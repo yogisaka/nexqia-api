@@ -25,8 +25,9 @@ func RegisterTerminologyRoutes(rg *gin.RouterGroup) {
 // @Produce json
 // @Security BearerAuth
 // @Param system query string true "Code system name, e.g. Kemendagri Region"
-// @Param q query string true "Code/display search query"
+// @Param q query string false "Code/display search query, required unless full=true"
 // @Param limit query int false "Page size"
+// @Param full query bool false "Bypass paging, dump the whole code_system ordered by code (client-side bulk preload)"
 // @Success 200 {object} apiResponse
 // @Router /terminology/search [get]
 func SearchTerminologyHandler(c *gin.Context) {
@@ -38,13 +39,24 @@ func SearchTerminologyHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing query param system"})
 		return
 	}
+	q := sqlcgen.New(TxFromContext(c))
+
+	if c.Query("full") == "true" {
+		concepts, err := q.ListConceptsBySystem(c.Request.Context(), system)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": concepts})
+		return
+	}
+
 	query := c.Query("q")
 	if query == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing query param q"})
 		return
 	}
 	limit, _ := paginationParams(c)
-	q := sqlcgen.New(TxFromContext(c))
 	concepts, err := q.SearchConceptsBySystem(c.Request.Context(), sqlcgen.SearchConceptsBySystemParams{
 		Name: system, Column2: pgtype.Text{String: query, Valid: true}, Limit: limit,
 	})
