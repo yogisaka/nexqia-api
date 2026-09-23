@@ -240,6 +240,7 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 // @Param queue_type query string true "Queue stage (pendaftaran/perawat/dokter)"
 // @Param date query string false "Filter by check-in date, YYYY-MM-DD (omit for all dates)"
 // @Param status query string false "Comma-separated statuses (e.g. waiting,called,in_progress); omit for all"
+// @Param search query string false "Filter by patient name or medical record no (partial match)"
 // @Param limit query int false "Page size"
 // @Param offset query int false "Page offset"
 // @Success 200 {object} apiResponse
@@ -269,7 +270,8 @@ func ListQueueBoardHandler(c *gin.Context) {
 	limit, offset := paginationParams(c)
 	q := sqlcgen.New(TxFromContext(c))
 	board, err := q.ListQueueBoard(c.Request.Context(), sqlcgen.ListQueueBoardParams{
-		MerchantID: merchantID, QueueType: queueType, Date: date, Statuses: statuses, Limit: limit, Offset: offset,
+		MerchantID: merchantID, QueueType: queueType, Date: date, Statuses: statuses,
+		Search: optText(c.Query("search")), Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

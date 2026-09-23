@@ -8,5 +8,10 @@ WHERE merchant_id = $1
   AND queue_type = $2
   AND (sqlc.narg('date')::date IS NULL OR created_at::date = sqlc.narg('date')::date)
   AND (sqlc.narg('statuses')::text[] IS NULL OR status = ANY(sqlc.narg('statuses')::text[]))
+  AND (
+    sqlc.narg('search')::text IS NULL
+    OR person_full_name ILIKE '%' || sqlc.narg('search')::text || '%'
+    OR person_medical_record_no ILIKE '%' || sqlc.narg('search')::text || '%'
+  )
 ORDER BY created_at
 LIMIT $3 OFFSET $4;
