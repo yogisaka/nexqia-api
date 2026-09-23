@@ -159,10 +159,23 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		q := sqlcgen.New(tx)
+		mrn := req.MedicalRecordNo
+		if mrn == "" {
+			// Merchant is optional here — person creation isn't merchant-bound
+			// (core.person is company-level). When present it's used to resolve
+			// a per-merchant MRN format override; absent just falls back to the
+			// company default.
+			merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
+			mrn, err = generateMedicalRecordNo(c.Request.Context(), q, AuthCompanyID(c), merchantID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
 		person, err := q.CreatePerson(c.Request.Context(), sqlcgen.CreatePersonParams{
 			CompanyID:          AuthCompanyID(c),
 			Nik:                nik,
-			MedicalRecordNo:    optText(req.MedicalRecordNo),
+			MedicalRecordNo:    optText(mrn),
 			FullName:           req.FullName,
 			BirthDate:          birthDate,
 			BirthPlace:         optText(req.BirthPlace),
