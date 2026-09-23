@@ -113,7 +113,8 @@ INSERT INTO core.role (id, company_id, name, description, is_system) VALUES
     ('00000000-0000-0000-0005-000000000001', '00000000-0000-0000-0000-000000000001', 'Admin', 'Administrator sistem', true),
     ('00000000-0000-0000-0005-000000000002', '00000000-0000-0000-0000-000000000001', 'Dokter', 'Dokter praktik', true),
     ('00000000-0000-0000-0005-000000000003', '00000000-0000-0000-0000-000000000001', 'Kasir', 'Kasir/billing', true),
-    ('00000000-0000-0000-0005-000000000004', '00000000-0000-0000-0000-000000000001', 'Perawat', 'Perawat', true)
+    ('00000000-0000-0000-0005-000000000004', '00000000-0000-0000-0000-000000000001', 'Perawat', 'Perawat', true),
+    ('00000000-0000-0000-0005-000000000005', '00000000-0000-0000-0000-000000000001', 'FO Rajal', 'Front Office Rawat Jalan - pendaftaran, check-in, dan antrian', true)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO core.role_permission (role_id, permission_id)
@@ -139,6 +140,11 @@ UNION ALL
 SELECT '00000000-0000-0000-0005-000000000004'::uuid, p FROM unnest(ARRAY[
     '00000000-0000-0000-0004-000000000004','00000000-0000-0000-0004-000000000011'
 ]::uuid[]) AS p
+UNION ALL
+SELECT '00000000-0000-0000-0005-000000000005'::uuid, p FROM unnest(ARRAY[
+    '00000000-0000-0000-0004-000000000017','00000000-0000-0000-0004-000000000023','00000000-0000-0000-0004-000000000009',
+    '00000000-0000-0000-0004-000000000021'
+]::uuid[]) AS p
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO core.app_user (id, company_id, person_id, username, email, password_hash) VALUES
@@ -162,7 +168,9 @@ INSERT INTO core.user_merchant_role (id, user_id, merchant_id, role_id) VALUES
     ('00000000-0000-0000-0008-000000000009', '00000000-0000-0000-0007-000000000001', '00000000-0000-0000-0001-000000000001', '00000000-0000-0000-0005-000000000004'),
     ('00000000-0000-0000-0008-000000000010', '00000000-0000-0000-0007-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0005-000000000001'),
     ('00000000-0000-0000-0008-000000000011', '00000000-0000-0000-0007-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0005-000000000003'),
-    ('00000000-0000-0000-0008-000000000012', '00000000-0000-0000-0007-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0005-000000000004')
+    ('00000000-0000-0000-0008-000000000012', '00000000-0000-0000-0007-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0005-000000000004'),
+    -- FO Rajal: role baru, assign ke andi.wijaya di merchant pusat buat testing role-switcher
+    ('00000000-0000-0000-0008-000000000013', '00000000-0000-0000-0007-000000000001', '00000000-0000-0000-0001-000000000001', '00000000-0000-0000-0005-000000000005')
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================
@@ -321,6 +329,81 @@ INSERT INTO operations.physician_schedule
     ('00000000-0000-0000-0030-000000000006', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 5, '08:00', '12:00', 20, '2026-01-01', NULL),
     ('00000000-0000-0000-0030-000000000007', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0009-000000000003', '00000000-0000-0000-000a-000000000005', 6, '08:00', '12:00', 20, '2026-01-01', NULL)
 ON CONFLICT (id) DO NOTHING;
+
+-- dr. Andi Wijaya (physician 0009-...0001, = app_user andi.wijaya) di RS Sehat
+-- Sentosa Pusat, department Umum. Semua 7 hari, jam penuh 00:00-23:59, 1 tahun
+-- dari kapan seed ini dijalankan — sengaja lebar biar dashboard/jadwal-dokter
+-- selalu ada data pas ditest, bukan jadwal produksi realistis.
+INSERT INTO operations.physician_schedule
+    (id, company_id, merchant_id, physician_id, department_id, day_of_week, start_time, end_time, slot_quota, effective_from, effective_to)
+SELECT
+    ('00000000-0000-0000-0031-00000000000' || dow)::uuid,
+    '00000000-0000-0000-0000-000000000001',
+    '00000000-0000-0000-0001-000000000001',
+    '00000000-0000-0000-0009-000000000001',
+    '01a0b2ce-36e0-7a26-88c2-82fb4265335c',
+    dow,
+    '00:00',
+    '23:59',
+    50,
+    current_date,
+    current_date + interval '1 year'
+FROM generate_series(0, 6) AS dow
+ON CONFLICT (id) DO NOTHING;
+
+-- 8 demo admission + queue entries "today" (current_date, evergreen — not a
+-- fixed past date) at RS Sehat Sentosa Pusat / Umum, so the FO Rajal
+-- dashboard (KPI, antrian, jenis pasien donut, statistik kunjungan,
+-- notifikasi) has something to show right after a fresh seed run instead of
+-- an all-empty-state screen. Payer mix (4 BPJS / 2 asuransi / 2 umum) and
+-- status mix (2 done/in_progress/called/waiting each) spread across the day
+-- (08:00-15:00) so the hourly chart isn't a flat line. Fixed ids (0032-.../
+-- 0033-...) for idempotency — timestamps recompute to "today" every run.
+DO $$
+DECLARE
+  v_company uuid := '00000000-0000-0000-0000-000000000001';
+  v_merchant uuid := '00000000-0000-0000-0001-000000000001';
+  v_dept uuid := '01a0b2ce-36e0-7a26-88c2-82fb4265335c';
+  v_physician uuid := '00000000-0000-0000-0009-000000000001';
+  v_bpjs uuid := '00000000-0000-0000-0013-000000000001';
+  v_pru uuid := '00000000-0000-0000-0013-000000000002';
+  v_umum uuid := '00000000-0000-0000-0013-000000000003';
+  rows record;
+BEGIN
+  FOR rows IN
+    SELECT * FROM (VALUES
+      -- (seq, person_id, payer_id, status, queue_no, hour_offset)
+      (1, '00000000-0000-0000-0006-000000000008'::uuid, v_bpjs, 'done',       'A001', 8),
+      (2, '00000000-0000-0000-0006-000000000009'::uuid, v_bpjs, 'done',       'A002', 8),
+      (3, '00000000-0000-0000-0006-000000000010'::uuid, v_bpjs, 'in_progress','A003', 9),
+      (4, '00000000-0000-0000-0006-000000000011'::uuid, v_umum, 'in_progress','A004', 10),
+      (5, '00000000-0000-0000-0006-000000000012'::uuid, v_pru,  'called',     'A005', 12),
+      (6, '00000000-0000-0000-0006-000000000013'::uuid, v_bpjs, 'called',     'A006', 12),
+      (7, '00000000-0000-0000-0006-000000000014'::uuid, v_pru,  'waiting',    'A007', 14),
+      (8, '00000000-0000-0000-0006-000000000015'::uuid, v_umum, 'waiting',    'A008', 15)
+    ) AS t(seq, person_id, payer_id, status, queue_no, hour_offset)
+  LOOP
+    DECLARE
+      v_admission_id uuid := ('00000000-0000-0000-0032-00000000000' || rows.seq)::uuid;
+      v_queue_id uuid := ('00000000-0000-0000-0033-00000000000' || rows.seq)::uuid;
+      v_created timestamptz := current_date + (rows.hour_offset || ' hours')::interval;
+    BEGIN
+      INSERT INTO operations.admission
+        (id, company_id, merchant_id, visit_no, person_id, admission_type, department_id, physician_id, primary_payer_id, admission_at, created_at, created_by, updated_by)
+      VALUES
+        (v_admission_id, v_company, v_merchant, 'UMU' || to_char(current_date, 'YYYYMMDD') || '-' || rows.queue_no, rows.person_id, 'outpatient', v_dept, v_physician, rows.payer_id, v_created, v_created, NULL, NULL)
+      ON CONFLICT (id) DO NOTHING;
+
+      INSERT INTO operations.queue
+        (id, company_id, merchant_id, queue_type, department_id, person_id, admission_id, queue_number, status, called_at, created_at)
+      VALUES
+        (v_queue_id, v_company, v_merchant, 'pendaftaran', v_dept, rows.person_id, v_admission_id, rows.queue_no, rows.status,
+         CASE WHEN rows.status IN ('called','in_progress','done') THEN v_created + interval '5 minutes' ELSE NULL END,
+         v_created)
+      ON CONFLICT (id) DO NOTHING;
+    END;
+  END LOOP;
+END $$;
 
 INSERT INTO operations.counter (id, company_id, merchant_id, queue_type, department_id, code, name) VALUES
     ('00000000-0000-0000-0031-000000000001', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0001-000000000002', 'pendaftaran', NULL, 'LOKET-1', 'Loket Pendaftaran 1')
