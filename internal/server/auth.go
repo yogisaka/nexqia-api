@@ -248,11 +248,13 @@ func verifyLoginTOTP(c *gin.Context, q *sqlcgen.Queries, enc *mfa.Encryptor, has
 	return false
 }
 
-// getPinLockFlagAtLogin is getPinLockFlag for the login path, which runs under
-// CompanyOnlyMiddleware where app.current_merchant_id isn't set yet (the active
-// merchant is only just now being chosen) — same set_config workaround as
-// checkMFANudge above, for the same reason.
-func getPinLockFlagAtLogin(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) pinLockFlag {
+// getPinLockFlagForMerchant is getPinLockFlag for callers where merchantID isn't
+// necessarily the one TenantMiddleware already set app.current_merchant_id to —
+// login/select-merchant (still under CompanyOnlyMiddleware, active merchant is
+// only just now being chosen) and switch-merchant (TenantMiddleware set it to the
+// OLD merchant from X-Merchant-ID, not the new target). Same set_config
+// workaround as checkMFANudge above, for the same reason.
+func getPinLockFlagForMerchant(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) pinLockFlag {
 	if _, err := TxFromContext(c).Exec(c.Request.Context(), "SELECT set_config('app.current_merchant_id', $1, true)", merchantID.String()); err != nil {
 		return pinLockFlag{}
 	}
@@ -303,7 +305,7 @@ func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, re
 	if !user.MfaSecret.Valid && checkMFANudge(c, q, merchantID) {
 		data["mfa_nudge"] = true
 	}
-	if pinFlag := getPinLockFlagAtLogin(c, q, merchantID); pinFlag.Enabled {
+	if pinFlag := getPinLockFlagForMerchant(c, q, merchantID); pinFlag.Enabled {
 		if user.PinHash.Valid {
 			idleMinutes := pinLockIdleMinutes(cfg, pinFlag)
 			_ = redisClient.Set(c.Request.Context(), applockKey(user.ID, deviceID), "1", time.Duration(idleMinutes)*time.Minute).Err()
@@ -625,12 +627,21 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			}
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		data := gin.H{
 			"token":       token,
 			"expires_in":  int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
 			"merchant_id": merchantID.String(),
 			"user_id":     userID.String(),
-		}, "meta": gin.H{}})
+		}
+		// Mirrors issueLoginSession's pin_lock_idle_minutes (§ getPinLockFlagForMerchant) —
+		// without this the frontend kept whatever idle window the PREVIOUS merchant had,
+		// wrong whenever the new merchant's auth.pin_lock config differs.
+		if pinFlag := getPinLockFlagForMerchant(c, q, merchantID); pinFlag.Enabled {
+			if user, err := q.GetAppUserByID(c.Request.Context(), userID); err == nil && user.PinHash.Valid {
+				data["pin_lock_idle_minutes"] = pinLockIdleMinutes(cfg, pinFlag)
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 	}
 }
 
