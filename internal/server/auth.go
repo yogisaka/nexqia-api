@@ -40,10 +40,11 @@ const (
 // Permission codes checked via RequirePermission — must exist in core.permission
 // (seeded/migrated, see docs/07-core-ddl.md §2) and be granted through core.role_permission.
 const (
-	PermCompanyManage  = "core.company.manage"
-	PermMerchantManage = "core.merchant.manage"
-	PermUserManage     = "core.user.manage"
-	PermRoleManage     = "core.role.manage"
+	PermCompanyManage    = "core.company.manage"
+	PermCompanyManageOwn = "core.company.manage.own"
+	PermMerchantManage   = "core.merchant.manage"
+	PermUserManage       = "core.user.manage"
+	PermRoleManage       = "core.role.manage"
 )
 
 // AuthMiddleware validates the Bearer JWT issued by LoginHandler and binds the
@@ -129,6 +130,30 @@ func RequirePermissionForMerchant(c *gin.Context, code string, merchantID pgtype
 	}
 	if !has {
 		c.JSON(http.StatusForbidden, gin.H{"error": "missing permission: " + code})
+		return false
+	}
+	return true
+}
+
+// RequireCompanyLevelPermission checks the caller holds ANY of `codes` — via a
+// company-wide core.user_company_role grant, OR a core.user_merchant_role grant
+// at ANY merchant of their company (regression path for existing merchant-scoped
+// role holders, e.g. seeded Admin — see docs/design/specs/
+// 2026-09-23-saas-registration-owner-bootstrap-design.md §3 poin 4).
+// Use this instead of RequirePermission for routes registered under the
+// companyOnlyAuthed group (no X-Merchant-ID header, no app.current_merchant_id).
+// On failure it writes the response and returns false — callers must `return` immediately.
+func RequireCompanyLevelPermission(c *gin.Context, codes ...string) bool {
+	q := sqlcgen.New(TxFromContext(c))
+	has, err := q.UserHasCompanyLevelPermission(c.Request.Context(), sqlcgen.UserHasCompanyLevelPermissionParams{
+		UserID: AuthUserID(c), CompanyID: AuthCompanyID(c), Codes: codes,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if !has {
+		c.JSON(http.StatusForbidden, gin.H{"error": "missing permission"})
 		return false
 	}
 	return true
