@@ -33,8 +33,10 @@ func testConfig() config.Config {
 	return config.Config{
 		JWTSecret:                    testJWTSecret,
 		RateLimitLoginMaxAttempts:    5,
-		RateLimitLoginWindowSeconds:  900,
-		RateLimitAPITokensPerMinute:  100,
+		RateLimitLoginWindowSeconds:     900,
+		RateLimitRegisterMaxAttempts:    5,
+		RateLimitRegisterWindowSeconds:  900,
+		RateLimitAPITokensPerMinute:     100,
 		RateLimitAPIBurst:            20,
 		Argon2MemoryKiB:              19456,
 		Argon2Iterations:             2,
