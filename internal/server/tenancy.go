@@ -12,7 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/yogisaka/nexqia-api/internal/config"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
+	"github.com/yogisaka/nexqia-api/internal/session"
 )
 
 var companyCodeFormat = regexp.MustCompile(`^[A-Z0-9]{6}$`)
@@ -52,12 +54,12 @@ func RegisterTenancyRoutes(rg *gin.RouterGroup) {
 // X-Merchant-ID needed), not the merchant-required `locked` group, so a user
 // with zero merchants (a freshly-registered Owner) can still reach them. See
 // §3 for why TenantMiddleware can't be used here.
-func RegisterCompanyLevelRoutes(rg *gin.RouterGroup) {
+func RegisterCompanyLevelRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	rg.GET("/companies/:id", GetCompanyHandler)
 	rg.PATCH("/companies/:id", UpdateCompanyHandler)
 	rg.DELETE("/companies/:id", DeleteCompanyHandler)
 
-	rg.POST("/merchants", CreateMerchantHandler)
+	rg.POST("/merchants", CreateMerchantHandler(cfg))
 	rg.GET("/companies/:id/merchants", ListMerchantsHandler)
 	rg.GET("/merchants/:id", GetMerchantHandler)
 	rg.PATCH("/merchants/:id", UpdateMerchantHandler)
@@ -263,65 +265,87 @@ type createMerchantRequest struct {
 // @Success 201 {object} apiResponse
 // @Failure 403 {object} apiErrorResponse
 // @Router /merchants [post]
-func CreateMerchantHandler(c *gin.Context) {
-	var req createMerchantRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	companyID, ok := parseUUID(req.CompanyID)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid company_id"})
-		return
-	}
-	if companyID != AuthCompanyID(c) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "cannot create merchant outside your own company"})
-		return
-	}
-	if !RequireCompanyLevelPermission(c, PermMerchantManage) {
-		return
-	}
-	q := sqlcgen.New(TxFromContext(c))
-	var merchant sqlcgen.CoreMerchant
-	for attempt := 0; ; attempt++ {
-		code, err := generateCode()
-		if err != nil {
+func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req createMerchantRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		companyID, ok := parseUUID(req.CompanyID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid company_id"})
+			return
+		}
+		if companyID != AuthCompanyID(c) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "cannot create merchant outside your own company"})
+			return
+		}
+		if !RequireCompanyLevelPermission(c, PermMerchantManage) {
+			return
+		}
+		q := sqlcgen.New(TxFromContext(c))
+		var merchant sqlcgen.CoreMerchant
+		for attempt := 0; ; attempt++ {
+			code, err := generateCode()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			merchant, err = q.CreateMerchant(c.Request.Context(), sqlcgen.CreateMerchantParams{
+				CompanyID:          companyID,
+				Code:               code,
+				Name:               req.Name,
+				KemkesFacilityCode: pgtype.Text{String: req.KemkesFacilityCode, Valid: req.KemkesFacilityCode != ""},
+				BpjsPpkCode:        pgtype.Text{String: req.BpjsPpkCode, Valid: req.BpjsPpkCode != ""},
+				Timezone:           req.Timezone,
+				CreatedBy:          AuthUserID(c),
+			})
+			if err == nil {
+				break
+			}
+			if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
+				continue
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		merchant, err = q.CreateMerchant(c.Request.Context(), sqlcgen.CreateMerchantParams{
-			CompanyID:          companyID,
-			Code:               code,
-			Name:               req.Name,
-			KemkesFacilityCode: pgtype.Text{String: req.KemkesFacilityCode, Valid: req.KemkesFacilityCode != ""},
-			BpjsPpkCode:        pgtype.Text{String: req.BpjsPpkCode, Valid: req.BpjsPpkCode != ""},
-			Timezone:           req.Timezone,
-			CreatedBy:          AuthUserID(c),
-		})
-		if err == nil {
-			break
-		}
-		if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
-			continue
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// §3 poin 6: if the creator has a company-wide role (the Owner-bootstrap
-	// case — zero merchants until now), give them that SAME role at the
-	// merchant they just created, so every ordinary merchant-scoped
-	// RequirePermission call works for them from here on without falling
-	// back through RequireCompanyLevelPermission every time.
-	if ucr, err := q.ListUserCompanyRoles(c.Request.Context(), AuthUserID(c)); err == nil {
-		for _, r := range ucr {
-			if r.CompanyID == AuthCompanyID(c) {
-				_, _ = q.AddUserMerchantRole(c.Request.Context(), sqlcgen.AddUserMerchantRoleParams{
-					UserID: AuthUserID(c), MerchantID: merchant.ID, RoleID: r.RoleID, CreatedBy: AuthUserID(c),
-				})
+		// §3 poin 6: if the creator has a company-wide role (the Owner-bootstrap
+		// case — zero merchants until now), give them that SAME role at the
+		// merchant they just created, so every ordinary merchant-scoped
+		// RequirePermission call works for them from here on without falling
+		// back through RequireCompanyLevelPermission every time.
+		if ucr, err := q.ListUserCompanyRoles(c.Request.Context(), AuthUserID(c)); err == nil {
+			for _, r := range ucr {
+				if r.CompanyID == AuthCompanyID(c) {
+					_, _ = q.AddUserMerchantRole(c.Request.Context(), sqlcgen.AddUserMerchantRoleParams{
+						UserID: AuthUserID(c), MerchantID: merchant.ID, RoleID: r.RoleID, CreatedBy: AuthUserID(c),
+					})
+				}
 			}
 		}
+
+		// Issue a merchant-scoped token directly — /auth/switch-merchant can't
+		// be used here, it's registered behind TenantMiddleware which
+		// hard-requires an X-Merchant-ID header the caller doesn't have yet
+		// (they may have zero merchants, e.g. right after registration). See
+		// docs/design/specs/2026-09-24-merchant-management-ui-design.md §3.5.
+		rawToken, err := c.Cookie(refreshCookieName)
+		if err != nil || rawToken == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing refresh token"})
+			return
+		}
+		newToken, err := session.SwitchMerchant(c.Request.Context(), q, sessionConfig(cfg), rawToken, AuthUserID(c), merchant.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to activate new merchant"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+			"merchant": merchant,
+			"token":    newToken,
+		}, "meta": gin.H{}})
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": merchant, "meta": gin.H{}})
 }
 
 // ListMerchantsHandler godoc

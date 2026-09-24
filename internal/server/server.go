@@ -66,7 +66,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// companyOnly above) — but these DO need auth, unlike login/refresh.
 	// See docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §3.
 	companyOnlyAuthed := v1.Group("", CompanyOnlyMiddleware(pool), AuthMiddleware(cfg.JWTSecret), RateLimitAPIMiddleware(limiter, cfg))
-	RegisterCompanyLevelRoutes(companyOnlyAuthed)
+	RegisterCompanyLevelRoutes(companyOnlyAuthed, cfg)
 
 	tenant := v1.Group("", TenantMiddleware(pool))
 	protected := tenant.Group("", AuthMiddleware(cfg.JWTSecret), RateLimitAPIMiddleware(limiter, cfg))
