@@ -27,6 +27,13 @@ type Claims struct {
 	Username   string `json:"username"`
 	DeviceID   string `json:"did"`
 	Purpose    string `json:"purpose"`
+	// ImpersonatedBy is the platform.admin_user.id that requested this session
+	// via POST /platform/impersonate — empty for every ordinary tenant login.
+	// Checked by AppLockMiddleware (internal/server/applock.go) to skip
+	// idle-lock enforcement, since an impersonating admin has no way to
+	// unlock with the target user's own PIN. See
+	// docs/design/specs/2026-09-24-platform-admin-impersonate-design.md §4.
+	ImpersonatedBy string `json:"imp,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -179,4 +186,27 @@ func ParsePlatformAdminToken(secret, tokenString string) (*PlatformAdminClaims, 
 		return nil, ErrNotPlatformAdminToken
 	}
 	return claims, nil
+}
+
+// GenerateImpersonationToken issues an access token that authenticates AS
+// userID (the impersonation target) — same Claims shape and Purpose as
+// GenerateToken, so every existing tenant middleware/handler works
+// unmodified, but tagged with impersonatedBy (platform.admin_user.id) so
+// AppLockMiddleware can recognize and bypass idle-lock for it.
+func GenerateImpersonationToken(secret, userID, companyID, merchantID, username, deviceID, impersonatedBy string, ttl time.Duration) (string, error) {
+	claims := Claims{
+		UserID:         userID,
+		CompanyID:      companyID,
+		MerchantID:     merchantID,
+		Username:       username,
+		DeviceID:       deviceID,
+		Purpose:        accessTokenPurpose,
+		ImpersonatedBy: impersonatedBy,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
 }

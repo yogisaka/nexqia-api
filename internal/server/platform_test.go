@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
@@ -903,5 +904,304 @@ func TestCreatePlatformCompany_MissingPermission(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func seedImpersonationAdmin(t *testing.T, ctx context.Context, pool *pgxpool.Pool, adminID, roleID, permID, username string) {
+	t.Helper()
+	passwordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash admin password: %v", err)
+	}
+	// ON CONFLICT targets `code` (UNIQUE), not `id` — this seed runs 3x across
+	// this file's tests, always with the same code but a different literal
+	// permID per test, so a later run must resolve to whichever id actually
+	// won the first insert, not the literal permID passed in.
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.permission (id, code, description, module) VALUES ($1, 'platform.tenant_user.impersonate', 'test', 'platform') ON CONFLICT (code) DO NOTHING", permID); err != nil {
+		t.Fatalf("seed permission: %v", err)
+	}
+	var resolvedPermID string
+	if err := pool.QueryRow(ctx, "SELECT id FROM platform.permission WHERE code = 'platform.tenant_user.impersonate'").Scan(&resolvedPermID); err != nil {
+		t.Fatalf("resolve permission id: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.role (id, name, is_system) VALUES ($1, $2, true)", roleID, "Impersonate Test Role "+username); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.role_permission (role_id, permission_id) VALUES ($1, $2)", roleID, resolvedPermID); err != nil {
+		t.Fatalf("seed role_permission: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user (id, username, email, full_name, password_hash, is_active) VALUES ($1, $2, $2 || '@nexqia.internal', 'Test', $3, true)", adminID, username, passwordHash); err != nil {
+		t.Fatalf("seed admin_user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user_role (admin_user_id, role_id) VALUES ($1, $2)", adminID, roleID); err != nil {
+		t.Fatalf("seed admin_user_role: %v", err)
+	}
+}
+
+func TestImpersonate_Success(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	adminID := "51515151-5151-5151-5151-515151515151"
+	roleID := "51515151-a001-a001-a001-515151515151"
+	permID := "51515151-b001-b001-b001-515151515151"
+	seedImpersonationAdmin(t, ctx, pool, adminID, roleID, permID, "impsuccessadmin")
+
+	companyID := "52525252-5252-5252-5252-525252525252"
+	targetUserID := "53535353-5353-5353-5353-535353535353"
+	targetPasswordHash, err := testHasher().Hash(ctx, "target-password")
+	if err != nil {
+		t.Fatalf("hash target password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.company (id, code, name) VALUES ($1, 'imptarget', 'Impersonate Target Co')", companyID); err != nil {
+		t.Fatalf("seed target company: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.app_user (id, company_id, username, password_hash, is_active) VALUES ($1, $2, 'targetuser', $3, true)", targetUserID, companyID, targetPasswordHash); err != nil {
+		t.Fatalf("seed target app_user: %v", err)
+	}
+
+	adminToken, err := auth.GeneratePlatformAdminToken(testJWTSecret, adminID, "impsuccessadmin", "imp-success-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate platform admin token: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"company_id": companyID, "username": "targetuser", "reason": "customer support ticket #1234",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/impersonate", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("expected NO Set-Cookie header from impersonate, got %v", rec.Result().Cookies())
+	}
+	var resp struct {
+		Data struct {
+			Token         string `json:"token"`
+			Impersonating struct {
+				UserID string `json:"user_id"`
+			} `json:"impersonating"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.Impersonating.UserID != targetUserID {
+		t.Fatalf("expected impersonating.user_id %s, got %s", targetUserID, resp.Data.Impersonating.UserID)
+	}
+
+	// The token authenticates AS the target user, not the platform admin.
+	pingReq := httptest.NewRequest(http.MethodGet, "/api/v1/ping", nil)
+	pingReq.Header.Set("Authorization", "Bearer "+resp.Data.Token)
+	pingReq.Header.Set("X-Company-ID", companyID)
+	pingReq.Header.Set("X-Merchant-ID", companyID) // no real merchant needed for /ping's own check, see its handler
+	pingRec := httptest.NewRecorder()
+	router.ServeHTTP(pingRec, pingReq)
+	// /ping requires a real app.current_merchant_id to be queryable — this
+	// assertion only cares that AuthMiddleware accepted the token (not 401),
+	// a merchant-context error here is a separate, expected concern.
+	if pingRec.Code == http.StatusUnauthorized {
+		t.Fatalf("expected the impersonation token to authenticate successfully, got 401: %s", pingRec.Body.String())
+	}
+
+	var sessionCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM platform.impersonation_session WHERE admin_user_id = $1 AND target_user_id = $2 AND reason = $3", adminID, targetUserID, "customer support ticket #1234").Scan(&sessionCount); err != nil {
+		t.Fatalf("count impersonation_session: %v", err)
+	}
+	if sessionCount != 1 {
+		t.Fatalf("expected exactly 1 impersonation_session row, got %d", sessionCount)
+	}
+}
+
+func TestImpersonate_TargetInactive(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	adminID := "54545454-5454-5454-5454-545454545454"
+	roleID := "54545454-a001-a001-a001-545454545454"
+	permID := "54545454-b001-b001-b001-545454545454"
+	seedImpersonationAdmin(t, ctx, pool, adminID, roleID, permID, "impinactiveadmin")
+
+	companyID := "55555555-5555-5555-5555-555555555555"
+	targetUserID := "56565656-5656-5656-5656-565656565656"
+	passwordHash, err := testHasher().Hash(ctx, "target-password")
+	if err != nil {
+		t.Fatalf("hash target password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.company (id, code, name) VALUES ($1, 'impinactive', 'Impersonate Inactive Co')", companyID); err != nil {
+		t.Fatalf("seed company: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.app_user (id, company_id, username, password_hash, is_active) VALUES ($1, $2, 'inactivetarget', $3, false)", targetUserID, companyID, passwordHash); err != nil {
+		t.Fatalf("seed inactive app_user: %v", err)
+	}
+
+	adminToken, err := auth.GeneratePlatformAdminToken(testJWTSecret, adminID, "impinactiveadmin", "imp-inactive-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate platform admin token: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"company_id": companyID, "username": "inactivetarget", "reason": "customer support ticket #5678",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/impersonate", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImpersonate_MissingPermission(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	adminID := "57575757-5757-5757-5757-575757575757"
+	passwordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user (id, username, email, full_name, password_hash, is_active) VALUES ($1, 'impnopermadmin', 'impnopermadmin@nexqia.internal', 'Test', $2, true)", adminID, passwordHash); err != nil {
+		t.Fatalf("seed admin_user: %v", err)
+	}
+	// Deliberately no role/permission.
+
+	token, err := auth.GeneratePlatformAdminToken(testJWTSecret, adminID, "impnopermadmin", "imp-no-perm-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate platform admin token: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"company_id": "00000000-0000-0000-0000-000000000000", "username": "whoever", "reason": "should never reach this far",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/impersonate", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImpersonate_ShortReasonRejected(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	adminID := "58585858-5858-5858-5858-585858585858"
+	roleID := "58585858-a001-a001-a001-585858585858"
+	permID := "58585858-b001-b001-b001-585858585858"
+	seedImpersonationAdmin(t, ctx, pool, adminID, roleID, permID, "impshortreasonadmin")
+
+	token, err := auth.GeneratePlatformAdminToken(testJWTSecret, adminID, "impshortreasonadmin", "imp-short-reason-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate platform admin token: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"company_id": "00000000-0000-0000-0000-000000000000", "username": "whoever", "reason": "short",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/impersonate", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImpersonate_BypassesPinLock(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	cfg := testConfig()
+	router := server.NewRouter(pool, redisClient, cfg)
+
+	adminID := "59595959-5959-5959-5959-595959595959"
+	roleID := "59595959-a001-a001-a001-595959595959"
+	permID := "59595959-b001-b001-b001-595959595959"
+	seedImpersonationAdmin(t, ctx, pool, adminID, roleID, permID, "impplocktestadmin")
+
+	companyID := "60606060-6060-6060-6060-606060606060"
+	merchantID := "61616161-6161-6161-6161-616161616161"
+	targetUserID := "62626262-6262-6262-6262-626262626262"
+	passwordHash, err := testHasher().Hash(ctx, "target-password")
+	if err != nil {
+		t.Fatalf("hash target password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.company (id, code, name) VALUES ($1, 'pinlocktarget', 'Pin Lock Target Co')", companyID); err != nil {
+		t.Fatalf("seed company: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.merchant (id, company_id, code, name) VALUES ($1, $2, 'pinlockm', 'Pin Lock Merchant')", merchantID, companyID); err != nil {
+		t.Fatalf("seed merchant: %v", err)
+	}
+	// pin_hash set (enrolled) — pairs with the pin_lock feature flag below to
+	// make AppLockMiddleware's enforcement path actually reachable.
+	if _, err := pool.Exec(ctx, "INSERT INTO core.app_user (id, company_id, username, password_hash, pin_hash, is_active) VALUES ($1, $2, 'pinlocktarget', $3, 'irrelevant-hash-value', true)", targetUserID, companyID, passwordHash); err != nil {
+		t.Fatalf("seed target app_user with pin_hash: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO core.feature_flag (merchant_id, flag_key, flag_value) VALUES ($1, 'auth.pin_lock', '{"enabled": true, "idle_minutes": 1}')`, merchantID); err != nil {
+		t.Fatalf("seed pin_lock feature flag: %v", err)
+	}
+
+	adminToken, err := auth.GeneratePlatformAdminToken(testJWTSecret, adminID, "impplocktestadmin", "imp-pinlock-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate platform admin token: %v", err)
+	}
+	body, _ := json.Marshal(map[string]string{
+		"company_id": companyID, "username": "pinlocktarget", "reason": "verifying pin-lock bypass works",
+	})
+	impReq := httptest.NewRequest(http.MethodPost, "/api/v1/platform/impersonate", bytes.NewReader(body))
+	impReq.Header.Set("Authorization", "Bearer "+adminToken)
+	impReq.Header.Set("Content-Type", "application/json")
+	impRec := httptest.NewRecorder()
+	router.ServeHTTP(impRec, impReq)
+	if impRec.Code != http.StatusOK {
+		t.Fatalf("impersonate expected 200, got %d: %s", impRec.Code, impRec.Body.String())
+	}
+	var impResp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(impRec.Body.Bytes(), &impResp); err != nil {
+		t.Fatalf("decode impersonate response: %v", err)
+	}
+
+	// This company/merchant has pin_lock ENABLED and the target user HAS a
+	// PIN enrolled — a normal tenant session hitting a `locked`-group route
+	// here would be subject to AppLockMiddleware's idle-lock (and would get
+	// 423 once idle, since nothing ever "unlocks" it for a token that was
+	// never behind a real login flow to begin with). The impersonation
+	// bypass (Task 4) must make this succeed anyway.
+	pingReq := httptest.NewRequest(http.MethodGet, "/api/v1/ping", nil)
+	pingReq.Header.Set("Authorization", "Bearer "+impResp.Data.Token)
+	pingReq.Header.Set("X-Company-ID", companyID)
+	pingReq.Header.Set("X-Merchant-ID", merchantID)
+	pingRec := httptest.NewRecorder()
+	router.ServeHTTP(pingRec, pingReq)
+	if pingRec.Code == http.StatusLocked {
+		t.Fatalf("expected impersonation session to bypass PIN-lock, got 423: %s", pingRec.Body.String())
+	}
+	if pingRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /ping, got %d: %s", pingRec.Code, pingRec.Body.String())
 	}
 }

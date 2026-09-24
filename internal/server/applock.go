@@ -67,6 +67,13 @@ func pinfailKey(userID pgtype.UUID, deviceID string) string {
 // /auth/pin/set, /auth/pin/disable, /auth/pin/verify — see server.go.
 func AppLockMiddleware(redisClient *redis.Client, cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if AuthImpersonatedBy(c) != "" {
+			// Impersonation sessions skip idle-lock entirely — the admin has
+			// no way to unlock with the target user's own PIN. See
+			// docs/design/specs/2026-09-24-platform-admin-impersonate-design.md §4.
+			c.Next()
+			return
+		}
 		merchantID, ok := parseUUID(c.GetHeader("X-Merchant-ID"))
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid X-Merchant-ID"})

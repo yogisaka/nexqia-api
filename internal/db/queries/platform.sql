@@ -50,3 +50,8 @@ UPDATE platform.admin_refresh_token SET revoked_at = now() WHERE id = $1 AND rev
 -- name: RevokeAllPlatformAdminRefreshTokensForDevice :exec
 UPDATE platform.admin_refresh_token SET revoked_at = now()
 WHERE admin_user_id = $1 AND device_id = $2 AND revoked_at IS NULL;
+-- name: CreatePlatformImpersonationSession :one
+INSERT INTO platform.impersonation_session
+    (admin_user_id, target_user_id, target_company_id, reason, expires_at, started_ip)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING *;

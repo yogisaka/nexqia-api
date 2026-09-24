@@ -66,6 +66,7 @@ func main() {
 		{"platform.company.view", "View companies across all tenants", "platform"},
 		{"platform.company.manage", "Suspend/activate/create companies", "platform"},
 		{"platform.admin.manage", "Manage platform admin users and roles", "platform"},
+		{"platform.tenant_user.impersonate", "Impersonate a tenant user for troubleshooting", "platform"},
 	}
 	for _, p := range permCodes {
 		if _, err := tx.Exec(ctx,

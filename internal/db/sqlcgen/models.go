@@ -755,3 +755,14 @@ type PlatformAdminRefreshToken struct {
 	RevokedAt   pgtype.Timestamptz
 	CreatedIp   netip.Addr
 }
+
+type PlatformImpersonationSession struct {
+	ID              pgtype.UUID
+	AdminUserID     pgtype.UUID
+	TargetUserID    pgtype.UUID
+	TargetCompanyID pgtype.UUID
+	Reason          string
+	StartedAt       pgtype.Timestamptz
+	ExpiresAt       pgtype.Timestamptz
+	StartedIp       netip.Addr
+}

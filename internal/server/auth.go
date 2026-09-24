@@ -25,9 +25,10 @@ import (
 )
 
 const (
-	authUserIDContextKey    = "auth_user_id"
-	authCompanyIDContextKey = "auth_company_id"
-	authDeviceIDContextKey  = "auth_device_id"
+	authUserIDContextKey         = "auth_user_id"
+	authCompanyIDContextKey      = "auth_company_id"
+	authDeviceIDContextKey       = "auth_device_id"
+	authImpersonatedByContextKey = "auth_impersonated_by"
 
 	refreshCookieName = "refresh_token"
 	// Must match the actual mounted prefix of EVERY route that reads this cookie —
@@ -86,6 +87,7 @@ func AuthMiddleware(secret string) gin.HandlerFunc {
 		c.Set(authUserIDContextKey, userID)
 		c.Set(authCompanyIDContextKey, companyID)
 		c.Set(authDeviceIDContextKey, claims.DeviceID)
+		c.Set(authImpersonatedByContextKey, claims.ImpersonatedBy)
 		c.Next()
 	}
 }
@@ -104,6 +106,13 @@ func AuthCompanyID(c *gin.Context) pgtype.UUID {
 // on routes behind AuthMiddleware.
 func AuthDeviceID(c *gin.Context) string {
 	return c.MustGet(authDeviceIDContextKey).(string)
+}
+
+// AuthImpersonatedBy returns the platform.admin_user.id that started this
+// session via POST /platform/impersonate, or "" for an ordinary tenant
+// session. Only valid on routes behind AuthMiddleware.
+func AuthImpersonatedBy(c *gin.Context) string {
+	return c.MustGet(authImpersonatedByContextKey).(string)
 }
 
 // RequirePermission checks the caller holds `code` in the merchant from X-Merchant-ID

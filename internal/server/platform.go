@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,7 @@ func RegisterPlatformRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool, limiter *ra
 	protected.POST("/companies/:id/activate", ActivatePlatformCompanyHandler)
 	protected.GET("/roles", ListPlatformRolesHandler)
 	protected.POST("/admin-users", CreatePlatformAdminUserHandler(hasher))
+	protected.POST("/impersonate", ImpersonateHandler(cfg))
 }
 
 type platformAdminLoginRequest struct {
@@ -598,6 +600,141 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 			"user_id":      user.ID.String(),
 			"username":     user.Username,
 			"full_name":    req.FullName,
+		}, "meta": gin.H{}})
+	}
+}
+
+type impersonateRequest struct {
+	CompanyID string `json:"company_id" binding:"required"`
+	Username  string `json:"username" binding:"required"`
+	Reason    string `json:"reason" binding:"required,min=10"`
+}
+
+// platformImpersonateCompany / platformImpersonateUser are the flat rows of
+// platform.get_company and platform.get_app_user_by_username (migration
+// 000041) — the RLS-bypass DEFINER reads backing ImpersonateHandler, same
+// flat-Scan pattern as 000039's get_company_detail.
+type platformImpersonateCompany struct {
+	ID       pgtype.UUID `json:"id"`
+	Name     string      `json:"name"`
+	Code     string      `json:"code"`
+	IsActive bool        `json:"is_active"`
+}
+
+type platformImpersonateUser struct {
+	ID       pgtype.UUID `json:"id"`
+	PersonID pgtype.UUID `json:"person_id"`
+	Username string      `json:"username"`
+	IsActive bool        `json:"is_active"`
+}
+
+const impersonationTokenTTL = time.Hour
+
+// ImpersonateHandler godoc
+// @Summary Get a short-lived tenant access token for a specific user
+// @Description No refresh token is issued — the access token expires after
+// @Description 1 hour with no way to renew; call this endpoint again for a
+// @Description fresh, separately-audited session. See docs/design/specs/
+// @Description 2026-09-24-platform-admin-impersonate-design.md.
+// @Tags platform
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body impersonateRequest true "Target user + reason"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /platform/impersonate [post]
+func ImpersonateHandler(cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !RequirePlatformPermission(c, PermPlatformTenantUserImpersonate) {
+			return
+		}
+		var req impersonateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		companyID, ok := parseUUID(req.CompanyID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid company_id"})
+			return
+		}
+
+		q := sqlcgen.New(TxFromContext(c))
+
+		// Read the tenant + target user through SECURITY DEFINER functions
+		// (migration 000041) — core.company/core.app_user are RLS-protected on
+		// app.current_company_id and PlatformTxMiddleware sets no GUC, so direct
+		// SELECTs would return 0 rows in production (app_runtime is NOBYPASSRLS).
+		var company platformImpersonateCompany
+		err := TxFromContext(c).QueryRow(c.Request.Context(),
+			"SELECT * FROM platform.get_company($1)", companyID).Scan(
+			&company.ID, &company.Name, &company.Code, &company.IsActive,
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "company not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		var targetUser platformImpersonateUser
+		err = TxFromContext(c).QueryRow(c.Request.Context(),
+			"SELECT * FROM platform.get_app_user_by_username($1, $2)", companyID, req.Username).Scan(
+			&targetUser.ID, &targetUser.PersonID, &targetUser.Username, &targetUser.IsActive,
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !targetUser.IsActive {
+			c.JSON(http.StatusForbidden, gin.H{"error": "target user is inactive"})
+			return
+		}
+
+		var ip netip.Addr
+		if parsed, parseErr := netip.ParseAddr(c.ClientIP()); parseErr == nil {
+			ip = parsed
+		} else {
+			ip = netip.IPv4Unspecified()
+		}
+
+		adminID := PlatformAdminUserID(c)
+		expiresAt := time.Now().Add(impersonationTokenTTL)
+		if _, err := q.CreatePlatformImpersonationSession(c.Request.Context(), sqlcgen.CreatePlatformImpersonationSessionParams{
+			AdminUserID: adminID, TargetUserID: targetUser.ID, TargetCompanyID: companyID,
+			Reason: req.Reason, ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true}, StartedIp: ip,
+		}); err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		token, err := auth.GenerateImpersonationToken(
+			cfg.JWTSecret, targetUser.ID.String(), companyID.String(), "",
+			targetUser.Username, "impersonation", adminID.String(), impersonationTokenTTL,
+		)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"token":      token,
+			"expires_in": int(impersonationTokenTTL.Seconds()),
+			"impersonating": gin.H{
+				"user_id":      targetUser.ID.String(),
+				"username":     targetUser.Username,
+				"company_id":   companyID.String(),
+				"company_name": company.Name,
+			},
 		}, "meta": gin.H{}})
 	}
 }
