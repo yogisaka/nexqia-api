@@ -805,23 +805,17 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 		defer tx.Rollback(ctx)
 		q := sqlcgen.New(tx)
 
-		// Pre-check (poin 3 of spec §6): nicer error message, NOT the real
-		// enforcement — the UNIQUE constraint (migration 000034) is authoritative,
-		// caught again below on insert in case of a genuine race.
-		if exists, err := q.CheckAppUserEmailExists(ctx, pgtype.Text{String: req.Email, Valid: true}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		} else if exists {
-			c.JSON(http.StatusConflict, gin.H{"error": "email already registered"})
-			return
-		}
-		if exists, err := q.CheckAppUserPhoneExists(ctx, pgtype.Text{String: req.Phone, Valid: true}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		} else if exists {
-			c.JSON(http.StatusConflict, gin.H{"error": "phone number already registered"})
-			return
-		}
+		// [2026-09-24, bug ketemu live] Pre-check email/phone (CheckAppUserEmailExists/
+		// CheckAppUserPhoneExists) DIHAPUS — 2 masalah: (1) query polos ke
+		// core.app_user itu RLS-protected (USING app.current_company_id), dijalanin
+		// di sini SEBELUM set_config pernah dipanggil di tx ini sama sekali → crash
+		// "unrecognized configuration parameter" (SQLSTATE 42704) tiap kali endpoint
+		// ini dipanggil; (2) walau dipindah setelah set_config, tetep gak bakal
+		// bener — email/phone UNIQUE GLOBAL lintas company (migration 000034), tapi
+		// RLS cuma bisa liat 1 company (yang baru dibuat, otomatis 0 baris) →
+		// SELALU "gak ada duplikat" walau ada di company lain. Enforcement asli
+		// (UNIQUE constraint + isUniqueViolation di CreateAppUser, di bawah) udah
+		// cukup DAN benar independen dari RLS — gak perlu pre-check terpisah.
 
 		var companyID pgtype.UUID
 		if err := tx.QueryRow(ctx, "SELECT uuid_generate_v7()").Scan(&companyID); err != nil {

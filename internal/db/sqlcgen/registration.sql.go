@@ -49,27 +49,6 @@ func (q *Queries) CreateCompanyWithID(ctx context.Context, arg CreateCompanyWith
 	return i, err
 }
 
-const checkAppUserEmailExists = `-- name: CheckAppUserEmailExists :one
-SELECT EXISTS (SELECT 1 FROM core.app_user WHERE email = $1 AND deleted_at IS NULL)
-`
-
-func (q *Queries) CheckAppUserEmailExists(ctx context.Context, email pgtype.Text) (bool, error) {
-	row := q.db.QueryRow(ctx, checkAppUserEmailExists, email)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
-const checkAppUserPhoneExists = `-- name: CheckAppUserPhoneExists :one
-SELECT EXISTS (SELECT 1 FROM core.app_user WHERE phone = $1 AND deleted_at IS NULL)
-`
-
-func (q *Queries) CheckAppUserPhoneExists(ctx context.Context, phone pgtype.Text) (bool, error) {
-	row := q.db.QueryRow(ctx, checkAppUserPhoneExists, phone)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
 
 const createUserCompanyRole = `-- name: CreateUserCompanyRole :one
 INSERT INTO core.user_company_role (user_id, company_id, role_id, created_by)
