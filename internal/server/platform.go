@@ -26,6 +26,8 @@ func RegisterPlatformRoutes(rg *gin.RouterGroup, limiter *ratelimit.Limiter, cfg
 	protected.POST("/logout", PlatformAdminLogoutHandler(cfg))
 	protected.GET("/companies", ListPlatformCompaniesHandler)
 	protected.GET("/companies/:id", GetPlatformCompanyDetailHandler)
+	protected.POST("/companies/:id/suspend", SuspendPlatformCompanyHandler)
+	protected.POST("/companies/:id/activate", ActivatePlatformCompanyHandler)
 	protected.GET("/roles", ListPlatformRolesHandler)
 	protected.POST("/admin-users", CreatePlatformAdminUserHandler(hasher))
 }
@@ -350,4 +352,68 @@ func CreatePlatformAdminUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc
 		}
 		c.JSON(http.StatusCreated, gin.H{"data": adminUser, "meta": gin.H{}})
 	}
+}
+
+// SuspendPlatformCompanyHandler godoc
+// @Summary Suspend a company — revokes all its active sessions
+// @Tags platform
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Company UUID"
+// @Success 200 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /platform/companies/{id}/suspend [post]
+func SuspendPlatformCompanyHandler(c *gin.Context) {
+	if !RequirePlatformPermission(c, PermPlatformCompanyManage) {
+		return
+	}
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	tx := TxFromContext(c)
+	var found bool
+	if err := tx.QueryRow(c.Request.Context(), "SELECT platform.suspend_company($1, $2)", id, PlatformAdminUserID(c)).Scan(&found); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !found {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "company not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
+}
+
+// ActivatePlatformCompanyHandler godoc
+// @Summary Reactivate a suspended company
+// @Tags platform
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Company UUID"
+// @Success 200 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /platform/companies/{id}/activate [post]
+func ActivatePlatformCompanyHandler(c *gin.Context) {
+	if !RequirePlatformPermission(c, PermPlatformCompanyManage) {
+		return
+	}
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	tx := TxFromContext(c)
+	var found bool
+	if err := tx.QueryRow(c.Request.Context(), "SELECT platform.activate_company($1, $2)", id, PlatformAdminUserID(c)).Scan(&found); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !found {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "company not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
 }

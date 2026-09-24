@@ -64,6 +64,7 @@ func main() {
 	// 1. Permission catalog.
 	permCodes := []struct{ code, description, module string }{
 		{"platform.company.view", "View companies across all tenants", "platform"},
+		{"platform.company.manage", "Suspend/activate/create companies", "platform"},
 		{"platform.admin.manage", "Manage platform admin users and roles", "platform"},
 	}
 	for _, p := range permCodes {

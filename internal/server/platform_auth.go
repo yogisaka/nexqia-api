@@ -35,8 +35,9 @@ const (
 // platform.permission (bootstrapped by cmd/bootstrap-platform-admin) and be
 // granted through platform.role_permission.
 const (
-	PermPlatformCompanyView = "platform.company.view"
-	PermPlatformAdminManage = "platform.admin.manage"
+	PermPlatformCompanyView   = "platform.company.view"
+	PermPlatformCompanyManage = "platform.company.manage"
+	PermPlatformAdminManage   = "platform.admin.manage"
 )
 
 // PlatformTxMiddleware opens one transaction per request for the /platform route

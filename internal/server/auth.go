@@ -387,6 +387,19 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 			return
 		}
 		q := sqlcgen.New(TxFromContext(c))
+		company, err := q.GetCompanyByID(c.Request.Context(), companyID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid company"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !company.IsActive {
+			c.JSON(http.StatusForbidden, gin.H{"error": "this company account is suspended, contact support"})
+			return
+		}
 		user, err := q.GetAppUserByUsername(c.Request.Context(), sqlcgen.GetAppUserByUsernameParams{
 			CompanyID: companyID, Username: req.Username,
 		})
