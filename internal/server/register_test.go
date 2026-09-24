@@ -105,10 +105,27 @@ func TestRequireCompanyLevelPermission_ExistingMerchantScopedRoleStillWorks(t *t
 	if _, err := pool.Exec(ctx, "INSERT INTO core.role (id, company_id, name) VALUES ($1, $2, 'Regression Admin')", roleID, companyID); err != nil {
 		t.Fatalf("failed to seed role: %v", err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ($1, 'core.company.manage.own', 'test', 'core') ON CONFLICT (id) DO NOTHING", permissionID); err != nil {
+	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ($1, 'core.company.manage.own', 'test', 'core') ON CONFLICT (code) DO NOTHING", permissionID); err != nil {
 		t.Fatalf("failed to seed permission: %v", err)
 	}
+	if err := pool.QueryRow(ctx, "SELECT id FROM core.permission WHERE code = 'core.company.manage.own'").Scan(&permissionID); err != nil {
+		t.Fatalf("failed to fetch permission id: %v", err)
+	}
+	// Also seed core.merchant.manage — needed by Update/Delete/ListMerchantHandler
+	// after they were moved to companyOnlyAuthed group (uses RequireCompanyLevelPermission
+	// instead of RequirePermissionForMerchant).
+	permMerchantManageID := "80808080-8080-8080-8080-808080808080"
+	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ($1, 'core.merchant.manage', 'Kelola merchant', 'core') ON CONFLICT (code) DO NOTHING", permMerchantManageID); err != nil {
+		t.Fatalf("failed to seed permission: %v", err)
+	}
+	var actualMerchantPermID string
+	if err := pool.QueryRow(ctx, "SELECT id FROM core.permission WHERE code = 'core.merchant.manage'").Scan(&actualMerchantPermID); err != nil {
+		t.Fatalf("failed to fetch permission id: %v", err)
+	}
 	if _, err := pool.Exec(ctx, "INSERT INTO core.role_permission (role_id, permission_id) VALUES ($1, $2)", roleID, permissionID); err != nil {
+		t.Fatalf("failed to seed role_permission: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.role_permission (role_id, permission_id) VALUES ($1, $2)", roleID, actualMerchantPermID); err != nil {
 		t.Fatalf("failed to seed role_permission: %v", err)
 	}
 	passwordHash, err := testHasher().Hash(ctx, "correct-horse")
