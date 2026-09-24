@@ -1,0 +1,4 @@
+-- Gak ada yang perlu di-reverse — ini migration korektif data (dedupe),
+-- bukan perubahan schema. Kalaupun di-rollback, migration 000036's up.sql
+-- (yang ON CONFLICT (code) DO NOTHING) TIDAK akan bikin ulang duplikat yang
+-- baru aja dibersihin, jadi state-nya tetap konsisten tanpa aksi apa pun.
