@@ -84,6 +84,223 @@ func TestRegisterHandler_DuplicateEmail(t *testing.T) {
 	}
 }
 
+// TestLoginHandler_OwnerWithNoMerchantCanLogin — regression test for the bug
+// ketemu live (2026-09-24): an Owner who self-registered but never created
+// their first merchant used to get 403 "user has no merchant assignment" on
+// every subsequent login (register's own auto-login worked fine — LoginHandler
+// was never updated to match). Register once, then log in separately (simulates
+// logout+login) with correct credentials — must succeed with a merchant-less
+// session, not be rejected.
+func TestLoginHandler_OwnerWithNoMerchantCanLogin(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ('80808080-8080-8080-8080-808080808081', 'core.merchant.manage', 'test', 'core') ON CONFLICT (id) DO NOTHING"); err != nil {
+		t.Fatalf("failed to seed core.merchant.manage permission: %v", err)
+	}
+
+	const deviceID = "integration-test-device"
+
+	regReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(registerPayload("nomerchant.owner", "nomerchant.owner@example.com", "081234500096")))
+	regReq.Header.Set("Content-Type", "application/json")
+	regReq.Header.Set("X-Device-Id", deviceID)
+	regRec := httptest.NewRecorder()
+	router.ServeHTTP(regRec, regReq)
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("register expected 201, got %d: %s", regRec.Code, regRec.Body.String())
+	}
+	var regResp struct {
+		Data struct {
+			CompanyID string `json:"company_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(regRec.Body.Bytes(), &regResp); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+
+	// Logout (simulates the user closing/leaving the session before trying to
+	// log back in) — revokes the auto-login session from register so the
+	// subsequent login doesn't hit checkDeviceLimit, which is a separate
+	// concern from the bug this test targets.
+	var refreshCookie *http.Cookie
+	for _, ck := range regRec.Result().Cookies() {
+		if ck.Name == "refresh_token" {
+			refreshCookie = ck
+		}
+	}
+	if refreshCookie == nil {
+		t.Fatalf("expected refresh_token cookie from register response")
+	}
+	logoutReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+	logoutReq.Header.Set("X-Company-ID", regResp.Data.CompanyID)
+	logoutReq.AddCookie(refreshCookie)
+	logoutRec := httptest.NewRecorder()
+	router.ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout expected 200, got %d: %s", logoutRec.Code, logoutRec.Body.String())
+	}
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "nomerchant.owner", "password": "Passw0rd123!"})
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("X-Company-ID", regResp.Data.CompanyID)
+	loginReq.Header.Set("X-Device-Id", deviceID)
+	loginRec := httptest.NewRecorder()
+	router.ServeHTTP(loginRec, loginReq)
+
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login for merchant-less owner expected 200, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+	var loginResp struct {
+		Data struct {
+			Token      string `json:"token"`
+			MerchantID string `json:"merchant_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	if loginResp.Data.Token == "" {
+		t.Fatalf("expected non-empty token, got %+v", loginResp.Data)
+	}
+	if loginResp.Data.MerchantID != "" {
+		t.Fatalf("expected empty merchant_id for merchant-less owner, got %q", loginResp.Data.MerchantID)
+	}
+
+	// Real user journey continues here: create the first merchant using the
+	// LOGIN session (not register's) — this is the exact chain reported live
+	// 2026-09-24 ("failed to activate new merchant").
+	var loginRefreshCookie *http.Cookie
+	for _, ck := range loginRec.Result().Cookies() {
+		if ck.Name == "refresh_token" {
+			loginRefreshCookie = ck
+		}
+	}
+	if loginRefreshCookie == nil {
+		t.Fatalf("expected refresh_token cookie from login response")
+	}
+	createBody, _ := json.Marshal(map[string]string{
+		"company_id": regResp.Data.CompanyID, "name": "Klinik Pertama", "timezone": "Asia/Jakarta",
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/merchants", bytes.NewReader(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("Authorization", "Bearer "+loginResp.Data.Token)
+	createReq.Header.Set("X-Company-ID", regResp.Data.CompanyID)
+	createReq.AddCookie(loginRefreshCookie)
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create first merchant after login expected 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+}
+
+// TestRegisterThenCreateFirstMerchant_EndToEnd — exercises the exact real user
+// journey (register → create first merchant) through actual HTTP endpoints
+// only, no manual DB/session seeding shortcuts (unlike merchant_test.go's
+// TestCreateMerchantHandler_ActivatesNewMerchantForMerchantLessCaller, which
+// seeds session.Issue directly against the pool and so never exercised
+// RegisterHandler's real cookie/session-issuance path at all). Diagnostic
+// test for "failed to activate new merchant" reported live 2026-09-24.
+func TestRegisterThenCreateFirstMerchant_EndToEnd(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	// Fresh testcontainer only runs migrations, not seed/001_core_seed.sql — the
+	// real dev DB has core.merchant.manage seeded already, this test needs it too
+	// so RegisterHandler's Owner-bundle loop can actually grant it (matches the
+	// pattern in merchant_test.go's manual-seed tests).
+	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ('80808080-8080-8080-8080-808080808080', 'core.merchant.manage', 'test', 'core') ON CONFLICT (id) DO NOTHING"); err != nil {
+		t.Fatalf("failed to seed core.merchant.manage permission: %v", err)
+	}
+
+	regReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(registerPayload("firstmerchant.owner", "firstmerchant.owner@example.com", "081234500094")))
+	regReq.Header.Set("Content-Type", "application/json")
+	regReq.Header.Set("X-Device-Id", "integration-test-e2e")
+	regRec := httptest.NewRecorder()
+	router.ServeHTTP(regRec, regReq)
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("register expected 201, got %d: %s", regRec.Code, regRec.Body.String())
+	}
+	var regResp struct {
+		Data struct {
+			CompanyID string `json:"company_id"`
+			Token     string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(regRec.Body.Bytes(), &regResp); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	var refreshCookie *http.Cookie
+	for _, ck := range regRec.Result().Cookies() {
+		if ck.Name == "refresh_token" {
+			refreshCookie = ck
+		}
+	}
+	if refreshCookie == nil {
+		t.Fatalf("expected refresh_token cookie in register response")
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"company_id": regResp.Data.CompanyID, "name": "Klinik Pertama", "timezone": "Asia/Jakarta",
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/merchants", bytes.NewReader(body))
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("Authorization", "Bearer "+regResp.Data.Token)
+	createReq.Header.Set("X-Company-ID", regResp.Data.CompanyID)
+	createReq.AddCookie(refreshCookie)
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create first merchant expected 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+}
+
+// TestRefreshCookiePath_CoversMerchantsRoute — regression test for the bug
+// ketemu live (2026-09-24): refreshCookiePath was "/api/v1/auth", but
+// CreateMerchantHandler (0b, spec §3.5) reads this same cookie and is mounted
+// at /api/v1/merchants — a SIBLING path, not a sub-path — so a real browser
+// (which enforces cookie Path scoping) never sent the cookie there at all,
+// every create-merchant call failed with "missing refresh token". This test
+// asserts on the Set-Cookie Path ATTRIBUTE directly — httptest's client
+// doesn't enforce Path scoping the way a browser does, so a naive "call
+// CreateMerchantHandler with the cookie manually attached" test would pass
+// even with the old broken Path and never catch this class of bug.
+func TestRefreshCookiePath_CoversMerchantsRoute(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(registerPayload("cookiepath.owner", "cookiepath.owner@example.com", "081234500095")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Device-Id", "integration-test-cookiepath")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var refreshCookie *http.Cookie
+	for _, ck := range rec.Result().Cookies() {
+		if ck.Name == "refresh_token" {
+			refreshCookie = ck
+		}
+	}
+	if refreshCookie == nil {
+		t.Fatalf("expected refresh_token cookie in register response")
+	}
+	// Must be broad enough to cover /api/v1/merchants (a sibling of /api/v1/auth,
+	// not a sub-path of it) — "/api/v1/auth" alone is NOT sufficient.
+	if refreshCookie.Path != "/api/v1" {
+		t.Fatalf("expected refresh_token cookie Path to be /api/v1 (covers /api/v1/merchants), got %q", refreshCookie.Path)
+	}
+}
+
 func TestRequireCompanyLevelPermission_ExistingMerchantScopedRoleStillWorks(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)

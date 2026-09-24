@@ -30,11 +30,19 @@ const (
 	authDeviceIDContextKey  = "auth_device_id"
 
 	refreshCookieName = "refresh_token"
-	// Must match the actual mounted prefix of every route that reads this cookie
-	// (/api/v1/auth/refresh, /switch-merchant, /logout) — browsers only send a
-	// cookie back when the request path matches or is nested under its Set-Cookie
-	// Path, so a narrower value here silently breaks refresh/switch/logout.
-	refreshCookiePath = "/api/v1/auth"
+	// Must match the actual mounted prefix of EVERY route that reads this cookie —
+	// browsers only send a cookie back when the request path matches or is nested
+	// under its Set-Cookie Path, so a narrower value here silently breaks whichever
+	// consumer route falls outside it. [2026-09-24, bug ketemu live] Was
+	// "/api/v1/auth" (covers /auth/refresh, /switch-merchant, /logout fine), but
+	// CreateMerchantHandler (0b, spec §3.5) ALSO reads this cookie to reissue a
+	// merchant-scoped token — and it's mounted at /api/v1/merchants, a SIBLING of
+	// /api/v1/auth, not a sub-path — so the cookie never arrived there at all,
+	// every "create first merchant" call failed with "missing refresh token".
+	// Widened to the whole API surface so any future consumer route doesn't repeat
+	// this; the cookie itself is still HttpOnly, so broadening Path doesn't expose
+	// it to JS, it just changes which backend routes receive it automatically.
+	refreshCookiePath = "/api/v1"
 
 	merchantSelectionTokenTTL = 5 * time.Minute
 )
@@ -457,7 +465,17 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 			return
 		}
 		if len(merchants) == 0 {
-			c.JSON(http.StatusForbidden, gin.H{"error": "user has no merchant assignment"})
+			// [2026-09-24, bug ketemu live] DULU 403 di sini — tapi 0 merchant itu
+			// state NORMAL buat Owner yang baru self-register (0a) dan belum bikin
+			// merchant pertamanya (0b) — RegisterHandler SENDIRI udah nerbitin token
+			// merchant-less (session.Issue MerchantID: pgtype.UUID{}) pas auto-login,
+			// tapi LoginHandler ini gak pernah disamain buat LOGIN ULANG-nya: Owner
+			// yang logout sebelum bikin merchant jadi TERKUNCI TOTAL, gak bisa login
+			// lagi walau username/password/company code semuanya benar. Frontend
+			// (RequireAuth.tsx) udah siap nanganin auth.merchantId === null (redirect
+			// ke /settings/merchants) — cukup issue session merchant-less yang sama
+			// kayak RegisterHandler, jangan tolak di sini.
+			issueLoginSession(c, cfg, q, redisClient, user, pgtype.UUID{})
 			return
 		}
 		if len(merchants) > 1 {

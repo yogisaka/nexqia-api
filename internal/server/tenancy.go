@@ -315,12 +315,40 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 		// merchant they just created, so every ordinary merchant-scoped
 		// RequirePermission call works for them from here on without falling
 		// back through RequireCompanyLevelPermission every time.
-		if ucr, err := q.ListUserCompanyRoles(c.Request.Context(), AuthUserID(c)); err == nil {
-			for _, r := range ucr {
-				if r.CompanyID == AuthCompanyID(c) {
-					_, _ = q.AddUserMerchantRole(c.Request.Context(), sqlcgen.AddUserMerchantRoleParams{
-						UserID: AuthUserID(c), MerchantID: merchant.ID, RoleID: r.RoleID, CreatedBy: AuthUserID(c),
-					})
+		//
+		// [2026-09-24, bug ketemu live] core.user_merchant_role RLS requires
+		// current_setting('app.current_merchant_id') (migration 000004), but this
+		// handler runs under companyOnlyAuthed (CompanyOnlyMiddleware) -- which
+		// only ever sets app.current_company_id, never app.current_merchant_id
+		// (no merchant context exists yet at the point this middleware runs,
+		// chicken-and-egg same as company_id in RegisterHandler). The INSERT
+		// below failed 42704 every single time, but the error was silently
+		// discarded (`_, _ = ...`), so nobody noticed -- Postgres aborts the
+		// WHOLE transaction after that failed statement, and the NEXT query
+		// (session.SwitchMerchant a few lines down) surfaced a completely
+		// unrelated-looking 25P02 "current transaction is aborted" instead of the
+		// real cause. Fixed the same way RegisterHandler solves the identical
+		// problem for app.current_company_id: set_config the GUC to the value
+		// the new row needs to match BEFORE the insert, transaction-scoped
+		// (true). Also stopped swallowing the error -- if this fails now, the
+		// whole request fails loudly (AbortWithStatusJSON), not silently leaves
+		// the Owner locked out of their own new merchant.
+		if _, err := TxFromContext(c).Exec(c.Request.Context(), "SELECT set_config('app.current_merchant_id', $1, true)", merchant.ID.String()); err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to set merchant context: " + err.Error()})
+			return
+		}
+		ucr, err := q.ListUserCompanyRoles(c.Request.Context(), AuthUserID(c))
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, r := range ucr {
+			if r.CompanyID == AuthCompanyID(c) {
+				if _, err := q.AddUserMerchantRole(c.Request.Context(), sqlcgen.AddUserMerchantRoleParams{
+					UserID: AuthUserID(c), MerchantID: merchant.ID, RoleID: r.RoleID, CreatedBy: AuthUserID(c),
+				}); err != nil {
+					c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
 				}
 			}
 		}
@@ -337,7 +365,11 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 		}
 		newToken, err := session.SwitchMerchant(c.Request.Context(), q, sessionConfig(cfg), rawToken, AuthUserID(c), merchant.ID)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to activate new merchant"})
+			// [2026-09-24] Real cause diketel di pesan ini — sempat cuma "failed to
+			// activate new merchant" generik pas bug ini dilaporin live, gak bisa
+			// dibedain error mana (ErrNoSession/ErrSessionRevoked/ErrSessionMismatch/
+			// DB error lain) tanpa akses log server langsung.
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to activate new merchant: " + err.Error()})
 			return
 		}
 
