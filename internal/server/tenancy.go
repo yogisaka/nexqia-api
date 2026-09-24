@@ -307,6 +307,20 @@ func CreateMerchantHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// §3 poin 6: if the creator has a company-wide role (the Owner-bootstrap
+	// case — zero merchants until now), give them that SAME role at the
+	// merchant they just created, so every ordinary merchant-scoped
+	// RequirePermission call works for them from here on without falling
+	// back through RequireCompanyLevelPermission every time.
+	if ucr, err := q.ListUserCompanyRoles(c.Request.Context(), AuthUserID(c)); err == nil {
+		for _, r := range ucr {
+			if r.CompanyID == AuthCompanyID(c) {
+				_, _ = q.AddUserMerchantRole(c.Request.Context(), sqlcgen.AddUserMerchantRoleParams{
+					UserID: AuthUserID(c), MerchantID: merchant.ID, RoleID: r.RoleID, CreatedBy: AuthUserID(c),
+				})
+			}
+		}
+	}
 	c.JSON(http.StatusCreated, gin.H{"data": merchant, "meta": gin.H{}})
 }
 

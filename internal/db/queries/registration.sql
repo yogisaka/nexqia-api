@@ -24,3 +24,6 @@ RETURNING *;
 
 -- name: UserHasCompanyLevelPermission :one
 SELECT core.user_has_company_level_permission($1, $2, $3);
+
+-- name: ListUserCompanyRoles :many
+SELECT * FROM core.user_company_role WHERE user_id = $1;
