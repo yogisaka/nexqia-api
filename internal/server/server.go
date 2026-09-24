@@ -49,6 +49,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// Public, pre-tenant-context: resolves a company code before X-Company-ID is known
 	// (see docs/design/specs/2026-09-16-his-auth-wiring-design.md §3).
 	RegisterCompanyLookupRoute(v1, pool)
+	v1.POST("/auth/register", RegisterHandler(pool, cfg, hasher, limiter))
 
 	// Merchant isn't known yet on these routes (spec §3a) — company-scoped RLS only.
 	companyOnly := v1.Group("", CompanyOnlyMiddleware(pool))

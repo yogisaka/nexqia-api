@@ -6,12 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
@@ -726,4 +728,224 @@ func RevokeSessionHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
+}
+
+var (
+	registerUsernameFormat = regexp.MustCompile(`^[a-z0-9.]+$`)
+	registerPhoneFormat    = regexp.MustCompile(`^(\+62|0)[0-9]{9,13}$`)
+	registerEmailFormat    = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+)
+
+type registerRequest struct {
+	CompanyName          string `json:"company_name" binding:"required,min=3"`
+	FullName             string `json:"full_name" binding:"required"`
+	Username             string `json:"username" binding:"required"`
+	Email                string `json:"email" binding:"required"`
+	Phone                string `json:"phone" binding:"required"`
+	Password             string `json:"password" binding:"required,min=8"`
+	PasswordConfirmation string `json:"password_confirmation" binding:"required"`
+}
+
+func (r registerRequest) validate() string {
+	switch {
+	case !registerUsernameFormat.MatchString(r.Username):
+		return "username must contain only lowercase letters, digits, and dots"
+	case !registerEmailFormat.MatchString(r.Email):
+		return "invalid email format"
+	case !registerPhoneFormat.MatchString(r.Phone):
+		return "invalid phone number format"
+	case r.Password != r.PasswordConfirmation:
+		return "password and password_confirmation do not match"
+	default:
+		return ""
+	}
+}
+
+// RegisterHandler godoc
+// @Summary Self-register a new company and its Owner account
+// @Description Public, unauthenticated. Creates a company, an Owner person/app_user,
+// @Description a bootstrap "Owner" role with every permission except the platform-wide
+// @Description core.company.manage, and auto-logs in. See docs/design/specs/
+// @Description 2026-09-23-saas-registration-owner-bootstrap-design.md.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body registerRequest true "Registration data"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /auth/register [post]
+func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.PasswordHasher, limiter *ratelimit.Limiter) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !checkRegisterRateLimit(c, limiter, cfg) {
+			return
+		}
+
+		var req registerRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if msg := req.validate(); msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		deviceID, deviceLabel, ip, err := deviceHeaders(c)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		ctx := c.Request.Context()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to open transaction"})
+			return
+		}
+		defer tx.Rollback(ctx)
+		q := sqlcgen.New(tx)
+
+		// Pre-check (poin 3 of spec §6): nicer error message, NOT the real
+		// enforcement — the UNIQUE constraint (migration 000034) is authoritative,
+		// caught again below on insert in case of a genuine race.
+		if exists, err := q.CheckAppUserEmailExists(ctx, pgtype.Text{String: req.Email, Valid: true}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else if exists {
+			c.JSON(http.StatusConflict, gin.H{"error": "email already registered"})
+			return
+		}
+		if exists, err := q.CheckAppUserPhoneExists(ctx, pgtype.Text{String: req.Phone, Valid: true}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else if exists {
+			c.JSON(http.StatusConflict, gin.H{"error": "phone number already registered"})
+			return
+		}
+
+		var companyID pgtype.UUID
+		if err := tx.QueryRow(ctx, "SELECT uuid_generate_v7()").Scan(&companyID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		var company sqlcgen.CoreCompany
+		for attempt := 0; ; attempt++ {
+			code, err := generateCode()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID.String()); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
+				return
+			}
+			company, err = q.CreateCompanyWithID(ctx, sqlcgen.CreateCompanyWithIDParams{
+				ID: companyID, Code: code, Name: req.CompanyName, CreatedBy: pgtype.UUID{},
+			})
+			if err == nil {
+				break
+			}
+			if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
+				continue
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		person, err := q.CreatePerson(ctx, sqlcgen.CreatePersonParams{
+			CompanyID: companyID,
+			FullName:  req.FullName,
+			Gender:    "male",
+			CreatedBy: pgtype.UUID{},
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		hash, err := hasher.Hash(ctx, req.Password)
+		if err != nil {
+			if errors.Is(err, auth.ErrHashQueueTimeout) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+			return
+		}
+
+		user, err := q.CreateAppUser(ctx, sqlcgen.CreateAppUserParams{
+			CompanyID: companyID, PersonID: person.ID, Username: req.Username,
+			Email:        pgtype.Text{String: req.Email, Valid: true},
+			Phone:        pgtype.Text{String: req.Phone, Valid: true},
+			PasswordHash: hash, CreatedBy: pgtype.UUID{},
+		})
+		if err != nil {
+			if isUniqueViolation(err) {
+				c.JSON(http.StatusConflict, gin.H{"error": "email or phone number already registered"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		role, err := q.CreateRole(ctx, sqlcgen.CreateRoleParams{
+			CompanyID: companyID, Name: "Owner", Description: pgtype.Text{String: "Company owner — full access", Valid: true}, IsSystem: true, CreatedBy: user.ID,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		permissions, err := q.ListPermissions(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, p := range permissions {
+			if p.Code == PermCompanyManage {
+				continue // §4: platform-wide, never in the Owner bundle
+			}
+			if err := q.AddRolePermission(ctx, sqlcgen.AddRolePermissionParams{RoleID: role.ID, PermissionID: p.ID}); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+
+		if _, err := q.CreateUserCompanyRole(ctx, sqlcgen.CreateUserCompanyRoleParams{
+			UserID: user.ID, CompanyID: companyID, RoleID: role.ID, CreatedBy: user.ID,
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		if !checkDeviceLimit(c, q, user.ID, companyID) {
+			return
+		}
+		issued, err := session.Issue(ctx, q, sessionConfig(cfg), session.IssueParams{
+			UserID: user.ID, CompanyID: companyID, MerchantID: pgtype.UUID{},
+			Username: user.Username, DeviceID: deviceID, DeviceLabel: deviceLabel, IP: ip,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue session"})
+			return
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit"})
+			return
+		}
+
+		setRefreshCookie(c, cfg, issued.RefreshToken, issued.RefreshExpiresAt)
+		c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+			"token":        issued.AccessToken,
+			"expires_in":   int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
+			"company_id":   companyID.String(),
+			"company_code": company.Code,
+			"company_name": company.Name,
+			"user_id":      user.ID.String(),
+			"username":     user.Username,
+			"full_name":    req.FullName,
+		}, "meta": gin.H{}})
+	}
 }
