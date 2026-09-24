@@ -311,7 +311,7 @@ type CorePerson struct {
 	FullName               string
 	BirthDate              pgtype.Date
 	BirthPlace             pgtype.Text
-	Gender                 string
+	Gender                 pgtype.Text
 	BloodType              pgtype.Text
 	MaritalStatus          pgtype.Text
 	ReligionConceptID      pgtype.UUID

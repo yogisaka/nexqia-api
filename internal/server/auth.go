@@ -853,10 +853,13 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 			return
 		}
 
+		// Gender sengaja gak diisi (zero-value pgtype.Text{} = NULL) — form
+		// registrasi Owner gak ngumpulin data ini (spec §2), core.person.gender
+		// nullable sejak migration 000038. Lihat docs/design/plans/
+		// 2026-09-24-fix-0a-0b-0c-review-findings.md Task 3.
 		person, err := q.CreatePerson(ctx, sqlcgen.CreatePersonParams{
 			CompanyID: companyID,
 			FullName:  req.FullName,
-			Gender:    "male",
 			CreatedBy: pgtype.UUID{},
 		})
 		if err != nil {
