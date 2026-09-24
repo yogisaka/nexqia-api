@@ -3,8 +3,8 @@
 -- (docs/07-core-ddl.md §2 "RBAC")
 
 -- name: CreateAppUser :one
-INSERT INTO core.app_user (company_id, person_id, username, email, password_hash, created_by, updated_by)
-VALUES ($1, $2, $3, $4, $5, $6, $6)
+INSERT INTO core.app_user (company_id, person_id, username, email, phone, password_hash, created_by, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
 RETURNING *;
 
 -- name: GetAppUserByID :one

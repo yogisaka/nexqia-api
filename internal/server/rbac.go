@@ -100,6 +100,7 @@ func CreateAppUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 			PersonID:     personID,
 			Username:     req.Username,
 			Email:        pgtype.Text{String: req.Email, Valid: req.Email != ""},
+			Phone:        pgtype.Text{},
 			PasswordHash: hash,
 			CreatedBy:    AuthUserID(c),
 		})
