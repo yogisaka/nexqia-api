@@ -370,9 +370,10 @@ func ListPermissionsHandler(c *gin.Context) {
 }
 
 type createRoleRequest struct {
-	CompanyID   string `json:"company_id" binding:"required"`
-	Name        string `json:"name" binding:"required"`
-	Description string `json:"description"`
+	CompanyID             string `json:"company_id" binding:"required"`
+	Name                  string `json:"name" binding:"required"`
+	Description           string `json:"description"`
+	RequiresPhysicianData bool   `json:"requires_physician_data"`
 }
 
 // CreateRoleHandler godoc
@@ -405,11 +406,12 @@ func CreateRoleHandler(c *gin.Context) {
 	}
 	q := sqlcgen.New(TxFromContext(c))
 	role, err := q.CreateRole(c.Request.Context(), sqlcgen.CreateRoleParams{
-		CompanyID:   companyID,
-		Name:        req.Name,
-		Description: pgtype.Text{String: req.Description, Valid: req.Description != ""},
-		IsSystem:    false,
-		CreatedBy:   AuthUserID(c),
+		CompanyID:             companyID,
+		Name:                  req.Name,
+		Description:           pgtype.Text{String: req.Description, Valid: req.Description != ""},
+		IsSystem:              false,
+		RequiresPhysicianData: req.RequiresPhysicianData,
+		CreatedBy:             AuthUserID(c),
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -479,8 +481,9 @@ func GetRoleHandler(c *gin.Context) {
 }
 
 type updateRoleRequest struct {
-	Name        string `json:"name" binding:"required"`
-	Description string `json:"description"`
+	Name                  string `json:"name" binding:"required"`
+	Description           string `json:"description"`
+	RequiresPhysicianData bool   `json:"requires_physician_data"`
 }
 
 // UpdateRoleHandler godoc
@@ -524,7 +527,8 @@ func UpdateRoleHandler(c *gin.Context) {
 	}
 	role, err := q.UpdateRole(c.Request.Context(), sqlcgen.UpdateRoleParams{
 		ID: id, Name: req.Name, Description: pgtype.Text{String: req.Description, Valid: req.Description != ""},
-		UpdatedBy: AuthUserID(c),
+		RequiresPhysicianData: req.RequiresPhysicianData,
+		UpdatedBy:             AuthUserID(c),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "role not found (or is a system role)"})

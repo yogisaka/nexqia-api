@@ -81,8 +81,8 @@ RETURNING *;
 DELETE FROM core.permission WHERE id = $1;
 
 -- name: CreateRole :one
-INSERT INTO core.role (company_id, name, description, is_system, created_by, updated_by)
-VALUES ($1, $2, $3, $4, $5, $5)
+INSERT INTO core.role (company_id, name, description, is_system, requires_physician_data, created_by, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6, $6)
 RETURNING *;
 
 -- name: GetRoleByID :one
@@ -96,7 +96,7 @@ LIMIT $2 OFFSET $3;
 
 -- name: UpdateRole :one
 UPDATE core.role
-SET name = $2, description = $3, updated_by = $4
+SET name = $2, description = $3, requires_physician_data = $4, updated_by = $5
 WHERE id = $1 AND deleted_at IS NULL AND NOT is_system
 RETURNING *;
 
