@@ -121,3 +121,62 @@ func ParseToken(secret, tokenString string) (*Claims, error) {
 	}
 	return claims, nil
 }
+
+// platformAdminAccessPurpose marks a platform-admin token — completely separate
+// from accessTokenPurpose ("access", tenant staff). ParsePlatformAdminToken
+// rejects anything else, and ParseToken (tenant) rejects this purpose too (its
+// own check is claims.Purpose != accessTokenPurpose) — the two token systems
+// can never be used interchangeably. See
+// docs/design/specs/2026-09-24-platform-admin-foundation-design.md §4.
+const platformAdminAccessPurpose = "platform_admin_access"
+
+// PlatformAdminClaims identifies an authenticated platform.admin_user — no
+// company_id/merchant_id at all, unlike Claims above, because platform admins
+// aren't scoped to any tenant.
+type PlatformAdminClaims struct {
+	AdminUserID string `json:"aid"`
+	Username    string `json:"username"`
+	DeviceID    string `json:"did"`
+	Purpose     string `json:"purpose"`
+	jwt.RegisteredClaims
+}
+
+func GeneratePlatformAdminToken(secret, adminUserID, username, deviceID string, ttl time.Duration) (string, error) {
+	claims := PlatformAdminClaims{
+		AdminUserID: adminUserID,
+		Username:    username,
+		DeviceID:    deviceID,
+		Purpose:     platformAdminAccessPurpose,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
+// ErrNotPlatformAdminToken means a token parsed successfully but wasn't issued
+// by GeneratePlatformAdminToken (wrong purpose claim) — includes an ordinary
+// tenant access token presented at a platform-admin route.
+var ErrNotPlatformAdminToken = errors.New("not a platform-admin token")
+
+func ParsePlatformAdminToken(secret, tokenString string) (*PlatformAdminClaims, error) {
+	claims := &PlatformAdminClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !token.Valid {
+		return nil, errors.New("invalid token")
+	}
+	if claims.Purpose != platformAdminAccessPurpose {
+		return nil, ErrNotPlatformAdminToken
+	}
+	return claims, nil
+}

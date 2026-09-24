@@ -694,3 +694,64 @@ type TerminologyConceptHierarchy struct {
 	ChildConceptID   pgtype.UUID
 	RelationshipType string
 }
+
+type PlatformAdminUser struct {
+	ID           pgtype.UUID
+	Username     string
+	Email        string
+	FullName     string
+	PasswordHash string
+	IsActive     bool
+	LastLoginAt  pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	CreatedBy    pgtype.UUID
+	UpdatedAt    pgtype.Timestamptz
+	UpdatedBy    pgtype.UUID
+	DeletedAt    pgtype.Timestamptz
+	DeletedBy    pgtype.UUID
+	RowVersion   int32
+}
+
+type PlatformPermission struct {
+	ID          pgtype.UUID
+	Code        string
+	Description string
+	Module      string
+}
+
+type PlatformRole struct {
+	ID          pgtype.UUID
+	Name        string
+	Description pgtype.Text
+	IsSystem    bool
+	CreatedAt   pgtype.Timestamptz
+	CreatedBy   pgtype.UUID
+	UpdatedAt   pgtype.Timestamptz
+	UpdatedBy   pgtype.UUID
+	DeletedAt   pgtype.Timestamptz
+	DeletedBy   pgtype.UUID
+	RowVersion  int32
+}
+
+type PlatformRolePermission struct {
+	RoleID       pgtype.UUID
+	PermissionID pgtype.UUID
+}
+
+type PlatformAdminUserRole struct {
+	AdminUserID pgtype.UUID
+	RoleID      pgtype.UUID
+}
+
+type PlatformAdminRefreshToken struct {
+	ID          pgtype.UUID
+	AdminUserID pgtype.UUID
+	DeviceID    string
+	DeviceLabel string
+	TokenHash   string
+	IssuedAt    pgtype.Timestamptz
+	LastUsedAt  pgtype.Timestamptz
+	ExpiresAt   pgtype.Timestamptz
+	RevokedAt   pgtype.Timestamptz
+	CreatedIp   netip.Addr
+}
