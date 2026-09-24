@@ -20,10 +20,12 @@ type Config struct {
 	RedisPassword      string
 	JWTSecret          string
 
-	RateLimitLoginMaxAttempts   int
-	RateLimitLoginWindowSeconds int
-	RateLimitAPITokensPerMinute int
-	RateLimitAPIBurst           int
+	RateLimitLoginMaxAttempts      int
+	RateLimitLoginWindowSeconds    int
+	RateLimitRegisterMaxAttempts   int
+	RateLimitRegisterWindowSeconds int
+	RateLimitAPITokensPerMinute    int
+	RateLimitAPIBurst              int
 
 	Argon2MemoryKiB   uint32
 	Argon2Iterations  uint32
@@ -76,10 +78,12 @@ func Load() Config {
 		RedisPassword:      mustGetEnv("REDIS_PASSWORD"),
 		JWTSecret:          mustGetEnv("JWT_SECRET"),
 
-		RateLimitLoginMaxAttempts:   getEnvInt("RATE_LIMIT_LOGIN_MAX_ATTEMPTS", 5),
-		RateLimitLoginWindowSeconds: getEnvInt("RATE_LIMIT_LOGIN_WINDOW_SECONDS", 900),
-		RateLimitAPITokensPerMinute: getEnvInt("RATE_LIMIT_API_TOKENS_PER_MINUTE", 100),
-		RateLimitAPIBurst:           getEnvInt("RATE_LIMIT_API_BURST", 20),
+		RateLimitLoginMaxAttempts:      getEnvInt("RATE_LIMIT_LOGIN_MAX_ATTEMPTS", 5),
+		RateLimitLoginWindowSeconds:    getEnvInt("RATE_LIMIT_LOGIN_WINDOW_SECONDS", 900),
+		RateLimitRegisterMaxAttempts:   getEnvInt("RATE_LIMIT_REGISTER_MAX_ATTEMPTS", 3),
+		RateLimitRegisterWindowSeconds: getEnvInt("RATE_LIMIT_REGISTER_WINDOW_SECONDS", 3600),
+		RateLimitAPITokensPerMinute:    getEnvInt("RATE_LIMIT_API_TOKENS_PER_MINUTE", 100),
+		RateLimitAPIBurst:              getEnvInt("RATE_LIMIT_API_BURST", 20),
 
 		Argon2MemoryKiB:   uint32(getEnvInt("ARGON2_MEMORY_KIB", 19456)),
 		Argon2Iterations:  uint32(getEnvInt("ARGON2_ITERATIONS", 2)),

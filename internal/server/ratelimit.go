@@ -56,3 +56,22 @@ func checkLoginRateLimit(c *gin.Context, limiter *ratelimit.Limiter, cfg config.
 	}
 	return true
 }
+
+// checkRegisterRateLimit enforces a sliding-window limit per-IP only — no
+// username exists yet before the request is processed (registration creates a
+// brand-new account, spec §6). Stricter defaults than login since registering
+// creates a company + account. Writes the response itself and returns false on
+// rejection or Redis outage (fail-closed, same as checkLoginRateLimit).
+func checkRegisterRateLimit(c *gin.Context, limiter *ratelimit.Limiter, cfg config.Config) bool {
+	result, err := limiter.AllowSlidingWindow(c.Request.Context(), "register:ip:"+c.ClientIP(), cfg.RateLimitRegisterMaxAttempts, cfg.RateLimitRegisterWindowSeconds)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
+		return false
+	}
+	if !result.Allowed {
+		c.Header("Retry-After", strconv.Itoa(int(result.RetryAfter.Seconds())))
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many registration attempts, try again later"})
+		return false
+	}
+	return true
+}
