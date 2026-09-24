@@ -26,6 +26,13 @@ UPDATE core.merchant SET code = '100012' WHERE id = '00000000-0000-0000-0001-000
 
 -- ============================================================
 -- 2. Terminology (value set internal: spesialisasi, agama, pendidikan, etnis)
+-- NOTE: religion/education/ethnic/job/blood_group/dst yang dipakai FE
+-- (nexqia-his/src/lib/constants.ts TERMINOLOGY_SYSTEMS) sekarang datang dari
+-- ETL data terpisah milik user (code_system.system_uri pola
+-- http://nexqia.local/option/*, id UUID-v7) yang di-load langsung ke DB, di
+-- luar file seed ini -- BUKAN dari blok di bawah. Blok kecil di bawah cuma
+-- buat 4 concept demo (SPEC-/REL-/EDU-/ETN-*) yang dirujuk langsung oleh
+-- person/physician seed rows lebih bawah di file ini.
 -- ============================================================
 INSERT INTO terminology.code_system (id, system_uri, name, version) VALUES
     ('00000000-0000-0000-0002-000000000001', 'urn:nexqia:valueset:demographic', 'NEXQIA Internal Value Sets', '1.0')
@@ -172,7 +179,12 @@ INSERT INTO core.user_merchant_role (id, user_id, merchant_id, role_id) VALUES
     -- FO Rajal: role baru, assign ke andi.wijaya di kedua merchant buat testing role-switcher
     ('00000000-0000-0000-0008-000000000013', '00000000-0000-0000-0007-000000000001', '00000000-0000-0000-0001-000000000001', '00000000-0000-0000-0005-000000000005'),
     ('00000000-0000-0000-0008-000000000014', '00000000-0000-0000-0007-000000000001', '00000000-0000-0000-0001-000000000002', '00000000-0000-0000-0005-000000000005')
-ON CONFLICT (id) DO NOTHING;
+-- Target constraint match yang beneran ada di tabel ini (UNIQUE (user_id, merchant_id, role_id)),
+-- bukan (id) -- ON CONFLICT (id) DO NOTHING gak nyangkut kalau baris ini udah pernah ke-assign
+-- lewat jalur lain (mis. manual via API) dengan id row yang beda, reseed jadi error di tengah
+-- transaksi dan nge-rollback SEMUA insert di file ini termasuk yang gak terkait. Ditemuin +
+-- dibenerin 2026-09-24 pas verifikasi fix terminology di atas.
+ON CONFLICT (user_id, merchant_id, role_id) DO NOTHING;
 
 -- ============================================================
 -- 5. Physician
@@ -389,11 +401,22 @@ BEGIN
       v_queue_id uuid := ('00000000-0000-0000-0033-00000000000' || rows.seq)::uuid;
       v_created timestamptz := current_date + (rows.hour_offset || ' hours')::interval;
     BEGIN
-      INSERT INTO operations.admission
+      INSERT INTO operations.admission AS adm
         (id, company_id, merchant_id, visit_no, person_id, admission_type, department_id, physician_id, primary_payer_id, admission_at, created_at, created_by, updated_by)
       VALUES
         (v_admission_id, v_company, v_merchant, 'UMU' || to_char(current_date, 'YYYYMMDD') || '-' || rows.queue_no, rows.person_id, 'outpatient', v_dept, v_physician, rows.payer_id, v_created, v_created, NULL, NULL)
-      ON CONFLICT (id) DO NOTHING;
+      -- Target (merchant_id, visit_no) -- the actual UNIQUE constraint on this table
+      -- (visit_no is date-derived, so it's identical on a same-day reseed even though
+      -- `id` also already matches; ON CONFLICT (id) alone doesn't suppress a different
+      -- constraint's violation and aborts the whole seed transaction). DO UPDATE (no-op
+      -- self-assign) + RETURNING ... INTO v_admission_id -- not DO NOTHING -- so
+      -- v_admission_id always ends up holding the REAL existing row's id (which can
+      -- differ from the hardcoded literal above if this merchant/visit_no combo was
+      -- ever created some other way, e.g. via the app itself) before the queue INSERT
+      -- below FK-references it. Found + fixed 2026-09-24 alongside the
+      -- terminology/user_merchant_role idempotency fixes above.
+      ON CONFLICT (merchant_id, visit_no) DO UPDATE SET updated_by = adm.updated_by
+      RETURNING adm.id INTO v_admission_id;
 
       INSERT INTO operations.queue
         (id, company_id, merchant_id, queue_type, department_id, person_id, admission_id, queue_number, status, called_at, created_at)
