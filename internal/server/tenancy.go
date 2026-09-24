@@ -332,12 +332,12 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 		// docs/design/specs/2026-09-24-merchant-management-ui-design.md §3.5.
 		rawToken, err := c.Cookie(refreshCookieName)
 		if err != nil || rawToken == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing refresh token"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing refresh token"})
 			return
 		}
 		newToken, err := session.SwitchMerchant(c.Request.Context(), q, sessionConfig(cfg), rawToken, AuthUserID(c), merchant.ID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to activate new merchant"})
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to activate new merchant"})
 			return
 		}
 
