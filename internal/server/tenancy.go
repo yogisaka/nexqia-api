@@ -37,14 +37,22 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
-// RegisterTenancyRoutes wires core.company and core.merchant CRUD (docs/07-core-ddl.md §1).
-// All routes require AuthMiddleware; company-level mutation/list requires PermCompanyManage
-// (platform-admin scope — company creation/listing spans tenants by nature), merchant
-// mutation requires PermMerchantManage, and every handler enforces the caller can only
-// see/touch their own company (AuthCompanyID) unless they hold PermCompanyManage.
+// RegisterTenancyRoutes wires the PLATFORM-WIDE-only tenancy routes — company
+// creation/listing spans tenants by nature (sub-project 0d, NEXQIA's own
+// platform-admin scope), gated by the unsplit PermCompanyManage. Everything
+// company-scoped-to-self or merchant-scoped lives in RegisterCompanyLevelRoutes
+// instead (docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §3).
 func RegisterTenancyRoutes(rg *gin.RouterGroup) {
 	rg.POST("/companies", CreateCompanyHandler)
 	rg.GET("/companies", ListCompaniesHandler)
+}
+
+// RegisterCompanyLevelRoutes wires company-self-management + merchant CRUD —
+// deliberately registered under companyOnlyAuthed (CompanyOnlyMiddleware, no
+// X-Merchant-ID needed), not the merchant-required `locked` group, so a user
+// with zero merchants (a freshly-registered Owner) can still reach them. See
+// §3 for why TenantMiddleware can't be used here.
+func RegisterCompanyLevelRoutes(rg *gin.RouterGroup) {
 	rg.GET("/companies/:id", GetCompanyHandler)
 	rg.PATCH("/companies/:id", UpdateCompanyHandler)
 	rg.DELETE("/companies/:id", DeleteCompanyHandler)
@@ -142,7 +150,7 @@ func GetCompanyHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if id != AuthCompanyID(c) && !RequirePermission(c, PermCompanyManage) {
+	if id != AuthCompanyID(c) && !RequireCompanyLevelPermission(c, PermCompanyManageOwn, PermCompanyManage) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
@@ -184,7 +192,7 @@ func UpdateCompanyHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "company not found"})
 		return
 	}
-	if !RequirePermission(c, PermCompanyManage) {
+	if !RequireCompanyLevelPermission(c, PermCompanyManageOwn, PermCompanyManage) {
 		return
 	}
 	var req updateCompanyRequest
@@ -226,7 +234,7 @@ func DeleteCompanyHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "company not found"})
 		return
 	}
-	if !RequirePermission(c, PermCompanyManage) {
+	if !RequireCompanyLevelPermission(c, PermCompanyManageOwn, PermCompanyManage) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
@@ -270,7 +278,7 @@ func CreateMerchantHandler(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "cannot create merchant outside your own company"})
 		return
 	}
-	if !RequirePermission(c, PermMerchantManage) {
+	if !RequireCompanyLevelPermission(c, PermMerchantManage) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
@@ -318,7 +326,7 @@ func ListMerchantsHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if companyID != AuthCompanyID(c) && !RequirePermission(c, PermCompanyManage) {
+	if companyID != AuthCompanyID(c) && !RequireCompanyLevelPermission(c, PermCompanyManageOwn, PermCompanyManage) {
 		return
 	}
 	limit, offset := paginationParams(c)
@@ -404,7 +412,7 @@ func UpdateMerchantHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "merchant not found"})
 		return
 	}
-	if !RequirePermissionForMerchant(c, PermMerchantManage, existing.ID) {
+	if !RequireCompanyLevelPermission(c, PermMerchantManage) {
 		return
 	}
 	var req updateMerchantRequest
@@ -461,7 +469,7 @@ func DeleteMerchantHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "merchant not found"})
 		return
 	}
-	if !RequirePermissionForMerchant(c, PermMerchantManage, existing.ID) {
+	if !RequireCompanyLevelPermission(c, PermMerchantManage) {
 		return
 	}
 	if err := q.SoftDeleteMerchant(c.Request.Context(), sqlcgen.SoftDeleteMerchantParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {

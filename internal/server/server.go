@@ -61,6 +61,12 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	companyOnly.POST("/auth/refresh", RefreshHandler(cfg))
 	companyOnly.POST("/auth/logout", LogoutHandler(cfg))
 
+	// Merchant isn't known yet on these routes either (same reasoning as
+	// companyOnly above) — but these DO need auth, unlike login/refresh.
+	// See docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §3.
+	companyOnlyAuthed := v1.Group("", CompanyOnlyMiddleware(pool), AuthMiddleware(cfg.JWTSecret), RateLimitAPIMiddleware(limiter, cfg))
+	RegisterCompanyLevelRoutes(companyOnlyAuthed)
+
 	tenant := v1.Group("", TenantMiddleware(pool))
 	protected := tenant.Group("", AuthMiddleware(cfg.JWTSecret), RateLimitAPIMiddleware(limiter, cfg))
 
