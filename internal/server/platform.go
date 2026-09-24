@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/config"
@@ -18,7 +19,7 @@ import (
 	"github.com/yogisaka/nexqia-api/internal/ratelimit"
 )
 
-func RegisterPlatformRoutes(rg *gin.RouterGroup, limiter *ratelimit.Limiter, cfg config.Config, hasher *auth.PasswordHasher) {
+func RegisterPlatformRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool, limiter *ratelimit.Limiter, cfg config.Config, hasher *auth.PasswordHasher) {
 	rg.POST("/login", PlatformAdminLoginHandler(limiter, cfg, hasher))
 	rg.POST("/refresh", PlatformAdminRefreshHandler(cfg))
 
@@ -26,6 +27,7 @@ func RegisterPlatformRoutes(rg *gin.RouterGroup, limiter *ratelimit.Limiter, cfg
 	protected.POST("/logout", PlatformAdminLogoutHandler(cfg))
 	protected.GET("/companies", ListPlatformCompaniesHandler)
 	protected.GET("/companies/:id", GetPlatformCompanyDetailHandler)
+	protected.POST("/companies", CreatePlatformCompanyHandler(pool, hasher))
 	protected.POST("/companies/:id/suspend", SuspendPlatformCompanyHandler)
 	protected.POST("/companies/:id/activate", ActivatePlatformCompanyHandler)
 	protected.GET("/roles", ListPlatformRolesHandler)
@@ -416,4 +418,186 @@ func ActivatePlatformCompanyHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
+}
+
+type createPlatformCompanyRequest struct {
+	CompanyName string `json:"company_name" binding:"required,min=3"`
+	FullName    string `json:"full_name" binding:"required"`
+	Username    string `json:"username" binding:"required"`
+	Email       string `json:"email" binding:"required"`
+	Phone       string `json:"phone" binding:"required"`
+	Password    string `json:"password" binding:"required,min=8"`
+}
+
+func (r createPlatformCompanyRequest) validate() string {
+	switch {
+	case !registerUsernameFormat.MatchString(r.Username):
+		return "username must contain only lowercase letters, digits, and dots"
+	case !registerEmailFormat.MatchString(r.Email):
+		return "invalid email format"
+	case !registerPhoneFormat.MatchString(r.Phone):
+		return "invalid phone number format"
+	default:
+		return ""
+	}
+}
+
+// CreatePlatformCompanyHandler godoc
+// @Summary Create a company and bootstrap its Owner — platform-admin-initiated
+// @Description No session is issued for the new Owner — they log in themselves
+// @Description afterward via the normal /auth/login. See docs/design/specs/
+// @Description 2026-09-24-platform-admin-create-company-design.md.
+// @Tags platform
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body createPlatformCompanyRequest true "New company + Owner data"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /platform/companies [post]
+func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHasher) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !RequirePlatformPermission(c, PermPlatformCompanyManage) {
+			return
+		}
+		var req createPlatformCompanyRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if msg := req.validate(); msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		adminID := PlatformAdminUserID(c)
+
+		ctx := c.Request.Context()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to open transaction"})
+			return
+		}
+		defer tx.Rollback(ctx)
+		q := sqlcgen.New(tx)
+
+		// No email/phone pre-check here — same reasoning as RegisterHandler
+		// (0a, commit 09c057c): the pre-check queries were RLS-protected plain
+		// SELECTs run BEFORE set_config (crash SQLSTATE 42704) and useless under
+		// RLS anyway; the UNIQUE constraints + isUniqueViolation at CreateAppUser
+		// below enforce duplicates correctly, and defer tx.Rollback undoes any
+		// earlier writes in this local tx on rejection.
+		var companyID pgtype.UUID
+		if err := tx.QueryRow(ctx, "SELECT uuid_generate_v7()").Scan(&companyID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		var company sqlcgen.CoreCompany
+		for attempt := 0; ; attempt++ {
+			code, err := generateCode()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID.String()); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
+				return
+			}
+			company, err = q.CreateCompanyWithID(ctx, sqlcgen.CreateCompanyWithIDParams{
+				ID: companyID, Code: code, Name: req.CompanyName, CreatedBy: adminID,
+			})
+			if err == nil {
+				break
+			}
+			if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
+				continue
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Gender sengaja gak diisi (zero-value pgtype.Text{} = NULL) — request
+		// admin platform gak ngumpulin data ini, core.person.gender nullable
+		// sejak migration 000038 (pola sama kayak RegisterHandler 0a).
+		person, err := q.CreatePerson(ctx, sqlcgen.CreatePersonParams{
+			CompanyID: companyID,
+			FullName:  req.FullName,
+			CreatedBy: adminID,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		hash, err := hasher.Hash(ctx, req.Password)
+		if err != nil {
+			if errors.Is(err, auth.ErrHashQueueTimeout) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+			return
+		}
+
+		user, err := q.CreateAppUser(ctx, sqlcgen.CreateAppUserParams{
+			CompanyID: companyID, PersonID: person.ID, Username: req.Username,
+			Email:        pgtype.Text{String: req.Email, Valid: true},
+			Phone:        pgtype.Text{String: req.Phone, Valid: true},
+			PasswordHash: hash, CreatedBy: adminID,
+		})
+		if err != nil {
+			if isUniqueViolation(err) {
+				c.JSON(http.StatusConflict, gin.H{"error": "email or phone number already registered"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		role, err := q.CreateRole(ctx, sqlcgen.CreateRoleParams{
+			CompanyID: companyID, Name: "Owner", Description: pgtype.Text{String: "Company owner — full access", Valid: true}, IsSystem: true, CreatedBy: adminID,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		permissions, err := q.ListPermissions(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, p := range permissions {
+			if p.Code == PermCompanyManage {
+				continue // core.company.manage — platform-wide, never in the Owner bundle
+			}
+			if err := q.AddRolePermission(ctx, sqlcgen.AddRolePermissionParams{RoleID: role.ID, PermissionID: p.ID}); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+
+		if _, err := q.CreateUserCompanyRole(ctx, sqlcgen.CreateUserCompanyRoleParams{
+			UserID: user.ID, CompanyID: companyID, RoleID: role.ID, CreatedBy: adminID,
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+			"company_id":   companyID.String(),
+			"company_code": company.Code,
+			"company_name": company.Name,
+			"user_id":      user.ID.String(),
+			"username":     user.Username,
+			"full_name":    req.FullName,
+		}, "meta": gin.H{}})
+	}
 }

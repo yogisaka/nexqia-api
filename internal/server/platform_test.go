@@ -692,3 +692,216 @@ func TestSuspendPlatformCompany_ForbiddenWithoutPermission(t *testing.T) {
 		t.Fatalf("expected 403 (missing platform.company.manage), got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestCreatePlatformCompany_Success(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	adminID := "41414141-4141-4141-4141-414141414141"
+	roleID := "42424242-4242-4242-4242-424242424242"
+	permID := "43434343-4343-4343-4343-434343434343"
+
+	adminPasswordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash admin password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.permission (id, code, description, module) VALUES ($1, 'platform.company.manage', 'test', 'platform') ON CONFLICT (id) DO NOTHING", permID); err != nil {
+		t.Fatalf("seed permission: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.role (id, name, is_system) VALUES ($1, 'Create Company Test Admin', true)", roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.role_permission (role_id, permission_id) VALUES ($1, $2)", roleID, permID); err != nil {
+		t.Fatalf("seed role_permission: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user (id, username, email, full_name, password_hash, is_active) VALUES ($1, 'createcoadmin', 'createcoadmin@nexqia.internal', 'Test', $2, true)", adminID, adminPasswordHash); err != nil {
+		t.Fatalf("seed admin_user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user_role (admin_user_id, role_id) VALUES ($1, $2)", adminID, roleID); err != nil {
+		t.Fatalf("seed admin_user_role: %v", err)
+	}
+
+	token, err := auth.GeneratePlatformAdminToken(testJWTSecret, adminID, "createcoadmin", "create-co-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate platform admin token: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"company_name": "Manual Onboard Co",
+		"full_name":    "New Owner",
+		"username":     "new.owner",
+		"email":        "new.owner@example.com",
+		"phone":        "081234500099",
+		"password":     "Passw0rd123!",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/companies", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			CompanyID   string `json:"company_id"`
+			CompanyCode string `json:"company_code"`
+			UserID      string `json:"user_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Data.CompanyID == "" || resp.Data.CompanyCode == "" || resp.Data.UserID == "" {
+		t.Fatalf("expected non-empty company_id/company_code/user_id, got %+v", resp.Data)
+	}
+
+	// The new Owner must be able to log in immediately — proves the account
+	// (not just the API response) is genuinely usable, not a half-built row.
+	loginBody, _ := json.Marshal(map[string]string{"username": "new.owner", "password": "Passw0rd123!"})
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("X-Company-ID", resp.Data.CompanyID)
+	loginReq.Header.Set("X-Device-Id", "new-owner-device")
+	loginRec := httptest.NewRecorder()
+	router.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("new Owner login expected 200, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+
+	// The Owner role must hold every permission EXCEPT core.company.manage.
+	var missingCompanyManage, hasOtherPerm bool
+	err = pool.QueryRow(ctx, `
+		SELECT
+			NOT EXISTS (SELECT 1 FROM core.role_permission rp JOIN core.permission p ON p.id = rp.permission_id JOIN core.role r ON r.id = rp.role_id WHERE r.company_id = $1 AND p.code = 'core.company.manage'),
+			EXISTS (SELECT 1 FROM core.role_permission rp JOIN core.role r ON r.id = rp.role_id WHERE r.company_id = $1)
+	`, resp.Data.CompanyID).Scan(&missingCompanyManage, &hasOtherPerm)
+	if err != nil {
+		t.Fatalf("query role_permission: %v", err)
+	}
+	if !missingCompanyManage {
+		t.Fatalf("expected Owner role to NOT have core.company.manage")
+	}
+	if !hasOtherPerm {
+		t.Fatalf("expected Owner role to have at least some other permission")
+	}
+}
+
+func TestCreatePlatformCompany_DuplicateEmail(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	adminID := "44444444-4444-4444-4444-444444444444"
+	roleID := "45454545-4545-4545-4545-454545454545"
+	permID := "46464646-4646-4646-4646-464646464646"
+
+	adminPasswordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash admin password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.permission (id, code, description, module) VALUES ($1, 'platform.company.manage', 'test', 'platform') ON CONFLICT (id) DO NOTHING", permID); err != nil {
+		t.Fatalf("seed permission: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.role (id, name, is_system) VALUES ($1, 'Dup Email Test Admin', true)", roleID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.role_permission (role_id, permission_id) VALUES ($1, $2)", roleID, permID); err != nil {
+		t.Fatalf("seed role_permission: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user (id, username, email, full_name, password_hash, is_active) VALUES ($1, 'dupemailadmin', 'dupemailadmin@nexqia.internal', 'Test', $2, true)", adminID, adminPasswordHash); err != nil {
+		t.Fatalf("seed admin_user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user_role (admin_user_id, role_id) VALUES ($1, $2)", adminID, roleID); err != nil {
+		t.Fatalf("seed admin_user_role: %v", err)
+	}
+
+	// A tenant app_user that already holds this email.
+	existingCompanyID := "47474747-4747-4747-4747-474747474747"
+	existingUserID := "48484848-4848-4848-4848-484848484848"
+	existingPasswordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash existing password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.company (id, code, name) VALUES ($1, 'dupemailco', 'Existing Co')", existingCompanyID); err != nil {
+		t.Fatalf("seed existing company: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.app_user (id, company_id, username, email, password_hash, is_active) VALUES ($1, $2, 'existingowner', 'taken@example.com', $3, true)", existingUserID, existingCompanyID, existingPasswordHash); err != nil {
+		t.Fatalf("seed existing app_user: %v", err)
+	}
+
+	token, err := auth.GeneratePlatformAdminToken(testJWTSecret, adminID, "dupemailadmin", "dup-email-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate platform admin token: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"company_name": "Another Co",
+		"full_name":    "Another Owner",
+		"username":     "another.owner",
+		"email":        "taken@example.com",
+		"phone":        "081234500098",
+		"password":     "Passw0rd123!",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/companies", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.company WHERE name = 'Another Co'").Scan(&count); err != nil {
+		t.Fatalf("count companies: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no company created on duplicate-email rejection, found %d", count)
+	}
+}
+
+func TestCreatePlatformCompany_MissingPermission(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	adminID := "49494949-4949-4949-4949-494949494949"
+	passwordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user (id, username, email, full_name, password_hash, is_active) VALUES ($1, 'nopermadmin', 'nopermadmin@nexqia.internal', 'Test', $2, true)", adminID, passwordHash); err != nil {
+		t.Fatalf("seed admin_user: %v", err)
+	}
+	// Deliberately NO role/permission assigned.
+
+	token, err := auth.GeneratePlatformAdminToken(testJWTSecret, adminID, "nopermadmin", "no-perm-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate platform admin token: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"company_name": "Should Not Exist Co",
+		"full_name":    "Nobody",
+		"username":     "nobody",
+		"email":        "nobody@example.com",
+		"phone":        "081234500097",
+		"password":     "Passw0rd123!",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/platform/companies", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
