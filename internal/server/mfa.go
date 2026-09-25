@@ -5,14 +5,18 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
+	"github.com/yogisaka/nexqia-api/internal/config"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 	"github.com/yogisaka/nexqia-api/internal/mfa"
+	"github.com/yogisaka/nexqia-api/internal/ratelimit"
 	"github.com/yogisaka/nexqia-api/internal/session"
 )
 
@@ -22,6 +26,7 @@ const mfaTOTPIssuer = "Nexqia"
 // AuthMiddleware (see server.go) — every handler here acts on the caller's own
 // account only, there is no cross-user MFA management endpoint.
 func RegisterMFARoutes(rg *gin.RouterGroup, enc *mfa.Encryptor, hasher *auth.PasswordHasher) {
+	rg.GET("/auth/mfa", MFAStatusHandler())
 	rg.POST("/auth/mfa/setup", MFASetupHandler())
 	rg.POST("/auth/mfa/confirm", MFAConfirmHandler(enc, hasher))
 	rg.POST("/auth/mfa/disable", MFADisableHandler(hasher))
@@ -51,9 +56,15 @@ func MFASetupHandler() gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate MFA secret"})
 			return
 		}
+		qr, err := mfa.QRDataURI(otpauthURI)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate MFA secret"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
 			"secret":      secret,
 			"otpauth_uri": otpauthURI,
+			"qr_png":      qr,
 		}, "meta": gin.H{}})
 	}
 }
@@ -111,41 +122,11 @@ func MFAConfirmHandler(enc *mfa.Encryptor, hasher *auth.PasswordHasher) gin.Hand
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid code"})
 			return
 		}
-		encryptedSecret, err := enc.Encrypt(req.Secret)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt MFA secret"})
-			return
-		}
-		if err := q.SetAppUserMFASecret(c.Request.Context(), sqlcgen.SetAppUserMFASecretParams{
-			ID: userID, MfaSecret: pgtype.Text{String: encryptedSecret, Valid: true}, UpdatedBy: userID,
-		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
 		// Re-enrollment invalidates any recovery codes tied to the previous secret
-		// (spec §7) — always start from a clean slate.
-		if err := q.DeleteMFARecoveryCodesForUser(c.Request.Context(), userID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// (spec §7) — persistTenantTOTP always starts from a clean slate.
+		codes := persistTenantTOTP(c, q, enc, hasher, userID, AuthCompanyID(c), req.Secret)
+		if codes == nil {
 			return
-		}
-		codes, err := mfa.GenerateRecoveryCodes()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate recovery codes"})
-			return
-		}
-		companyID := AuthCompanyID(c)
-		for _, code := range codes {
-			hash, err := hasher.Hash(c.Request.Context(), code)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store recovery codes"})
-				return
-			}
-			if err := q.CreateMFARecoveryCode(c.Request.Context(), sqlcgen.CreateMFARecoveryCodeParams{
-				UserID: userID, CompanyID: companyID, CodeHash: hash,
-			}); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
 			"recovery_codes": codes,
@@ -219,5 +200,196 @@ func MFADisableHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
+	}
+}
+
+// tenantMFAGrace evaluates the merchant's auth.require_totp policy (spec §5)
+// for a user without TOTP, starting the grace window on first sight.
+// Merchant-less sessions (Owner before the first merchant) are exempt.
+func tenantMFAGrace(c *gin.Context, q *sqlcgen.Queries, cfg config.Config, user sqlcgen.CoreAppUser, merchantID pgtype.UUID) (mfaGraceDecision, time.Time, error) {
+	if user.MfaSecret.Valid || !merchantID.Valid || !checkMFANudge(c, q, merchantID) {
+		return mfaGraceNotApplicable, time.Time{}, nil
+	}
+	until := user.MfaGraceUntil
+	if !until.Valid {
+		ctx := c.Request.Context()
+		started, err := q.StartAppUserMFAGrace(ctx, sqlcgen.StartAppUserMFAGraceParams{
+			ID: user.ID, GraceDays: int32(cfg.TenantMFAGraceDays),
+		})
+		if errors.Is(err, pgx.ErrNoRows) { // a concurrent login started it first
+			fresh, getErr := q.GetAppUserByID(ctx, user.ID)
+			if getErr != nil {
+				return 0, time.Time{}, getErr
+			}
+			started, err = fresh.MfaGraceUntil, nil
+		}
+		if err != nil {
+			return 0, time.Time{}, err
+		}
+		until = started
+	}
+	return graceDecision(until.Time), until.Time, nil
+}
+
+// persistTenantTOTP is persistPlatformTOTP for core.app_user — shared by
+// MFAConfirmHandler and MFAEnrollHandler. Fixes the old confirm path, which
+// used plain c.JSON after SetAppUserMFASecret and so committed a secret
+// without recovery codes on failure.
+func persistTenantTOTP(c *gin.Context, q *sqlcgen.Queries, enc *mfa.Encryptor, hasher *auth.PasswordHasher, userID, companyID pgtype.UUID, secret string) []string {
+	ctx := c.Request.Context()
+	encrypted, err := enc.Encrypt(secret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt MFA secret"})
+		return nil
+	}
+	codes, err := mfa.GenerateRecoveryCodes()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate recovery codes"})
+		return nil
+	}
+	hashes := make([]string, len(codes))
+	for i, code := range codes {
+		if hashes[i], err = hasher.Hash(ctx, code); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store recovery codes"})
+			return nil
+		}
+	}
+	if err := q.SetAppUserMFASecret(ctx, sqlcgen.SetAppUserMFASecretParams{
+		ID: userID, MfaSecret: pgtype.Text{String: encrypted, Valid: true}, UpdatedBy: userID,
+	}); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to save MFA secret"})
+		return nil
+	}
+	if err := q.DeleteMFARecoveryCodesForUser(ctx, userID); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to store recovery codes"})
+		return nil
+	}
+	for _, h := range hashes {
+		if err := q.CreateMFARecoveryCode(ctx, sqlcgen.CreateMFARecoveryCodeParams{
+			UserID: userID, CompanyID: companyID, CodeHash: h,
+		}); err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to store recovery codes"})
+			return nil
+		}
+	}
+	return codes
+}
+
+// checkTenantMFAEnrollRateLimit mirrors checkPlatformMFAEnrollRateLimit —
+// enrollment tokens are short-lived, so brute-forcing the TOTP code against
+// one user must be bounded per user, not per IP.
+func checkTenantMFAEnrollRateLimit(c *gin.Context, limiter *ratelimit.Limiter, cfg config.Config, userID string) bool {
+	result, err := limiter.AllowSlidingWindow(c.Request.Context(), "mfa_enroll:"+userID, cfg.RateLimitLoginMaxAttempts, cfg.RateLimitLoginWindowSeconds)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
+		return false
+	}
+	if !result.Allowed {
+		c.Header("Retry-After", strconv.Itoa(int(result.RetryAfter.Seconds())))
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many attempts, try again later"})
+		return false
+	}
+	return true
+}
+
+type mfaEnrollRequest struct {
+	EnrollmentToken string `json:"enrollment_token" binding:"required"`
+	Secret          string `json:"secret" binding:"required"`
+	Code            string `json:"code" binding:"required"`
+}
+
+// MFAEnrollHandler godoc
+// @Summary Finish tenant TOTP enrollment with a login-time enrollment token
+// @Description Public. Completes the mandatory setup started by a login that
+// @Description returned mfa_setup_required: verifies the enrollment token and
+// @Description TOTP code, stores the secret, and returns one-time recovery codes.
+// @Tags mfa
+// @Accept json
+// @Produce json
+// @Param X-Company-ID header string true "Company UUID"
+// @Param request body mfaEnrollRequest true "Enrollment token, secret, code"
+// @Success 200 {object} apiResponse
+// @Failure 401 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /auth/mfa/enroll [post]
+func MFAEnrollHandler(cfg config.Config, limiter *ratelimit.Limiter, enc *mfa.Encryptor, hasher *auth.PasswordHasher) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req mfaEnrollRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		userID, err := auth.ParseMFAEnrollmentToken(cfg.JWTSecret, req.EnrollmentToken, auth.MFAEnrollmentPurpose)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired enrollment token"})
+			return
+		}
+		if !checkTenantMFAEnrollRateLimit(c, limiter, cfg, userID) {
+			return
+		}
+		userUUID, ok := parseUUID(userID)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired enrollment token"})
+			return
+		}
+		q := sqlcgen.New(TxFromContext(c))
+		user, err := q.GetAppUserByID(c.Request.Context(), userUUID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired enrollment token"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !user.IsActive {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired enrollment token"})
+			return
+		}
+		if user.MfaSecret.Valid {
+			c.JSON(http.StatusConflict, gin.H{"error": "mfa already enabled"})
+			return
+		}
+		if !mfa.Validate(req.Code, req.Secret) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid code"})
+			return
+		}
+		codes := persistTenantTOTP(c, q, enc, hasher, userUUID, user.CompanyID, req.Secret)
+		if codes == nil {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"recovery_codes": codes}, "meta": gin.H{}})
+	}
+}
+
+// MFAStatusHandler godoc
+// @Summary Report the caller's TOTP enrollment status
+// @Description Read-only snapshot for the frontend: whether TOTP is enabled on
+// @Description the account, whether the active merchant's auth.require_totp
+// @Description policy demands it, and when the caller's grace window ends.
+// @Tags mfa
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Success 200 {object} apiResponse
+// @Router /auth/mfa [get]
+func MFAStatusHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		q := sqlcgen.New(TxFromContext(c))
+		user, err := q.GetAppUserByID(c.Request.Context(), AuthUserID(c))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID")) // same source AppLockMiddleware uses; TenantMiddleware already rejected a missing header
+		var graceUntil any
+		if user.MfaGraceUntil.Valid {
+			graceUntil = user.MfaGraceUntil.Time.Format(time.RFC3339)
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"enabled":     user.MfaSecret.Valid,
+			"required":    checkMFANudge(c, q, merchantID),
+			"grace_until": graceUntil,
+		}, "meta": gin.H{}})
 	}
 }

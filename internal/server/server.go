@@ -66,6 +66,9 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// frontend's single-flight refresh dedup (see apiClient.ts refreshOnce).
 	companyOnly.POST("/auth/refresh", RefreshHandler(cfg))
 	companyOnly.POST("/auth/logout", LogoutHandler(cfg))
+	// MFA enrollment (grace-expired users finish mandatory setup) has no
+	// session yet — same group as login, company-scoped RLS only (spec §5).
+	companyOnly.POST("/auth/mfa/enroll", MFAEnrollHandler(cfg, limiter, enc, hasher))
 
 	// Merchant isn't known yet on these routes either (same reasoning as
 	// companyOnly above) — but these DO need auth, unlike login/refresh.

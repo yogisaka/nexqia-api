@@ -312,6 +312,20 @@ func getPinLockFlagForMerchant(c *gin.Context, q *sqlcgen.Queries, merchantID pg
 // flag is enabled and the user already has a PIN — seeds the applock Redis key so
 // the very first request after login isn't spuriously treated as locked.
 func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, redisClient *redis.Client, user sqlcgen.CoreAppUser, merchantID pgtype.UUID) {
+	decision, graceUntil, err := tenantMFAGrace(c, q, cfg, user, merchantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to evaluate MFA policy"})
+		return
+	}
+	if decision == mfaGraceExpired {
+		payload, err := mfaSetupRequiredPayload(cfg.JWTSecret, user.ID.String(), auth.MFAEnrollmentPurpose, mfaTOTPIssuer, user.Username)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue enrollment token"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": payload, "meta": gin.H{}})
+		return
+	}
 	deviceID, deviceLabel, ip, err := deviceHeaders(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -345,6 +359,11 @@ func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, re
 				data["photo_url"] = person.PhotoUrl.String
 			}
 		}
+	}
+	// The grace decision was already computed above — surface its deadline so
+	// the frontend can remind the user to enroll before enforcement starts.
+	if decision == mfaGraceActive {
+		data["mfa_setup_due_at"] = graceUntil.Format(time.RFC3339)
 	}
 	if !user.MfaSecret.Valid && checkMFANudge(c, q, merchantID) {
 		data["mfa_nudge"] = true
@@ -684,6 +703,27 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		q := sqlcgen.New(TxFromContext(c))
+		user, err := q.GetAppUserByID(c.Request.Context(), userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		// Same policy gate as login, but for the TARGET merchant — switching
+		// into a merchant whose auth.require_totp policy has expired must not
+		// hand out a merchant-scoped session either.
+		decision, _, err := tenantMFAGrace(c, q, cfg, user, merchantID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to evaluate MFA policy"})
+			return
+		}
+		if decision == mfaGraceExpired {
+			c.JSON(http.StatusForbidden, gin.H{"error": "mfa setup required", "code": "mfa_setup_required"})
+			return
+		}
 		token, err := session.SwitchMerchant(c.Request.Context(), q, sessionConfig(cfg), rawToken, userID, merchantID)
 		if err != nil {
 			switch {
