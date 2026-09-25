@@ -763,10 +763,19 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 // @Router /auth/sessions [get]
 func ListSessionsHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
-	sessions, err := q.ListActiveRefreshTokens(c.Request.Context(), AuthUserID(c))
+	rows, err := q.ListActiveRefreshTokens(c.Request.Context(), AuthUserID(c))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list sessions"})
 		return
+	}
+	currentDevice := AuthDeviceID(c)
+	sessions := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		sessions = append(sessions, gin.H{
+			"id": r.ID, "device_label": r.DeviceLabel, "merchant_id": r.MerchantID,
+			"issued_at": r.IssuedAt, "last_used_at": r.LastUsedAt,
+			"is_current": r.DeviceID == currentDevice,
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": sessions, "meta": gin.H{}})
 }
@@ -801,6 +810,10 @@ func RevokeSessionHandler(c *gin.Context) {
 	}
 	if row.UserID != AuthUserID(c) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+	if row.DeviceID == AuthDeviceID(c) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "use logout for the current device"})
 		return
 	}
 	if err := q.RevokeRefreshToken(c.Request.Context(), sessionID); err != nil {

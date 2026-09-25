@@ -24,7 +24,7 @@ var pinFormat = regexp.MustCompile(`^\d{6}$`)
 // AuthMiddleware but deliberately OUTSIDE AppLockMiddleware (see server.go) — a
 // locked user must still be able to call these to unlock or turn the lock off.
 func RegisterPinRoutes(rg *gin.RouterGroup, hasher *auth.PasswordHasher, redisClient *redis.Client, cfg config.Config) {
-	rg.POST("/auth/pin/set", PinSetHandler(hasher))
+	rg.POST("/auth/pin/set", PinSetHandler(hasher, redisClient, cfg))
 	rg.POST("/auth/pin/disable", PinDisableHandler(hasher))
 	rg.POST("/auth/pin/verify", PinVerifyHandler(hasher, redisClient, cfg))
 }
@@ -76,7 +76,7 @@ type pinSetRequest struct {
 // @Success 200 {object} apiResponse
 // @Failure 401 {object} apiErrorResponse
 // @Router /auth/pin/set [post]
-func PinSetHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
+func PinSetHandler(hasher *auth.PasswordHasher, redisClient *redis.Client, cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req pinSetRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -107,7 +107,20 @@ func PinSetHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
+		data := gin.H{}
+		// Setting a PIN mid-session while the merchant's auth.pin_lock is on used to
+		// leave no applock key, so AppLockMiddleware answered the very next request
+		// with 423. Seed it exactly like issueLoginSession does.
+		merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
+		if pinFlag := getPinLockFlag(c, q, merchantID); pinFlag.Enabled {
+			idleMinutes := pinLockIdleMinutes(cfg, pinFlag)
+			if err := redisClient.Set(c.Request.Context(), applockKey(userID, AuthDeviceID(c)), "1", time.Duration(idleMinutes)*time.Minute).Err(); err != nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
+				return
+			}
+			data["pin_lock_idle_minutes"] = idleMinutes
+		}
+		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 	}
 }
 
