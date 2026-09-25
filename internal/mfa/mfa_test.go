@@ -2,6 +2,9 @@
 package mfa
 
 import (
+	"bytes"
+	"encoding/base64"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +100,32 @@ func TestGenerateSecret_ValidateRoundTrip(t *testing.T) {
 	}
 	if !Validate(code, secret) {
 		t.Error("expected freshly generated code to validate")
+	}
+}
+
+func TestQRDataURI_ProducesValidPNG(t *testing.T) {
+	_, uri, err := GenerateSecret("Nexqia", "alice")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	dataURI, err := QRDataURI(uri)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(dataURI, prefix) {
+		t.Fatalf("expected %q prefix, got %q", prefix, dataURI)
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(dataURI, prefix))
+	if err != nil {
+		t.Fatalf("failed to decode base64 payload: %v", err)
+	}
+	img, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("payload is not a valid PNG: %v", err)
+	}
+	if got := img.Bounds(); got.Dx() != 200 || got.Dy() != 200 {
+		t.Errorf("expected 200x200 image, got %v", got)
 	}
 }
 

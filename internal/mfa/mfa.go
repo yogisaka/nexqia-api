@@ -3,11 +3,13 @@
 package mfa
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"image/png"
 	"io"
 	"time"
 
@@ -103,6 +105,25 @@ func GenerateSecret(issuer, accountName string) (secret string, otpauthURI strin
 		return "", "", err
 	}
 	return key.Secret(), key.URL(), nil
+}
+
+// QRDataURI renders an otpauth:// provisioning URI (from GenerateSecret) as a
+// 200x200 PNG data URI for the QR <img> shown by TotpEnrollPanel (spec §3 "QR
+// code", see docs/design/plans/2026-09-25-mfa-grace-enforcement.md).
+func QRDataURI(otpauthURI string) (string, error) {
+	key, err := otp.NewKeyFromURL(otpauthURI)
+	if err != nil {
+		return "", err
+	}
+	img, err := key.Image(200, 200)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
 
 // Validate checks a 6-digit code against secret with ±1 time-step (30s) tolerance

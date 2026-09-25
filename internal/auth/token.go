@@ -188,6 +188,73 @@ func ParsePlatformAdminToken(secret, tokenString string) (*PlatformAdminClaims, 
 	return claims, nil
 }
 
+// MFAEnrollmentPurpose and PlatformMFAEnrollmentPurpose tag short-lived MFA
+// enrollment tokens (spec §3 "Enrollment token", see
+// docs/design/plans/2026-09-25-mfa-grace-enforcement.md): the tenant one
+// is issued by POST /auth/mfa/setup and spent at POST /auth/mfa/enroll, the
+// platform one by POST /platform/mfa/setup and spent at POST /platform/mfa/enroll.
+// They are exported because server handlers build the enrollment payload and
+// pick the purpose; the two purposes must never be interchangeable (a tenant
+// user must not enroll through a platform route and vice versa) — enforced by
+// passing the expected purpose to ParseMFAEnrollmentToken.
+const (
+	MFAEnrollmentPurpose         = "mfa_enrollment"
+	PlatformMFAEnrollmentPurpose = "platform_mfa_enrollment"
+)
+
+// MFAEnrollmentClaims carries only the subject identity (app_user.id or
+// platform.admin_user.id) — no company/merchant — same shape as
+// MerchantSelectionClaims: HMAC-signed, uid + purpose, nothing else.
+type MFAEnrollmentClaims struct {
+	UserID  string `json:"uid"`
+	Purpose string `json:"purpose"`
+	jwt.RegisteredClaims
+}
+
+// GenerateMFAEnrollmentToken issues a short-lived enrollment token for subjectID
+// tagged with purpose (one of MFAEnrollmentPurpose /
+// PlatformMFAEnrollmentPurpose) — presented back at the enroll endpoint.
+func GenerateMFAEnrollmentToken(secret, subjectID, purpose string, ttl time.Duration) (string, error) {
+	claims := MFAEnrollmentClaims{
+		UserID:  subjectID,
+		Purpose: purpose,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
+// ErrNotMFAEnrollmentToken means a token parsed successfully but wasn't issued
+// with the expected enrollment purpose — includes a token of the other
+// enrollment purpose, an access token, or a merchant-selection token.
+var ErrNotMFAEnrollmentToken = errors.New("not an MFA enrollment token")
+
+// ParseMFAEnrollmentToken validates tokenString and returns the subject id,
+// requiring claims.Purpose == purpose (HMAC only, same validation as
+// ParseMerchantSelectionToken).
+func ParseMFAEnrollmentToken(secret, tokenString, purpose string) (string, error) {
+	claims := &MFAEnrollmentClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if !token.Valid {
+		return "", errors.New("invalid token")
+	}
+	if claims.Purpose != purpose {
+		return "", ErrNotMFAEnrollmentToken
+	}
+	return claims.UserID, nil
+}
+
 // GenerateImpersonationToken issues an access token that authenticates AS
 // userID (the impersonation target) — same Claims shape and Purpose as
 // GenerateToken, so every existing tenant middleware/handler works
