@@ -4,9 +4,11 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
@@ -60,6 +62,7 @@ type createAppUserRequest struct {
 // @Param request body createAppUserRequest true "App user data"
 // @Success 201 {object} apiResponse
 // @Failure 403 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
 // @Router /users [post]
 func CreateAppUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -105,6 +108,25 @@ func CreateAppUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 			CreatedBy:    AuthUserID(c),
 		})
 		if err != nil {
+			if isUniqueViolation(err) {
+				// A failed INSERT aborts the TenantMiddleware transaction, so
+				// the response must mark the request aborted — otherwise the
+				// middleware would try to commit an already-failed tx.
+				msg := "data pengguna sudah ada"
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) {
+					switch {
+					case strings.Contains(pgErr.ConstraintName, "username"):
+						msg = "username sudah dipakai di perusahaan ini"
+					case strings.Contains(pgErr.ConstraintName, "email"):
+						msg = "email sudah terdaftar"
+					case strings.Contains(pgErr.ConstraintName, "phone"):
+						msg = "nomor HP sudah terdaftar"
+					}
+				}
+				c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": msg})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
