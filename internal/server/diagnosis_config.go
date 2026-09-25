@@ -18,6 +18,16 @@ import (
 // Matches terminology.code_system.name (see cmd/migrate-data/diagnosis.go).
 const defaultDiagnosisCodeSystem = "ICD-10"
 
+// diagnosisCodeSystemTag marks terminology.code_system rows that are valid
+// diagnosis standards (migration 000042).
+const diagnosisCodeSystemTag = "diagnosis"
+
+// diagnosisConfigData is the single response shape of every diagnosis-config
+// endpoint — same contract as mrnConfigData in mrn_config.go.
+func diagnosisConfigData(companyID, merchantID pgtype.UUID, codeSystem string, isDefault, isOverride bool) gin.H {
+	return gin.H{"company_id": companyID, "merchant_id": merchantID, "code_system": codeSystem, "is_default": isDefault, "is_override": isOverride}
+}
+
 // RegisterDiagnosisConfigRoutes wires the configurable diagnosis coding
 // standard (migrations/000033): different merchants under the same company
 // may use different terminology.code_system values (ICD-10, ICD-9-CM, or
@@ -36,11 +46,12 @@ type diagnosisConfigRequest struct {
 	CodeSystem string `json:"code_system" binding:"required"`
 }
 
-// validateCodeSystem requires the value to match an existing, active
-// terminology.code_system.name — otherwise the diagnosis combobox would
-// silently resolve to an empty list.
+// validateCodeSystem requires the value to be an active terminology.code_system
+// tagged "diagnosis" (migration 000042) — any other system (religion, region,
+// ...) is not a diagnosis standard, and an unknown name would leave the
+// diagnosis combobox empty.
 func validateCodeSystem(ctx context.Context, q *sqlcgen.Queries, codeSystem string) error {
-	systems, err := q.ListCodeSystems(ctx)
+	systems, err := q.ListCodeSystemsByTag(ctx, diagnosisCodeSystemTag)
 	if err != nil {
 		return err
 	}
@@ -49,11 +60,12 @@ func validateCodeSystem(ctx context.Context, q *sqlcgen.Queries, codeSystem stri
 			return nil
 		}
 	}
-	return errors.New("unknown code_system: " + codeSystem)
+	return errors.New("code_system is not an active diagnosis standard: " + codeSystem)
 }
 
 // ListCodeSystemsHandler godoc
 // @Summary List active terminology code systems (for diagnosis-config admin)
+// @Param tag query string false "Only systems carrying this tag, e.g. diagnosis"
 // @Tags diagnosis-config
 // @Produce json
 // @Security BearerAuth
@@ -64,7 +76,13 @@ func ListCodeSystemsHandler(c *gin.Context) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
-	systems, err := q.ListCodeSystems(c.Request.Context())
+	var systems []sqlcgen.TerminologyCodeSystem
+	var err error
+	if tag := c.Query("tag"); tag != "" {
+		systems, err = q.ListCodeSystemsByTag(c.Request.Context(), tag)
+	} else {
+		systems, err = q.ListCodeSystems(c.Request.Context())
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

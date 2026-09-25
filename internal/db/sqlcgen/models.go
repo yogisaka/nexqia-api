@@ -758,6 +758,7 @@ type TerminologyCodeSystem struct {
 	Version   string
 	IsActive  bool
 	CreatedAt pgtype.Timestamptz
+	Tags      []string
 }
 
 type TerminologyConcept struct {

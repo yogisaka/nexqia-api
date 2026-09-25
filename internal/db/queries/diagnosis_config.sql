@@ -40,3 +40,7 @@ DELETE FROM core.diagnosis_config WHERE merchant_id = $1;
 -- Discovery/validation list for diagnosis-config admin (and anything else
 -- that needs to know which terminology.code_system values are valid).
 SELECT * FROM terminology.code_system WHERE is_active ORDER BY name;
+
+-- name: ListCodeSystemsByTag :many
+-- Active code systems carrying `tag` (migration 000042), e.g. 'diagnosis'.
+SELECT * FROM terminology.code_system WHERE is_active AND sqlc.arg(tag)::text = ANY(tags) ORDER BY name;
