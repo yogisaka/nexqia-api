@@ -48,6 +48,21 @@ func formatTimeOfDay(t pgtype.Time) string {
 	return fmt.Sprintf("%02d:%02d", total/3600, (total%3600)/60)
 }
 
+// checkScheduleRanges rejects inverted ranges before any write: end_time must
+// be strictly after start_time and effective_to (when set) on or after
+// effective_from. Shared by the create/update schedule handlers.
+func checkScheduleRanges(c *gin.Context, start, end pgtype.Time, effectiveFrom, effectiveTo pgtype.Date) bool {
+	if end.Microseconds <= start.Microseconds {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "end_time must be after start_time"})
+		return false
+	}
+	if effectiveTo.Valid && effectiveTo.Time.Before(effectiveFrom.Time) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "effective_to must be on or after effective_from"})
+		return false
+	}
+	return true
+}
+
 // toScheduleResponse maps a generated row to a JSON-friendly shape with
 // start_time/end_time as "HH:MM" strings. Reused by display.go.
 func toScheduleResponse(s sqlcgen.OperationsPhysicianSchedule) gin.H {
@@ -137,6 +152,9 @@ func CreatePhysicianScheduleHandler(c *gin.Context) {
 	effectiveTo, err := optDate(req.EffectiveTo)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_to, expected YYYY-MM-DD"})
+		return
+	}
+	if !checkScheduleRanges(c, startTime, endTime, effectiveFrom, effectiveTo) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
@@ -289,6 +307,9 @@ func UpdatePhysicianScheduleHandler(c *gin.Context) {
 	effectiveTo, err := optDate(req.EffectiveTo)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_to, expected YYYY-MM-DD"})
+		return
+	}
+	if !checkScheduleRanges(c, startTime, endTime, effectiveFrom, effectiveTo) {
 		return
 	}
 	schedule, err := q.UpdatePhysicianSchedule(c.Request.Context(), sqlcgen.UpdatePhysicianScheduleParams{
