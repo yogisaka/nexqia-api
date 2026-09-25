@@ -38,8 +38,13 @@ func TestCreateMerchantHandler_ActivatesNewMerchantForMerchantLessCaller(t *test
 	if _, err := pool.Exec(ctx, "INSERT INTO core.role (id, company_id, name, is_system) VALUES ($1, $2, 'Owner', true)", roleID, companyID); err != nil {
 		t.Fatalf("failed to seed role: %v", err)
 	}
-	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ($1, 'core.merchant.manage', 'test', 'core') ON CONFLICT (id) DO NOTHING", permissionID); err != nil {
+	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ($1, 'core.merchant.manage', 'test', 'core') ON CONFLICT DO NOTHING", permissionID); err != nil {
 		t.Fatalf("failed to seed permission: %v", err)
+	}
+	// Migration 000043 already ships core.merchant.manage, so the insert above
+	// may be skipped on UNIQUE(code) — resolve the real id for role_permission.
+	if err := pool.QueryRow(ctx, "SELECT id FROM core.permission WHERE code = 'core.merchant.manage'").Scan(&permissionID); err != nil {
+		t.Fatalf("failed to fetch core.merchant.manage permission id: %v", err)
 	}
 	if _, err := pool.Exec(ctx, "INSERT INTO core.role_permission (role_id, permission_id) VALUES ($1, $2)", roleID, permissionID); err != nil {
 		t.Fatalf("failed to seed role_permission: %v", err)

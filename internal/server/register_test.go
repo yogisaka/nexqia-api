@@ -97,7 +97,7 @@ func TestLoginHandler_OwnerWithNoMerchantCanLogin(t *testing.T) {
 	redisClient := newTestRedisClient(t, ctx)
 	router := server.NewRouter(pool, redisClient, testConfig())
 
-	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ('80808080-8080-8080-8080-808080808081', 'core.merchant.manage', 'test', 'core') ON CONFLICT (id) DO NOTHING"); err != nil {
+	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ('80808080-8080-8080-8080-808080808081', 'core.merchant.manage', 'test', 'core') ON CONFLICT DO NOTHING"); err != nil {
 		t.Fatalf("failed to seed core.merchant.manage permission: %v", err)
 	}
 
@@ -209,13 +209,10 @@ func TestRegisterThenCreateFirstMerchant_EndToEnd(t *testing.T) {
 	redisClient := newTestRedisClient(t, ctx)
 	router := server.NewRouter(pool, redisClient, testConfig())
 
-	// Fresh testcontainer only runs migrations, not seed/001_core_seed.sql — the
-	// real dev DB has core.merchant.manage seeded already, this test needs it too
-	// so RegisterHandler's Owner-bundle loop can actually grant it (matches the
-	// pattern in merchant_test.go's manual-seed tests).
-	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (id, code, description, module) VALUES ('80808080-8080-8080-8080-808080808080', 'core.merchant.manage', 'test', 'core') ON CONFLICT (id) DO NOTHING"); err != nil {
-		t.Fatalf("failed to seed core.merchant.manage permission: %v", err)
-	}
+	// No manual permission seed here on purpose: migration 000043 ships the
+	// permission catalog (incl. core.merchant.manage), so this test is the
+	// regression test that a fresh production-style DB (migrations only, no
+	// seed) lets a newly registered Owner create their first merchant.
 
 	regReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(registerPayload("firstmerchant.owner", "firstmerchant.owner@example.com", "081234500094")))
 	regReq.Header.Set("Content-Type", "application/json")
