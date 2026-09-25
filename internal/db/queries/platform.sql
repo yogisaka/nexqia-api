@@ -12,7 +12,7 @@ RETURNING *;
 SELECT * FROM platform.admin_user WHERE username = $1 AND deleted_at IS NULL;
 
 -- name: GetPlatformAdminUserByID :one
-SELECT * FROM platform.admin_user WHERE id = $1 AND deleted_at IS NULL;
+SELECT * FROM platform.admin_user WHERE id = $1 AND deleted_at IS NULL AND is_active;
 
 -- name: TouchPlatformAdminUserLastLogin :exec
 UPDATE platform.admin_user SET last_login_at = now() WHERE id = $1;

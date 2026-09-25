@@ -121,6 +121,15 @@ func Refresh(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToken strin
 		return Issued{}, ErrSessionExpired
 	}
 	adminUser, err := q.GetPlatformAdminUserByID(ctx, row.AdminUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Admin deactivated or soft-deleted since login: kill this device's
+		// whole chain. Returned as ErrSessionRevoked so the handler answers 401
+		// with plain c.JSON and this revocation commits.
+		_ = q.RevokeAllPlatformAdminRefreshTokensForDevice(ctx, sqlcgen.RevokeAllPlatformAdminRefreshTokensForDeviceParams{
+			AdminUserID: row.AdminUserID, DeviceID: row.DeviceID,
+		})
+		return Issued{}, ErrSessionRevoked
+	}
 	if err != nil {
 		return Issued{}, err
 	}

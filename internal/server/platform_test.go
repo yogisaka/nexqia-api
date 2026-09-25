@@ -1205,3 +1205,49 @@ func TestImpersonate_BypassesPinLock(t *testing.T) {
 		t.Fatalf("expected 200 from /ping, got %d: %s", pingRec.Code, pingRec.Body.String())
 	}
 }
+
+func TestPlatformAdminRefresh_InactiveAdminRejected(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	passwordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO platform.admin_user (username, email, full_name, password_hash, is_active) VALUES ('inactiverefresh', 'inactiverefresh@nexqia.internal', 'Test', $1, true)", passwordHash); err != nil {
+		t.Fatalf("seed admin_user: %v", err)
+	}
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "inactiverefresh", "password": "correct-horse"})
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/platform/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.Header.Set("X-Device-Id", "inactive-test-device")
+	loginRec := httptest.NewRecorder()
+	router.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login expected 200, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+	var refreshCookie *http.Cookie
+	for _, ck := range loginRec.Result().Cookies() {
+		if ck.Name == "platform_refresh_token" {
+			refreshCookie = ck
+		}
+	}
+	if refreshCookie == nil {
+		t.Fatalf("expected platform_refresh_token cookie from login")
+	}
+
+	if _, err := pool.Exec(ctx, "UPDATE platform.admin_user SET is_active = false WHERE username = 'inactiverefresh'"); err != nil {
+		t.Fatalf("deactivate admin: %v", err)
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/v1/platform/refresh", nil)
+	refreshReq.AddCookie(refreshCookie)
+	refreshRec := httptest.NewRecorder()
+	router.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh for deactivated admin expected 401, got %d: %s", refreshRec.Code, refreshRec.Body.String())
+	}
+}
