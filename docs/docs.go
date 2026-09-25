@@ -124,6 +124,39 @@ const docTemplate = `{
                 }
             }
         },
+        "/admissions/payer-summary": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admission"
+                ],
+                "summary": "Today's admission count grouped by payer type (dashboard \"Jenis Pasien\" widget)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/admissions/{id}": {
             "get": {
                 "security": [
@@ -585,6 +618,52 @@ const docTemplate = `{
                 }
             }
         },
+        "/auth/register": {
+            "post": {
+                "description": "Public, unauthenticated. Creates a company, an Owner person/app_user,\na bootstrap \"Owner\" role with every permission except the platform-wide\ncore.company.manage, and auto-logs in. See docs/design/specs/\n2026-09-23-saas-registration-owner-bootstrap-design.md.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Self-register a new company and its Owner account",
+                "parameters": [
+                    {
+                        "description": "Registration data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.registerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/auth/select-merchant": {
             "post": {
                 "description": "Used after LoginHandler returns requires_merchant_selection — consumes the short-lived selection_token instead of re-sending a password.",
@@ -740,33 +819,23 @@ const docTemplate = `{
                 }
             }
         },
-        "/companies": {
+        "/companies/lookup": {
             "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Lists across ALL tenants — platform-admin only.",
+                "description": "Public, unauthenticated. Used by the login screen to resolve X-Company-ID before calling /auth/login. Returns only id and name.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "tenancy"
+                    "auth"
                 ],
-                "summary": "List companies",
+                "summary": "Resolve a company by its 6-character code",
                 "parameters": [
                     {
-                        "type": "integer",
-                        "description": "Page size",
-                        "name": "limit",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Page offset",
-                        "name": "offset",
-                        "in": "query"
+                        "type": "string",
+                        "description": "6-character alphanumeric company code",
+                        "name": "code",
+                        "in": "query",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -775,46 +844,15 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/server.apiResponse"
                         }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Platform-admin scope — company creation spans tenants by nature.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tenancy"
-                ],
-                "summary": "Create a company",
-                "parameters": [
-                    {
-                        "description": "Company data",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/server.createCompanyRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/server.apiResponse"
+                            "$ref": "#/definitions/server.apiErrorResponse"
                         }
                     },
-                    "403": {
-                        "description": "Forbidden",
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -944,6 +982,82 @@ const docTemplate = `{
                 }
             }
         },
+        "/companies/{id}/diagnosis-config": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "diagnosis-config"
+                ],
+                "summary": "Get a company's default diagnosis code system",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "diagnosis-config"
+                ],
+                "summary": "Set a company's default diagnosis code system",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Diagnosis code system",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.diagnosisConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/companies/{id}/merchants": {
             "get": {
                 "security": [
@@ -977,6 +1091,82 @@ const docTemplate = `{
                         "description": "Page offset",
                         "name": "offset",
                         "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/companies/{id}/mrn-config": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mrn-config"
+                ],
+                "summary": "Get a company's default MRN format",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mrn-config"
+                ],
+                "summary": "Set a company's default MRN format",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "MRN format template",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.mrnConfigRequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -1718,6 +1908,259 @@ const docTemplate = `{
                 }
             }
         },
+        "/merchants/{id}/diagnosis-config": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "diagnosis-config"
+                ],
+                "summary": "Get a merchant's diagnosis code system override (falls back to company default if unset)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "diagnosis-config"
+                ],
+                "summary": "Set a merchant-specific diagnosis code system override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Diagnosis code system",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.diagnosisConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "diagnosis-config"
+                ],
+                "summary": "Remove a merchant's diagnosis code system override (reverts to company default)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/mrn-config": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mrn-config"
+                ],
+                "summary": "Get a merchant's MRN format override (falls back to company default if unset)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mrn-config"
+                ],
+                "summary": "Set a merchant-specific MRN format override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "MRN format template",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.mrnConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mrn-config"
+                ],
+                "summary": "Remove a merchant's MRN format override (reverts to company default)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/payers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "List payers (penjamin) under a merchant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/merchants/{id}/physician-schedules": {
             "get": {
                 "security": [
@@ -1886,6 +2329,91 @@ const docTemplate = `{
                 }
             }
         },
+        "/patient-allergies/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "patient-allergy"
+                ],
+                "summary": "Deactivate an allergy record",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Patient allergy UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "patient-allergy"
+                ],
+                "summary": "Update an allergy record",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Patient allergy UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Allergy data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updatePatientAllergyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/permissions": {
             "get": {
                 "security": [
@@ -1906,6 +2434,91 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/person-families/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person-family"
+                ],
+                "summary": "Soft-delete a family member",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person family UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person-family"
+                ],
+                "summary": "Update a family member",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person family UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Family member data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.personFamilyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
                         }
                     }
                 }
@@ -2000,7 +2613,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "NIK is omitted from search responses (PII minimization).",
+                "description": "Searches name/MRN/phone plus exact NIK match via HMAC-SHA256 hash.\nNIK is omitted from search responses (PII minimization).",
                 "produces": [
                     "application/json"
                 ],
@@ -2151,6 +2764,158 @@ const docTemplate = `{
                         "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/persons/{id}/allergies": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "patient-allergy"
+                ],
+                "summary": "List active allergies of a person",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "patient-allergy"
+                ],
+                "summary": "Record an allergy for a person",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Allergy data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.patientAllergyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/persons/{id}/families": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person-family"
+                ],
+                "summary": "List family members of a person",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person-family"
+                ],
+                "summary": "Add a family member to a person",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Family member data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.personFamilyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
                         }
                     }
                 }
@@ -2522,6 +3287,441 @@ const docTemplate = `{
                 }
             }
         },
+        "/platform/admin-users": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Create a new platform admin",
+                "parameters": [
+                    {
+                        "description": "New admin data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createPlatformAdminUserRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/companies": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "List companies across ALL tenants",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "No session is issued for the new Owner — they log in themselves\nafterward via the normal /auth/login. See docs/design/specs/\n2026-09-24-platform-admin-create-company-design.md.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Create a company and bootstrap its Owner — platform-admin-initiated",
+                "parameters": [
+                    {
+                        "description": "New company + Owner data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createPlatformCompanyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/companies/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Get a company's detail across tenants, with merchant/user counts",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/companies/{id}/activate": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Reactivate a suspended company",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/companies/{id}/suspend": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Suspend a company — revokes all its active sessions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/impersonate": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "No refresh token is issued — the access token expires after\n1 hour with no way to renew; call this endpoint again for a\nfresh, separately-audited session. See docs/design/specs/\n2026-09-24-platform-admin-impersonate-design.md.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Get a short-lived tenant access token for a specific user",
+                "parameters": [
+                    {
+                        "description": "Target user + reason",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.impersonateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/login": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Platform admin login",
+                "parameters": [
+                    {
+                        "description": "Credentials",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.platformAdminLoginRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/logout": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Platform admin logout",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/refresh": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Refresh a platform admin access token",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/roles": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "List platform-admin roles",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/queue": {
             "get": {
                 "security": [
@@ -2557,6 +3757,76 @@ const docTemplate = `{
                         "name": "status",
                         "in": "query",
                         "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/queue/board": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue"
+                ],
+                "summary": "List queue entries with person/physician names joined (staff board/dashboard)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Queue stage (pendaftaran/perawat/dokter)",
+                        "name": "queue_type",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by check-in date, YYYY-MM-DD (omit for all dates)",
+                        "name": "date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated statuses (e.g. waiting,called,in_progress); omit for all",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by patient name or medical record no (partial match)",
+                        "name": "search",
+                        "in": "query"
                     },
                     {
                         "type": "integer",
@@ -3543,6 +4813,89 @@ const docTemplate = `{
                 }
             }
         },
+        "/terminology/code-systems": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "diagnosis-config"
+                ],
+                "summary": "List active terminology code systems (for diagnosis-config admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Only systems carrying this tag, e.g. diagnosis",
+                        "name": "tag",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/terminology/search": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "terminology"
+                ],
+                "summary": "Search terminology concepts by code_system name",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Code system name, e.g. Kemendagri Region",
+                        "name": "system",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Code/display search query, required unless full=true",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Bypass paging, dump the whole code_system ordered by code (client-side bulk preload)",
+                        "name": "full",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/users": {
             "get": {
                 "security": [
@@ -3616,6 +4969,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -3890,6 +5249,53 @@ const docTemplate = `{
                 }
             }
         },
+        "/users/{id}/permissions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Self-access allowed without PermUserManage. For permission-driven frontend UI (nav/dashboard gating) — a regular user has no PermRoleManage, so ListRolePermissions alone can't answer \"what can I do\".",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "rbac"
+                ],
+                "summary": "List a user's effective permission codes within a specific merchant (union across roles)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "App user UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "merchant_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/users/{id}/roles": {
             "get": {
                 "security": [
@@ -4006,13 +5412,49 @@ const docTemplate = `{
                 "person_id"
             ],
             "properties": {
+                "companion_name": {
+                    "type": "string"
+                },
+                "complaint": {
+                    "type": "string"
+                },
                 "department_id": {
+                    "type": "string"
+                },
+                "diagnosis_text": {
+                    "type": "string"
+                },
+                "guarantor_name": {
+                    "type": "string"
+                },
+                "needs_companion": {
+                    "type": "boolean"
+                },
+                "note": {
                     "type": "string"
                 },
                 "person_id": {
                     "type": "string"
                 },
                 "physician_id": {
+                    "type": "string"
+                },
+                "policy_number": {
+                    "type": "string"
+                },
+                "primary_payer_id": {
+                    "type": "string"
+                },
+                "referral_origin": {
+                    "type": "string"
+                },
+                "referral_source": {
+                    "type": "string"
+                },
+                "special_patient_type": {
+                    "type": "string"
+                },
+                "treatment_barriers": {
                     "type": "string"
                 }
             }
@@ -4040,21 +5482,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "username": {
-                    "type": "string"
-                }
-            }
-        },
-        "server.createCompanyRequest": {
-            "type": "object",
-            "required": [
-                "code",
-                "name"
-            ],
-            "properties": {
-                "code": {
-                    "type": "string"
-                },
-                "name": {
                     "type": "string"
                 }
             }
@@ -4109,16 +5536,12 @@ const docTemplate = `{
         "server.createMerchantRequest": {
             "type": "object",
             "required": [
-                "code",
                 "company_id",
                 "name",
                 "timezone"
             ],
             "properties": {
                 "bpjs_ppk_code": {
-                    "type": "string"
-                },
-                "code": {
                     "type": "string"
                 },
                 "company_id": {
@@ -4201,6 +5624,67 @@ const docTemplate = `{
                 }
             }
         },
+        "server.createPlatformAdminUserRequest": {
+            "type": "object",
+            "required": [
+                "email",
+                "full_name",
+                "password",
+                "role_id",
+                "username"
+            ],
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "full_name": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string",
+                    "minLength": 8
+                },
+                "role_id": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.createPlatformCompanyRequest": {
+            "type": "object",
+            "required": [
+                "company_name",
+                "email",
+                "full_name",
+                "password",
+                "phone",
+                "username"
+            ],
+            "properties": {
+                "company_name": {
+                    "type": "string",
+                    "minLength": 3
+                },
+                "email": {
+                    "type": "string"
+                },
+                "full_name": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string",
+                    "minLength": 8
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
         "server.createRateComponentRequest": {
             "type": "object",
             "required": [
@@ -4235,6 +5719,9 @@ const docTemplate = `{
                 },
                 "name": {
                     "type": "string"
+                },
+                "requires_physician_data": {
+                    "type": "boolean"
                 }
             }
         },
@@ -4295,6 +5782,37 @@ const docTemplate = `{
                 }
             }
         },
+        "server.diagnosisConfigRequest": {
+            "type": "object",
+            "required": [
+                "code_system"
+            ],
+            "properties": {
+                "code_system": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.impersonateRequest": {
+            "type": "object",
+            "required": [
+                "company_id",
+                "reason",
+                "username"
+            ],
+            "properties": {
+                "company_id": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string",
+                    "minLength": 10
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
         "server.loginRequest": {
             "type": "object",
             "required": [
@@ -4343,6 +5861,91 @@ const docTemplate = `{
                 }
             }
         },
+        "server.mrnConfigRequest": {
+            "type": "object",
+            "required": [
+                "format"
+            ],
+            "properties": {
+                "format": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.patientAllergyRequest": {
+            "type": "object",
+            "required": [
+                "allergy_type",
+                "substance_name"
+            ],
+            "properties": {
+                "allergy_type": {
+                    "type": "string"
+                },
+                "effect_side": {
+                    "type": "string"
+                },
+                "event_date": {
+                    "type": "string"
+                },
+                "reaction": {
+                    "type": "string"
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "substance_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.personFamilyRequest": {
+            "type": "object",
+            "required": [
+                "full_name"
+            ],
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "birth_date": {
+                    "type": "string"
+                },
+                "birth_place": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "full_name": {
+                    "type": "string"
+                },
+                "gender": {
+                    "type": "string"
+                },
+                "is_responsible_person": {
+                    "type": "boolean"
+                },
+                "job_concept_id": {
+                    "type": "string"
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "position_concept_id": {
+                    "type": "string"
+                },
+                "postal_code": {
+                    "type": "string"
+                },
+                "region_village_concept_id": {
+                    "type": "string"
+                },
+                "relationship_concept_id": {
+                    "type": "string"
+                }
+            }
+        },
         "server.personRequest": {
             "type": "object",
             "required": [
@@ -4360,6 +5963,12 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "blood_type": {
+                    "type": "string"
+                },
+                "blood_type_concept_id": {
+                    "type": "string"
+                },
+                "citizenship_concept_id": {
                     "type": "string"
                 },
                 "education_concept_id": {
@@ -4380,7 +5989,16 @@ const docTemplate = `{
                 "gender": {
                     "type": "string"
                 },
+                "identity_type_concept_id": {
+                    "type": "string"
+                },
+                "job_concept_id": {
+                    "type": "string"
+                },
                 "marital_status": {
+                    "type": "string"
+                },
+                "marital_status_concept_id": {
                     "type": "string"
                 },
                 "medical_record_no": {
@@ -4390,6 +6008,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "phone": {
+                    "type": "string"
+                },
+                "region_village_concept_id": {
                     "type": "string"
                 },
                 "religion_concept_id": {
@@ -4430,6 +6051,58 @@ const docTemplate = `{
             ],
             "properties": {
                 "pin": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.platformAdminLoginRequest": {
+            "type": "object",
+            "required": [
+                "password",
+                "username"
+            ],
+            "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.registerRequest": {
+            "type": "object",
+            "required": [
+                "company_name",
+                "email",
+                "full_name",
+                "password",
+                "password_confirmation",
+                "phone",
+                "username"
+            ],
+            "properties": {
+                "company_name": {
+                    "type": "string",
+                    "minLength": 3
+                },
+                "email": {
+                    "type": "string"
+                },
+                "full_name": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string",
+                    "minLength": 8
+                },
+                "password_confirmation": {
+                    "type": "string"
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "username": {
                     "type": "string"
                 }
             }
@@ -4578,6 +6251,23 @@ const docTemplate = `{
                 }
             }
         },
+        "server.updatePatientAllergyRequest": {
+            "type": "object",
+            "properties": {
+                "effect_side": {
+                    "type": "string"
+                },
+                "event_date": {
+                    "type": "string"
+                },
+                "reaction": {
+                    "type": "string"
+                },
+                "severity": {
+                    "type": "string"
+                }
+            }
+        },
         "server.updatePhysicianRequest": {
             "type": "object",
             "properties": {
@@ -4661,6 +6351,9 @@ const docTemplate = `{
                 },
                 "name": {
                     "type": "string"
+                },
+                "requires_physician_data": {
+                    "type": "boolean"
                 }
             }
         },
