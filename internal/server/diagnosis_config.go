@@ -99,7 +99,7 @@ func ListCodeSystemsHandler(c *gin.Context) {
 // @Success 200 {object} apiResponse
 // @Router /companies/{id}/diagnosis-config [get]
 func GetCompanyDiagnosisConfigHandler(c *gin.Context) {
-	if !RequirePermission(c, PermCompanyManage) {
+	if !RequireCompanyLevelPermission(c, PermCompanyManageOwn, PermCompanyManage) {
 		return
 	}
 	id, ok := parseUUID(c.Param("id"))
@@ -110,14 +110,14 @@ func GetCompanyDiagnosisConfigHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	cfg, err := q.GetCompanyDiagnosisConfig(c.Request.Context(), id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"company_id": id, "code_system": defaultDiagnosisCodeSystem}, "meta": gin.H{"is_default": true}})
+		c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(id, pgtype.UUID{}, defaultDiagnosisCodeSystem, true, false), "meta": gin.H{"is_default": true}})
 		return
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": cfg, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(cfg.CompanyID, cfg.MerchantID, cfg.CodeSystem, false, false), "meta": gin.H{}})
 }
 
 // UpsertCompanyDiagnosisConfigHandler godoc
@@ -131,7 +131,7 @@ func GetCompanyDiagnosisConfigHandler(c *gin.Context) {
 // @Success 200 {object} apiResponse
 // @Router /companies/{id}/diagnosis-config [put]
 func UpsertCompanyDiagnosisConfigHandler(c *gin.Context) {
-	if !RequirePermission(c, PermCompanyManage) {
+	if !RequireCompanyLevelPermission(c, PermCompanyManageOwn, PermCompanyManage) {
 		return
 	}
 	id, ok := parseUUID(c.Param("id"))
@@ -156,7 +156,7 @@ func UpsertCompanyDiagnosisConfigHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": cfg, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(cfg.CompanyID, cfg.MerchantID, cfg.CodeSystem, false, false), "meta": gin.H{}})
 }
 
 // GetMerchantDiagnosisConfigHandler godoc
@@ -193,14 +193,14 @@ func GetMerchantDiagnosisConfigHandler(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"merchant_id": id, "code_system": codeSystem}, "meta": gin.H{"is_override": false}})
+		c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(AuthCompanyID(c), id, codeSystem, false, false), "meta": gin.H{"is_override": false}})
 		return
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": cfg, "meta": gin.H{"is_override": true}})
+	c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(cfg.CompanyID, cfg.MerchantID, cfg.CodeSystem, false, true), "meta": gin.H{"is_override": true}})
 }
 
 // UpsertMerchantDiagnosisConfigHandler godoc
@@ -248,7 +248,7 @@ func UpsertMerchantDiagnosisConfigHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": cfg, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(cfg.CompanyID, cfg.MerchantID, cfg.CodeSystem, false, true), "meta": gin.H{}})
 }
 
 // DeleteMerchantDiagnosisConfigHandler godoc

@@ -51,6 +51,15 @@ func validateMRNFormat(format string) error {
 	return nil
 }
 
+// mrnConfigData is the single response shape of every mrn-config endpoint:
+// snake_case keys with the flags INSIDE data, because the frontend's apiFetch
+// returns only `data` and drops `meta`. is_default is true only on the company
+// endpoint when no row exists (built-in format in effect); is_override is true
+// only on the merchant endpoint when the merchant has its own row.
+func mrnConfigData(companyID, merchantID pgtype.UUID, format string, isDefault, isOverride bool) gin.H {
+	return gin.H{"company_id": companyID, "merchant_id": merchantID, "format": format, "is_default": isDefault, "is_override": isOverride}
+}
+
 // GetCompanyMRNConfigHandler godoc
 // @Summary Get a company's default MRN format
 // @Tags mrn-config
@@ -60,7 +69,7 @@ func validateMRNFormat(format string) error {
 // @Success 200 {object} apiResponse
 // @Router /companies/{id}/mrn-config [get]
 func GetCompanyMRNConfigHandler(c *gin.Context) {
-	if !RequirePermission(c, PermCompanyManage) {
+	if !RequireCompanyLevelPermission(c, PermCompanyManageOwn, PermCompanyManage) {
 		return
 	}
 	id, ok := parseUUID(c.Param("id"))
@@ -71,14 +80,14 @@ func GetCompanyMRNConfigHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	cfg, err := q.GetCompanyMRNConfig(c.Request.Context(), id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"company_id": id, "format": defaultMRNFormat}, "meta": gin.H{"is_default": true}})
+		c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(id, pgtype.UUID{}, defaultMRNFormat, true, false), "meta": gin.H{"is_default": true}})
 		return
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": cfg, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(cfg.CompanyID, cfg.MerchantID, cfg.Format, false, false), "meta": gin.H{}})
 }
 
 // UpsertCompanyMRNConfigHandler godoc
@@ -92,7 +101,7 @@ func GetCompanyMRNConfigHandler(c *gin.Context) {
 // @Success 200 {object} apiResponse
 // @Router /companies/{id}/mrn-config [put]
 func UpsertCompanyMRNConfigHandler(c *gin.Context) {
-	if !RequirePermission(c, PermCompanyManage) {
+	if !RequireCompanyLevelPermission(c, PermCompanyManageOwn, PermCompanyManage) {
 		return
 	}
 	id, ok := parseUUID(c.Param("id"))
@@ -117,7 +126,7 @@ func UpsertCompanyMRNConfigHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": cfg, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(cfg.CompanyID, cfg.MerchantID, cfg.Format, false, false), "meta": gin.H{}})
 }
 
 // GetMerchantMRNConfigHandler godoc
@@ -157,14 +166,14 @@ func GetMerchantMRNConfigHandler(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"merchant_id": id, "format": format}, "meta": gin.H{"is_override": false}})
+		c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(AuthCompanyID(c), id, format, false, false), "meta": gin.H{"is_override": false}})
 		return
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": cfg, "meta": gin.H{"is_override": true}})
+	c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(cfg.CompanyID, cfg.MerchantID, cfg.Format, false, true), "meta": gin.H{"is_override": true}})
 }
 
 // UpsertMerchantMRNConfigHandler godoc
@@ -212,7 +221,7 @@ func UpsertMerchantMRNConfigHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": cfg, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(cfg.CompanyID, cfg.MerchantID, cfg.Format, false, true), "meta": gin.H{}})
 }
 
 // DeleteMerchantMRNConfigHandler godoc
