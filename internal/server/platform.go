@@ -16,13 +16,15 @@ import (
 	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/config"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
+	"github.com/yogisaka/nexqia-api/internal/mfa"
 	"github.com/yogisaka/nexqia-api/internal/platformsession"
 	"github.com/yogisaka/nexqia-api/internal/ratelimit"
 )
 
-func RegisterPlatformRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool, limiter *ratelimit.Limiter, cfg config.Config, hasher *auth.PasswordHasher) {
-	rg.POST("/login", PlatformAdminLoginHandler(limiter, cfg, hasher))
+func RegisterPlatformRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool, limiter *ratelimit.Limiter, cfg config.Config, hasher *auth.PasswordHasher, enc *mfa.Encryptor) {
+	rg.POST("/login", PlatformAdminLoginHandler(limiter, cfg, hasher, enc))
 	rg.POST("/refresh", PlatformAdminRefreshHandler(cfg))
+	rg.POST("/mfa/enroll", PlatformMFAEnrollHandler(limiter, cfg, enc, hasher))
 
 	protected := rg.Group("", PlatformAdminAuthMiddleware(cfg.JWTSecret))
 	protected.POST("/logout", PlatformAdminLogoutHandler(cfg))
@@ -33,16 +35,23 @@ func RegisterPlatformRoutes(rg *gin.RouterGroup, pool *pgxpool.Pool, limiter *ra
 	protected.POST("/companies/:id/activate", ActivatePlatformCompanyHandler)
 	protected.GET("/roles", ListPlatformRolesHandler)
 	protected.POST("/admin-users", CreatePlatformAdminUserHandler(hasher))
+	protected.POST("/admin-users/:id/mfa/reset", ResetPlatformAdminMFAHandler)
 	protected.POST("/impersonate", ImpersonateHandler(cfg))
+	protected.POST("/mfa/setup", PlatformMFASetupHandler())
+	protected.POST("/mfa/confirm", PlatformMFAConfirmHandler(enc, hasher))
 }
 
 type platformAdminLoginRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
+	TotpCode string `json:"totp_code"`
 }
 
 // PlatformAdminLoginHandler godoc
 // @Summary Platform admin login
+// @Description Returns totp_required when the admin has TOTP enabled and no/invalid
+// @Description code was given, or mfa_setup_required once the enrollment grace
+// @Description period has ended (no session is issued in that case).
 // @Tags platform
 // @Accept json
 // @Produce json
@@ -50,7 +59,7 @@ type platformAdminLoginRequest struct {
 // @Success 200 {object} apiResponse
 // @Failure 401 {object} apiErrorResponse
 // @Router /platform/login [post]
-func PlatformAdminLoginHandler(limiter *ratelimit.Limiter, cfg config.Config, hasher *auth.PasswordHasher) gin.HandlerFunc {
+func PlatformAdminLoginHandler(limiter *ratelimit.Limiter, cfg config.Config, hasher *auth.PasswordHasher, enc *mfa.Encryptor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req platformAdminLoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -92,6 +101,37 @@ func PlatformAdminLoginHandler(limiter *ratelimit.Limiter, cfg config.Config, ha
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 			return
 		}
+		// TOTP check happens once here (spec §4 row 1) — password is already
+		// confirmed above, so it's safe to reveal 2FA-enrollment status now
+		// (same reasoning as LoginHandler's tenant check).
+		if adminUser.MfaSecret.Valid {
+			if req.TotpCode == "" {
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"totp_required": true}, "meta": gin.H{}})
+				return
+			}
+			if !verifyPlatformLoginTOTP(c, q, enc, hasher, adminUser.ID, adminUser.MfaSecret.String, req.TotpCode) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
+				return
+			}
+		}
+		decision, graceUntil, err := platformMFAGrace(c, q, cfg, adminUser)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to evaluate MFA policy"})
+			return
+		}
+		if decision == mfaGraceExpired {
+			// No session (and no refresh cookie) is issued until enrollment is
+			// finished — and this response comes deliberately BEFORE
+			// TouchPlatformAdminUserLastLogin, so last_login_at stays NULL for
+			// the setup-only response (spec §3 step 3).
+			payload, err := mfaSetupRequiredPayload(cfg.JWTSecret, adminUser.ID.String(), auth.PlatformMFAEnrollmentPurpose, platformMFATOTPIssuer, adminUser.Username)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare MFA enrollment"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": payload, "meta": gin.H{}})
+			return
+		}
 		_ = q.TouchPlatformAdminUserLastLogin(c.Request.Context(), adminUser.ID)
 
 		issued, err := platformsession.Issue(c.Request.Context(), q, platformSessionConfig(cfg), platformsession.IssueParams{
@@ -107,12 +147,16 @@ func PlatformAdminLoginHandler(limiter *ratelimit.Limiter, cfg config.Config, ha
 			return
 		}
 		setPlatformRefreshCookie(c, cfg, issued.RefreshToken, issued.RefreshExpiresAt)
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		data := gin.H{
 			"token": issued.AccessToken,
 			"admin_user": gin.H{
 				"id": adminUser.ID, "username": adminUser.Username, "full_name": adminUser.FullName,
 			},
-		}, "meta": gin.H{}})
+		}
+		if decision == mfaGraceActive {
+			data["mfa_setup_due_at"] = graceUntil.Format(time.RFC3339)
+		}
+		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 	}
 }
 
@@ -354,7 +398,12 @@ func CreatePlatformAdminUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusCreated, gin.H{"data": adminUser, "meta": gin.H{}})
+		// Explicit whitelist, NOT the raw struct — sqlcgen.PlatformAdminUser
+		// marshals password_hash, leaking it in the response body.
+		c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+			"id": adminUser.ID.String(), "username": adminUser.Username,
+			"email": adminUser.Email, "full_name": adminUser.FullName,
+		}, "meta": gin.H{}})
 	}
 }
 
