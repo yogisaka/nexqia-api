@@ -296,8 +296,8 @@ func generateMedicalRecordNo(ctx context.Context, q *sqlcgen.Queries, companyID,
 	likePattern := escapeLike(prefix) + strings.Repeat("_", width) + escapeLike(suffix)
 	maxSeq, err := q.MaxPersonMRNSeqAt(ctx, sqlcgen.MaxPersonMRNSeqAtParams{
 		CompanyID:   companyID,
-		Column2:     int32(len(prefix)) + 1, // SUBSTRING is 1-based
-		Column3:     int32(width),
+		SeqStart:    int32(len(prefix)) + 1, // SUBSTRING is 1-based
+		SeqWidth:    int32(width),
 		LikePattern: likePattern,
 	})
 	if err != nil {

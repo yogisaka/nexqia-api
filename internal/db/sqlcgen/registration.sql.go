@@ -12,6 +12,7 @@ import (
 )
 
 const createCompanyWithID = `-- name: CreateCompanyWithID :one
+
 INSERT INTO core.company (id, code, name, created_by, updated_by)
 VALUES ($1, $2, $3, $4, $4)
 RETURNING id, code, name, is_active, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, max_concurrent_sessions
@@ -24,6 +25,12 @@ type CreateCompanyWithIDParams struct {
 	CreatedBy pgtype.UUID
 }
 
+// internal/db/queries/registration.sql
+// New queries for POST /auth/register (see docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §6).
+// Explicit id (not DB DEFAULT) — company_isolation RLS has no WITH CHECK, so
+// USING doubles as the insert check: the new row's id must already equal
+// app.current_company_id, which must be set to a value we chose BEFORE this
+// insert runs. See §6 poin 4-6 for why.
 func (q *Queries) CreateCompanyWithID(ctx context.Context, arg CreateCompanyWithIDParams) (CoreCompany, error) {
 	row := q.db.QueryRow(ctx, createCompanyWithID,
 		arg.ID,
@@ -49,7 +56,6 @@ func (q *Queries) CreateCompanyWithID(ctx context.Context, arg CreateCompanyWith
 	return i, err
 }
 
-
 const createUserCompanyRole = `-- name: CreateUserCompanyRole :one
 INSERT INTO core.user_company_role (user_id, company_id, role_id, created_by)
 VALUES ($1, $2, $3, $4)
@@ -64,15 +70,6 @@ type CreateUserCompanyRoleParams struct {
 	CreatedBy pgtype.UUID
 }
 
-type CoreUserCompanyRole struct {
-	ID        pgtype.UUID
-	UserID    pgtype.UUID
-	CompanyID pgtype.UUID
-	RoleID    pgtype.UUID
-	CreatedAt pgtype.Timestamptz
-	CreatedBy pgtype.UUID
-}
-
 func (q *Queries) CreateUserCompanyRole(ctx context.Context, arg CreateUserCompanyRoleParams) (CoreUserCompanyRole, error) {
 	row := q.db.QueryRow(ctx, createUserCompanyRole,
 		arg.UserID,
@@ -81,25 +78,15 @@ func (q *Queries) CreateUserCompanyRole(ctx context.Context, arg CreateUserCompa
 		arg.CreatedBy,
 	)
 	var i CoreUserCompanyRole
-	err := row.Scan(&i.ID, &i.UserID, &i.CompanyID, &i.RoleID, &i.CreatedAt, &i.CreatedBy)
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CompanyID,
+		&i.RoleID,
+		&i.CreatedAt,
+		&i.CreatedBy,
+	)
 	return i, err
-}
-
-const userHasCompanyLevelPermission = `-- name: UserHasCompanyLevelPermission :one
-SELECT core.user_has_company_level_permission($1, $2, $3)
-`
-
-type UserHasCompanyLevelPermissionParams struct {
-	UserID    pgtype.UUID
-	CompanyID pgtype.UUID
-	Codes     []string
-}
-
-func (q *Queries) UserHasCompanyLevelPermission(ctx context.Context, arg UserHasCompanyLevelPermissionParams) (bool, error) {
-	row := q.db.QueryRow(ctx, userHasCompanyLevelPermission, arg.UserID, arg.CompanyID, arg.Codes)
-	var has bool
-	err := row.Scan(&has)
-	return has, err
 }
 
 const listUserCompanyRoles = `-- name: ListUserCompanyRoles :many
@@ -115,10 +102,37 @@ func (q *Queries) ListUserCompanyRoles(ctx context.Context, userID pgtype.UUID) 
 	items := []CoreUserCompanyRole{}
 	for rows.Next() {
 		var i CoreUserCompanyRole
-		if err := rows.Scan(&i.ID, &i.UserID, &i.CompanyID, &i.RoleID, &i.CreatedAt, &i.CreatedBy); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.CompanyID,
+			&i.RoleID,
+			&i.CreatedAt,
+			&i.CreatedBy,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userHasCompanyLevelPermission = `-- name: UserHasCompanyLevelPermission :one
+SELECT core.user_has_company_level_permission($1::uuid, $2::uuid, $3::text[])
+`
+
+type UserHasCompanyLevelPermissionParams struct {
+	UserID    pgtype.UUID
+	CompanyID pgtype.UUID
+	Codes     []string
+}
+
+func (q *Queries) UserHasCompanyLevelPermission(ctx context.Context, arg UserHasCompanyLevelPermissionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, userHasCompanyLevelPermission, arg.UserID, arg.CompanyID, arg.Codes)
+	var user_has_company_level_permission bool
+	err := row.Scan(&user_has_company_level_permission)
+	return user_has_company_level_permission, err
 }

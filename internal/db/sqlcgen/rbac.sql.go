@@ -173,7 +173,7 @@ func (q *Queries) CreatePermission(ctx context.Context, arg CreatePermissionPara
 const createRole = `-- name: CreateRole :one
 INSERT INTO core.role (company_id, name, description, is_system, requires_physician_data, created_by, updated_by)
 VALUES ($1, $2, $3, $4, $5, $6, $6)
-RETURNING id, company_id, name, description, is_system, requires_physician_data, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version
+RETURNING id, company_id, name, description, is_system, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, requires_physician_data
 `
 
 type CreateRoleParams struct {
@@ -201,7 +201,6 @@ func (q *Queries) CreateRole(ctx context.Context, arg CreateRoleParams) (CoreRol
 		&i.Name,
 		&i.Description,
 		&i.IsSystem,
-		&i.RequiresPhysicianData,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,
@@ -209,6 +208,7 @@ func (q *Queries) CreateRole(ctx context.Context, arg CreateRoleParams) (CoreRol
 		&i.DeletedAt,
 		&i.DeletedBy,
 		&i.RowVersion,
+		&i.RequiresPhysicianData,
 	)
 	return i, err
 }
@@ -223,7 +223,7 @@ func (q *Queries) DeletePermission(ctx context.Context, id pgtype.UUID) error {
 }
 
 const getAppUserByID = `-- name: GetAppUserByID :one
-SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash FROM core.app_user WHERE id = $1 AND deleted_at IS NULL
+SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone FROM core.app_user WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetAppUserByID(ctx context.Context, id pgtype.UUID) (CoreAppUser, error) {
@@ -247,12 +247,13 @@ func (q *Queries) GetAppUserByID(ctx context.Context, id pgtype.UUID) (CoreAppUs
 		&i.DeletedBy,
 		&i.RowVersion,
 		&i.PinHash,
+		&i.Phone,
 	)
 	return i, err
 }
 
 const getAppUserByUsername = `-- name: GetAppUserByUsername :one
-SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash FROM core.app_user WHERE company_id = $1 AND username = $2 AND deleted_at IS NULL
+SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone FROM core.app_user WHERE company_id = $1 AND username = $2 AND deleted_at IS NULL
 `
 
 type GetAppUserByUsernameParams struct {
@@ -281,6 +282,7 @@ func (q *Queries) GetAppUserByUsername(ctx context.Context, arg GetAppUserByUser
 		&i.DeletedBy,
 		&i.RowVersion,
 		&i.PinHash,
+		&i.Phone,
 	)
 	return i, err
 }
@@ -302,7 +304,7 @@ func (q *Queries) GetPermissionByCode(ctx context.Context, code string) (CorePer
 }
 
 const getRoleByID = `-- name: GetRoleByID :one
-SELECT id, company_id, name, description, is_system, requires_physician_data, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version FROM core.role WHERE id = $1 AND deleted_at IS NULL
+SELECT id, company_id, name, description, is_system, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, requires_physician_data FROM core.role WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetRoleByID(ctx context.Context, id pgtype.UUID) (CoreRole, error) {
@@ -314,7 +316,6 @@ func (q *Queries) GetRoleByID(ctx context.Context, id pgtype.UUID) (CoreRole, er
 		&i.Name,
 		&i.Description,
 		&i.IsSystem,
-		&i.RequiresPhysicianData,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,
@@ -322,6 +323,7 @@ func (q *Queries) GetRoleByID(ctx context.Context, id pgtype.UUID) (CoreRole, er
 		&i.DeletedAt,
 		&i.DeletedBy,
 		&i.RowVersion,
+		&i.RequiresPhysicianData,
 	)
 	return i, err
 }
@@ -345,7 +347,7 @@ func (q *Queries) GetUserMerchantRoleByID(ctx context.Context, id pgtype.UUID) (
 }
 
 const listAppUsersByCompany = `-- name: ListAppUsersByCompany :many
-SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash FROM core.app_user
+SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone FROM core.app_user
 WHERE company_id = $1 AND deleted_at IS NULL
 ORDER BY username
 LIMIT $2 OFFSET $3
@@ -384,10 +386,51 @@ func (q *Queries) ListAppUsersByCompany(ctx context.Context, arg ListAppUsersByC
 			&i.DeletedBy,
 			&i.RowVersion,
 			&i.PinHash,
+			&i.Phone,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPermissionCodesByUserMerchant = `-- name: ListPermissionCodesByUserMerchant :many
+SELECT DISTINCT p.code
+FROM core.user_merchant_role umr
+JOIN core.role r ON r.id = umr.role_id AND r.deleted_at IS NULL
+JOIN core.role_permission rp ON rp.role_id = r.id
+JOIN core.permission p ON p.id = rp.permission_id
+WHERE umr.user_id = $1 AND umr.merchant_id = $2
+ORDER BY p.code
+`
+
+type ListPermissionCodesByUserMerchantParams struct {
+	UserID     pgtype.UUID
+	MerchantID pgtype.UUID
+}
+
+// Effective permission codes for a user at a merchant (union across all
+// their roles there) -- self-access endpoint for permission-driven frontend
+// UI (nav/dashboard gating), since ListRolePermissions itself requires
+// PermRoleManage and a regular user can't read their own role's permission
+// list through it.
+func (q *Queries) ListPermissionCodesByUserMerchant(ctx context.Context, arg ListPermissionCodesByUserMerchantParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listPermissionCodesByUserMerchant, arg.UserID, arg.MerchantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
+		}
+		items = append(items, code)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -457,7 +500,7 @@ func (q *Queries) ListPermissionsByRole(ctx context.Context, roleID pgtype.UUID)
 }
 
 const listRolesByCompany = `-- name: ListRolesByCompany :many
-SELECT id, company_id, name, description, is_system, requires_physician_data, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version FROM core.role
+SELECT id, company_id, name, description, is_system, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, requires_physician_data FROM core.role
 WHERE company_id = $1 AND deleted_at IS NULL
 ORDER BY name
 LIMIT $2 OFFSET $3
@@ -484,7 +527,6 @@ func (q *Queries) ListRolesByCompany(ctx context.Context, arg ListRolesByCompany
 			&i.Name,
 			&i.Description,
 			&i.IsSystem,
-			&i.RequiresPhysicianData,
 			&i.CreatedAt,
 			&i.CreatedBy,
 			&i.UpdatedAt,
@@ -492,6 +534,7 @@ func (q *Queries) ListRolesByCompany(ctx context.Context, arg ListRolesByCompany
 			&i.DeletedAt,
 			&i.DeletedBy,
 			&i.RowVersion,
+			&i.RequiresPhysicianData,
 		); err != nil {
 			return nil, err
 		}
@@ -504,7 +547,7 @@ func (q *Queries) ListRolesByCompany(ctx context.Context, arg ListRolesByCompany
 }
 
 const listRolesByUserMerchant = `-- name: ListRolesByUserMerchant :many
-SELECT r.id, r.company_id, r.name, r.description, r.is_system, r.created_at, r.created_by, r.updated_at, r.updated_by, r.deleted_at, r.deleted_by, r.row_version FROM core.role r
+SELECT r.id, r.company_id, r.name, r.description, r.is_system, r.created_at, r.created_by, r.updated_at, r.updated_by, r.deleted_at, r.deleted_by, r.row_version, r.requires_physician_data FROM core.role r
 JOIN core.user_merchant_role umr ON umr.role_id = r.id
 WHERE umr.user_id = $1 AND umr.merchant_id = $2 AND r.deleted_at IS NULL
 `
@@ -536,6 +579,7 @@ func (q *Queries) ListRolesByUserMerchant(ctx context.Context, arg ListRolesByUs
 			&i.DeletedAt,
 			&i.DeletedBy,
 			&i.RowVersion,
+			&i.RequiresPhysicianData,
 		); err != nil {
 			return nil, err
 		}
@@ -682,7 +726,7 @@ const updateAppUser = `-- name: UpdateAppUser :one
 UPDATE core.app_user
 SET person_id = $2, email = $3, is_active = $4, updated_by = $5
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash
+RETURNING id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone
 `
 
 type UpdateAppUserParams struct {
@@ -720,6 +764,7 @@ func (q *Queries) UpdateAppUser(ctx context.Context, arg UpdateAppUserParams) (C
 		&i.DeletedBy,
 		&i.RowVersion,
 		&i.PinHash,
+		&i.Phone,
 	)
 	return i, err
 }
@@ -770,7 +815,7 @@ const updateRole = `-- name: UpdateRole :one
 UPDATE core.role
 SET name = $2, description = $3, requires_physician_data = $4, updated_by = $5
 WHERE id = $1 AND deleted_at IS NULL AND NOT is_system
-RETURNING id, company_id, name, description, is_system, requires_physician_data, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version
+RETURNING id, company_id, name, description, is_system, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, requires_physician_data
 `
 
 type UpdateRoleParams struct {
@@ -796,7 +841,6 @@ func (q *Queries) UpdateRole(ctx context.Context, arg UpdateRoleParams) (CoreRol
 		&i.Name,
 		&i.Description,
 		&i.IsSystem,
-		&i.RequiresPhysicianData,
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.UpdatedAt,
@@ -804,6 +848,7 @@ func (q *Queries) UpdateRole(ctx context.Context, arg UpdateRoleParams) (CoreRol
 		&i.DeletedAt,
 		&i.DeletedBy,
 		&i.RowVersion,
+		&i.RequiresPhysicianData,
 	)
 	return i, err
 }
@@ -830,45 +875,4 @@ func (q *Queries) UserHasPermission(ctx context.Context, arg UserHasPermissionPa
 	var has_permission bool
 	err := row.Scan(&has_permission)
 	return has_permission, err
-}
-
-const listPermissionCodesByUserMerchant = `-- name: ListPermissionCodesByUserMerchant :many
-
-SELECT DISTINCT p.code
-FROM core.user_merchant_role umr
-JOIN core.role r ON r.id = umr.role_id AND r.deleted_at IS NULL
-JOIN core.role_permission rp ON rp.role_id = r.id
-JOIN core.permission p ON p.id = rp.permission_id
-WHERE umr.user_id = $1 AND umr.merchant_id = $2
-ORDER BY p.code
-`
-
-type ListPermissionCodesByUserMerchantParams struct {
-	UserID     pgtype.UUID
-	MerchantID pgtype.UUID
-}
-
-// Effective permission codes for a user at a merchant (union across all
-// their roles there) -- self-access endpoint for permission-driven frontend
-// UI (nav/dashboard gating), since ListRolePermissions itself requires
-// PermRoleManage and a regular user can't read their own role's permission
-// list through it.
-func (q *Queries) ListPermissionCodesByUserMerchant(ctx context.Context, arg ListPermissionCodesByUserMerchantParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listPermissionCodesByUserMerchant, arg.UserID, arg.MerchantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var code string
-		if err := rows.Scan(&code); err != nil {
-			return nil, err
-		}
-		items = append(items, code)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }

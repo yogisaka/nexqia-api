@@ -17,7 +17,7 @@ ON CONFLICT (user_id, company_id, role_id) DO NOTHING
 RETURNING *;
 
 -- name: UserHasCompanyLevelPermission :one
-SELECT core.user_has_company_level_permission($1, $2, $3);
+SELECT core.user_has_company_level_permission(sqlc.arg(user_id)::uuid, sqlc.arg(company_id)::uuid, sqlc.arg(codes)::text[]);
 
 -- name: ListUserCompanyRoles :many
 SELECT * FROM core.user_company_role WHERE user_id = $1;

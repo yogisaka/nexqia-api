@@ -5,9 +5,11 @@
 -- name: GetMRNFormat :one
 -- Merchant override first (if $1 matches a row), else the company default.
 -- Returns no rows if neither exists — caller falls back to a hardcoded default.
-(SELECT format FROM core.mrn_config WHERE merchant_id = $1)
+-- Table aliases + qualified columns: sqlc's analyzer resolves both UNION
+-- branches against a shared scope, so unqualified columns read as ambiguous.
+(SELECT mc.format FROM core.mrn_config mc WHERE mc.merchant_id = $1)
 UNION ALL
-(SELECT format FROM core.mrn_config WHERE company_id = $2 AND merchant_id IS NULL)
+(SELECT mc2.format FROM core.mrn_config mc2 WHERE mc2.company_id = $2 AND mc2.merchant_id IS NULL)
 LIMIT 1;
 
 -- name: LockMRNSequence :exec
@@ -17,12 +19,13 @@ LIMIT 1;
 SELECT pg_advisory_xact_lock(hashtext($1::text || ':' || $2::text));
 
 -- name: MaxPersonMRNSeqAt :one
--- $2/$3 = 1-based start position and digit width of the {SEQ:N} slot inside
--- medical_record_no once the format's other tokens are resolved; $4 = LIKE
--- pattern (literal parts escaped, {SEQ:N} slot as N '_' wildcards).
-SELECT COALESCE(MAX(SUBSTRING(medical_record_no FROM $2::int FOR $3::int)::int), 0)::int AS max_seq
+-- seq_start/seq_width = 1-based start position and digit width of the {SEQ:N}
+-- slot inside medical_record_no once the format's other tokens are resolved;
+-- like_pattern = LIKE pattern (literal parts escaped, {SEQ:N} slot as N '_'
+-- wildcards).
+SELECT COALESCE(MAX(SUBSTRING(medical_record_no FROM sqlc.arg(seq_start)::int FOR sqlc.arg(seq_width)::int)::int), 0)::int AS max_seq
 FROM core.person
-WHERE company_id = $1 AND medical_record_no LIKE $4 ESCAPE '\' AND deleted_at IS NULL;
+WHERE company_id = sqlc.arg(company_id) AND medical_record_no LIKE sqlc.arg(like_pattern)::text ESCAPE '\' AND deleted_at IS NULL;
 
 -- name: GetCompanyMRNConfig :one
 SELECT * FROM core.mrn_config WHERE company_id = $1 AND merchant_id IS NULL;

@@ -6,9 +6,11 @@
 -- name: GetDiagnosisCodeSystem :one
 -- Merchant override first (if $1 matches a row), else the company default.
 -- Returns no rows if neither exists — caller falls back to a hardcoded default.
-(SELECT code_system FROM core.diagnosis_config WHERE merchant_id = $1)
+-- Table aliases + qualified columns: sqlc's analyzer resolves both UNION
+-- branches against a shared scope, so unqualified columns read as ambiguous.
+(SELECT dc.code_system FROM core.diagnosis_config dc WHERE dc.merchant_id = $1)
 UNION ALL
-(SELECT code_system FROM core.diagnosis_config WHERE company_id = $2 AND merchant_id IS NULL)
+(SELECT dc2.code_system FROM core.diagnosis_config dc2 WHERE dc2.company_id = $2 AND dc2.merchant_id IS NULL)
 LIMIT 1;
 
 -- name: GetCompanyDiagnosisConfig :one

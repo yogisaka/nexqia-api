@@ -104,6 +104,17 @@ type CoreDepartment struct {
 	RowVersion         int32
 }
 
+type CoreDiagnosisConfig struct {
+	ID         pgtype.UUID
+	CompanyID  pgtype.UUID
+	MerchantID pgtype.UUID
+	CodeSystem string
+	CreatedAt  pgtype.Timestamptz
+	CreatedBy  pgtype.UUID
+	UpdatedAt  pgtype.Timestamptz
+	UpdatedBy  pgtype.UUID
+}
+
 type CoreDietType struct {
 	ID             pgtype.UUID
 	CompanyID      pgtype.UUID
@@ -198,6 +209,15 @@ type CoreMerchant struct {
 	RowVersion         int32
 }
 
+type CoreMfaRecoveryCode struct {
+	ID        pgtype.UUID
+	UserID    pgtype.UUID
+	CompanyID pgtype.UUID
+	CodeHash  string
+	UsedAt    pgtype.Timestamptz
+	CreatedAt pgtype.Timestamptz
+}
+
 type CoreMrnConfig struct {
 	ID         pgtype.UUID
 	CompanyID  pgtype.UUID
@@ -207,26 +227,6 @@ type CoreMrnConfig struct {
 	CreatedBy  pgtype.UUID
 	UpdatedAt  pgtype.Timestamptz
 	UpdatedBy  pgtype.UUID
-}
-
-type CoreDiagnosisConfig struct {
-	ID         pgtype.UUID
-	CompanyID  pgtype.UUID
-	MerchantID pgtype.UUID
-	CodeSystem string
-	CreatedAt  pgtype.Timestamptz
-	CreatedBy  pgtype.UUID
-	UpdatedAt  pgtype.Timestamptz
-	UpdatedBy  pgtype.UUID
-}
-
-type CoreMfaRecoveryCode struct {
-	ID        pgtype.UUID
-	UserID    pgtype.UUID
-	CompanyID pgtype.UUID
-	CodeHash  string
-	UsedAt    pgtype.Timestamptz
-	CreatedAt pgtype.Timestamptz
 }
 
 type CoreNotification struct {
@@ -427,7 +427,6 @@ type CoreRole struct {
 	Name                  string
 	Description           pgtype.Text
 	IsSystem              bool
-	RequiresPhysicianData bool
 	CreatedAt             pgtype.Timestamptz
 	CreatedBy             pgtype.UUID
 	UpdatedAt             pgtype.Timestamptz
@@ -435,6 +434,7 @@ type CoreRole struct {
 	DeletedAt             pgtype.Timestamptz
 	DeletedBy             pgtype.UUID
 	RowVersion            int32
+	RequiresPhysicianData bool
 }
 
 type CoreRolePermission struct {
@@ -503,6 +503,15 @@ type CoreSupplier struct {
 	DeletedAt         pgtype.Timestamptz
 	DeletedBy         pgtype.UUID
 	RowVersion        int32
+}
+
+type CoreUserCompanyRole struct {
+	ID        pgtype.UUID
+	UserID    pgtype.UUID
+	CompanyID pgtype.UUID
+	RoleID    pgtype.UUID
+	CreatedAt pgtype.Timestamptz
+	CreatedBy pgtype.UUID
 }
 
 type CoreUserMerchantRole struct {
@@ -670,29 +679,17 @@ type OperationsQueueStatusHistory struct {
 	ChangedAt  pgtype.Timestamptz
 }
 
-type TerminologyCodeSystem struct {
-	ID        pgtype.UUID
-	SystemUri string
-	Name      string
-	Version   string
-	IsActive  bool
-	CreatedAt pgtype.Timestamptz
-}
-
-type TerminologyConcept struct {
-	ID           pgtype.UUID
-	CodeSystemID pgtype.UUID
-	Code         string
-	Display      string
-	Definition   pgtype.Text
-	IsActive     bool
-	CreatedAt    pgtype.Timestamptz
-}
-
-type TerminologyConceptHierarchy struct {
-	ParentConceptID  pgtype.UUID
-	ChildConceptID   pgtype.UUID
-	RelationshipType string
+type PlatformAdminRefreshToken struct {
+	ID          pgtype.UUID
+	AdminUserID pgtype.UUID
+	DeviceID    string
+	DeviceLabel string
+	TokenHash   string
+	IssuedAt    pgtype.Timestamptz
+	LastUsedAt  pgtype.Timestamptz
+	ExpiresAt   pgtype.Timestamptz
+	RevokedAt   pgtype.Timestamptz
+	CreatedIp   netip.Addr
 }
 
 type PlatformAdminUser struct {
@@ -710,6 +707,22 @@ type PlatformAdminUser struct {
 	DeletedAt    pgtype.Timestamptz
 	DeletedBy    pgtype.UUID
 	RowVersion   int32
+}
+
+type PlatformAdminUserRole struct {
+	AdminUserID pgtype.UUID
+	RoleID      pgtype.UUID
+}
+
+type PlatformImpersonationSession struct {
+	ID              pgtype.UUID
+	AdminUserID     pgtype.UUID
+	TargetUserID    pgtype.UUID
+	TargetCompanyID pgtype.UUID
+	Reason          string
+	StartedAt       pgtype.Timestamptz
+	ExpiresAt       pgtype.Timestamptz
+	StartedIp       netip.Addr
 }
 
 type PlatformPermission struct {
@@ -738,31 +751,27 @@ type PlatformRolePermission struct {
 	PermissionID pgtype.UUID
 }
 
-type PlatformAdminUserRole struct {
-	AdminUserID pgtype.UUID
-	RoleID      pgtype.UUID
+type TerminologyCodeSystem struct {
+	ID        pgtype.UUID
+	SystemUri string
+	Name      string
+	Version   string
+	IsActive  bool
+	CreatedAt pgtype.Timestamptz
 }
 
-type PlatformAdminRefreshToken struct {
-	ID          pgtype.UUID
-	AdminUserID pgtype.UUID
-	DeviceID    string
-	DeviceLabel string
-	TokenHash   string
-	IssuedAt    pgtype.Timestamptz
-	LastUsedAt  pgtype.Timestamptz
-	ExpiresAt   pgtype.Timestamptz
-	RevokedAt   pgtype.Timestamptz
-	CreatedIp   netip.Addr
+type TerminologyConcept struct {
+	ID           pgtype.UUID
+	CodeSystemID pgtype.UUID
+	Code         string
+	Display      string
+	Definition   pgtype.Text
+	IsActive     bool
+	CreatedAt    pgtype.Timestamptz
 }
 
-type PlatformImpersonationSession struct {
-	ID              pgtype.UUID
-	AdminUserID     pgtype.UUID
-	TargetUserID    pgtype.UUID
-	TargetCompanyID pgtype.UUID
-	Reason          string
-	StartedAt       pgtype.Timestamptz
-	ExpiresAt       pgtype.Timestamptz
-	StartedIp       netip.Addr
+type TerminologyConceptHierarchy struct {
+	ParentConceptID  pgtype.UUID
+	ChildConceptID   pgtype.UUID
+	RelationshipType string
 }
