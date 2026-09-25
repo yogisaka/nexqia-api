@@ -96,7 +96,7 @@ const createAppUser = `-- name: CreateAppUser :one
 
 INSERT INTO core.app_user (company_id, person_id, username, email, phone, password_hash, created_by, updated_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-RETURNING id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone
+RETURNING id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone, mfa_grace_until
 `
 
 type CreateAppUserParams struct {
@@ -142,6 +142,7 @@ func (q *Queries) CreateAppUser(ctx context.Context, arg CreateAppUserParams) (C
 		&i.RowVersion,
 		&i.PinHash,
 		&i.Phone,
+		&i.MfaGraceUntil,
 	)
 	return i, err
 }
@@ -223,7 +224,7 @@ func (q *Queries) DeletePermission(ctx context.Context, id pgtype.UUID) error {
 }
 
 const getAppUserByID = `-- name: GetAppUserByID :one
-SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone FROM core.app_user WHERE id = $1 AND deleted_at IS NULL
+SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone, mfa_grace_until FROM core.app_user WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetAppUserByID(ctx context.Context, id pgtype.UUID) (CoreAppUser, error) {
@@ -248,12 +249,13 @@ func (q *Queries) GetAppUserByID(ctx context.Context, id pgtype.UUID) (CoreAppUs
 		&i.RowVersion,
 		&i.PinHash,
 		&i.Phone,
+		&i.MfaGraceUntil,
 	)
 	return i, err
 }
 
 const getAppUserByUsername = `-- name: GetAppUserByUsername :one
-SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone FROM core.app_user WHERE company_id = $1 AND username = $2 AND deleted_at IS NULL
+SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone, mfa_grace_until FROM core.app_user WHERE company_id = $1 AND username = $2 AND deleted_at IS NULL
 `
 
 type GetAppUserByUsernameParams struct {
@@ -283,6 +285,7 @@ func (q *Queries) GetAppUserByUsername(ctx context.Context, arg GetAppUserByUser
 		&i.RowVersion,
 		&i.PinHash,
 		&i.Phone,
+		&i.MfaGraceUntil,
 	)
 	return i, err
 }
@@ -347,7 +350,7 @@ func (q *Queries) GetUserMerchantRoleByID(ctx context.Context, id pgtype.UUID) (
 }
 
 const listAppUsersByCompany = `-- name: ListAppUsersByCompany :many
-SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone FROM core.app_user
+SELECT id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone, mfa_grace_until FROM core.app_user
 WHERE company_id = $1 AND deleted_at IS NULL
 ORDER BY username
 LIMIT $2 OFFSET $3
@@ -387,6 +390,7 @@ func (q *Queries) ListAppUsersByCompany(ctx context.Context, arg ListAppUsersByC
 			&i.RowVersion,
 			&i.PinHash,
 			&i.Phone,
+			&i.MfaGraceUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -711,6 +715,27 @@ func (q *Queries) SoftDeleteRole(ctx context.Context, arg SoftDeleteRoleParams) 
 	return err
 }
 
+const startAppUserMFAGrace = `-- name: StartAppUserMFAGrace :one
+UPDATE core.app_user
+SET mfa_grace_until = now() + make_interval(days => $1::int)
+WHERE id = $2 AND mfa_grace_until IS NULL AND deleted_at IS NULL
+RETURNING mfa_grace_until
+`
+
+type StartAppUserMFAGraceParams struct {
+	GraceDays int32
+	ID        pgtype.UUID
+}
+
+// Starts the MFA grace window once (spec 2026-09-25-mfa-grace-enforcement §3).
+// Returns no row if it was already started (concurrent login) — caller re-reads.
+func (q *Queries) StartAppUserMFAGrace(ctx context.Context, arg StartAppUserMFAGraceParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, startAppUserMFAGrace, arg.GraceDays, arg.ID)
+	var mfa_grace_until pgtype.Timestamptz
+	err := row.Scan(&mfa_grace_until)
+	return mfa_grace_until, err
+}
+
 const touchAppUserLastLogin = `-- name: TouchAppUserLastLogin :exec
 UPDATE core.app_user
 SET last_login_at = now()
@@ -726,7 +751,7 @@ const updateAppUser = `-- name: UpdateAppUser :one
 UPDATE core.app_user
 SET person_id = $2, email = $3, is_active = $4, updated_by = $5
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone
+RETURNING id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone, mfa_grace_until
 `
 
 type UpdateAppUserParams struct {
@@ -765,6 +790,7 @@ func (q *Queries) UpdateAppUser(ctx context.Context, arg UpdateAppUserParams) (C
 		&i.RowVersion,
 		&i.PinHash,
 		&i.Phone,
+		&i.MfaGraceUntil,
 	)
 	return i, err
 }

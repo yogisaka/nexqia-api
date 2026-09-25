@@ -23,24 +23,25 @@ type CoreAccessLog struct {
 }
 
 type CoreAppUser struct {
-	ID           pgtype.UUID
-	CompanyID    pgtype.UUID
-	PersonID     pgtype.UUID
-	Username     string
-	Email        pgtype.Text
-	PasswordHash string
-	MfaSecret    pgtype.Text
-	IsActive     bool
-	LastLoginAt  pgtype.Timestamptz
-	CreatedAt    pgtype.Timestamptz
-	CreatedBy    pgtype.UUID
-	UpdatedAt    pgtype.Timestamptz
-	UpdatedBy    pgtype.UUID
-	DeletedAt    pgtype.Timestamptz
-	DeletedBy    pgtype.UUID
-	RowVersion   int32
-	PinHash      pgtype.Text
-	Phone        pgtype.Text
+	ID            pgtype.UUID
+	CompanyID     pgtype.UUID
+	PersonID      pgtype.UUID
+	Username      string
+	Email         pgtype.Text
+	PasswordHash  string
+	MfaSecret     pgtype.Text
+	IsActive      bool
+	LastLoginAt   pgtype.Timestamptz
+	CreatedAt     pgtype.Timestamptz
+	CreatedBy     pgtype.UUID
+	UpdatedAt     pgtype.Timestamptz
+	UpdatedBy     pgtype.UUID
+	DeletedAt     pgtype.Timestamptz
+	DeletedBy     pgtype.UUID
+	RowVersion    int32
+	PinHash       pgtype.Text
+	Phone         pgtype.Text
+	MfaGraceUntil pgtype.Timestamptz
 }
 
 type CoreAuditLog struct {
@@ -679,6 +680,14 @@ type OperationsQueueStatusHistory struct {
 	ChangedAt  pgtype.Timestamptz
 }
 
+type PlatformAdminMfaRecoveryCode struct {
+	ID          pgtype.UUID
+	AdminUserID pgtype.UUID
+	CodeHash    string
+	UsedAt      pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+}
+
 type PlatformAdminRefreshToken struct {
 	ID          pgtype.UUID
 	AdminUserID pgtype.UUID
@@ -693,20 +702,22 @@ type PlatformAdminRefreshToken struct {
 }
 
 type PlatformAdminUser struct {
-	ID           pgtype.UUID
-	Username     string
-	Email        string
-	FullName     string
-	PasswordHash string
-	IsActive     bool
-	LastLoginAt  pgtype.Timestamptz
-	CreatedAt    pgtype.Timestamptz
-	CreatedBy    pgtype.UUID
-	UpdatedAt    pgtype.Timestamptz
-	UpdatedBy    pgtype.UUID
-	DeletedAt    pgtype.Timestamptz
-	DeletedBy    pgtype.UUID
-	RowVersion   int32
+	ID            pgtype.UUID
+	Username      string
+	Email         string
+	FullName      string
+	PasswordHash  string
+	IsActive      bool
+	LastLoginAt   pgtype.Timestamptz
+	CreatedAt     pgtype.Timestamptz
+	CreatedBy     pgtype.UUID
+	UpdatedAt     pgtype.Timestamptz
+	UpdatedBy     pgtype.UUID
+	DeletedAt     pgtype.Timestamptz
+	DeletedBy     pgtype.UUID
+	RowVersion    int32
+	MfaSecret     pgtype.Text
+	MfaGraceUntil pgtype.Timestamptz
 }
 
 type PlatformAdminUserRole struct {

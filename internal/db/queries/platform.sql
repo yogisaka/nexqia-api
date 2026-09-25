@@ -55,3 +55,33 @@ INSERT INTO platform.impersonation_session
     (admin_user_id, target_user_id, target_company_id, reason, expires_at, started_ip)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
+
+-- name: StartPlatformAdminMFAGrace :one
+UPDATE platform.admin_user
+SET mfa_grace_until = now() + make_interval(days => sqlc.arg(grace_days)::int)
+WHERE id = sqlc.arg(id) AND mfa_grace_until IS NULL
+RETURNING mfa_grace_until;
+
+-- name: SetPlatformAdminMFASecret :exec
+UPDATE platform.admin_user SET mfa_secret = $2, updated_by = $3 WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: ResetPlatformAdminMFA :execrows
+UPDATE platform.admin_user
+SET mfa_secret = NULL, mfa_grace_until = now(), updated_by = $2
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: CreatePlatformAdminMFARecoveryCode :exec
+INSERT INTO platform.admin_mfa_recovery_code (admin_user_id, code_hash) VALUES ($1, $2);
+
+-- name: DeletePlatformAdminMFARecoveryCodes :exec
+DELETE FROM platform.admin_mfa_recovery_code WHERE admin_user_id = $1;
+
+-- name: ListActivePlatformAdminMFARecoveryCodes :many
+SELECT * FROM platform.admin_mfa_recovery_code WHERE admin_user_id = $1 AND used_at IS NULL;
+
+-- name: MarkPlatformAdminMFARecoveryCodeUsed :exec
+UPDATE platform.admin_mfa_recovery_code SET used_at = now() WHERE id = $1;
+
+-- name: RevokeAllPlatformAdminRefreshTokensForUser :exec
+UPDATE platform.admin_refresh_token SET revoked_at = now()
+WHERE admin_user_id = $1 AND revoked_at IS NULL;

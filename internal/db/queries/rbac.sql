@@ -162,3 +162,11 @@ JOIN core.role_permission rp ON rp.role_id = r.id
 JOIN core.permission p ON p.id = rp.permission_id
 WHERE umr.user_id = $1 AND umr.merchant_id = $2
 ORDER BY p.code;
+
+-- name: StartAppUserMFAGrace :one
+-- Starts the MFA grace window once (spec 2026-09-25-mfa-grace-enforcement §3).
+-- Returns no row if it was already started (concurrent login) — caller re-reads.
+UPDATE core.app_user
+SET mfa_grace_until = now() + make_interval(days => sqlc.arg(grace_days)::int)
+WHERE id = sqlc.arg(id) AND mfa_grace_until IS NULL AND deleted_at IS NULL
+RETURNING mfa_grace_until;

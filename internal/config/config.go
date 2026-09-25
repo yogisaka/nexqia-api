@@ -63,6 +63,12 @@ type Config struct {
 	AppLockDefaultIdleMinutes   int
 	AppLockMaxPinAttempts       int
 	AppLockAttemptWindowMinutes int
+
+	// PlatformMFAGraceDays/TenantMFAGraceDays — grace period (days) after a user
+	// becomes MFA-mandatory before login is hard-blocked, see
+	// docs/design/specs/2026-09-25-mfa-grace-enforcement-design.md §6.
+	PlatformMFAGraceDays int
+	TenantMFAGraceDays   int
 }
 
 func Load() Config {
@@ -104,6 +110,9 @@ func Load() Config {
 		AppLockDefaultIdleMinutes:   getEnvInt("APP_LOCK_DEFAULT_IDLE_MINUTES", 5),
 		AppLockMaxPinAttempts:       getEnvInt("APP_LOCK_MAX_PIN_ATTEMPTS", 5),
 		AppLockAttemptWindowMinutes: getEnvInt("APP_LOCK_ATTEMPT_WINDOW_MINUTES", 15),
+
+		PlatformMFAGraceDays: getEnvInt("PLATFORM_MFA_GRACE_DAYS", 7),
+		TenantMFAGraceDays:   getEnvInt("TENANT_MFA_GRACE_DAYS", 7),
 	}
 }
 

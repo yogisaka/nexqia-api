@@ -51,6 +51,8 @@ func testConfig() config.Config {
 		AppLockDefaultIdleMinutes:    5,
 		AppLockMaxPinAttempts:        3,
 		AppLockAttemptWindowMinutes:  15,
+		PlatformMFAGraceDays:         7,
+		TenantMFAGraceDays:           7,
 	}
 }
 
