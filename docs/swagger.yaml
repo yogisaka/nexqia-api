@@ -27,6 +27,17 @@ definitions:
       data: {}
       meta: {}
     type: object
+  server.changePasswordRequest:
+    properties:
+      current_password:
+        type: string
+      new_password:
+        minLength: 8
+        type: string
+    required:
+    - current_password
+    - new_password
+    type: object
   server.createAdmissionRequest:
     properties:
       companion_name:
@@ -625,6 +636,15 @@ definitions:
     required:
     - name
     type: object
+  server.updateMeRequest:
+    properties:
+      email:
+        type: string
+      full_name:
+        type: string
+      phone:
+        type: string
+    type: object
   server.updateMerchantRequest:
     properties:
       bpjs_ppk_code:
@@ -941,6 +961,63 @@ paths:
       summary: Log out
       tags:
       - auth
+  /auth/me:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Get the caller's own profile
+      tags:
+      - account
+    patch:
+      consumes:
+      - application/json
+      description: Only full_name, email, phone. Absent fields unchanged; empty email/phone
+        clears them (NULL). Returns the same shape as GET /auth/me.
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Profile fields
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateMeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update the caller's own profile
+      tags:
+      - account
   /auth/mfa:
     get:
       description: |-
@@ -1077,6 +1154,48 @@ paths:
       summary: Generate a new TOTP secret
       tags:
       - mfa
+  /auth/password:
+    post:
+      consumes:
+      - application/json
+      description: Rate-limited per user. Revokes every other device's session; the
+        current device stays logged in.
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Current + new password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.changePasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Change the caller's own password
+      tags:
+      - account
   /auth/pin/disable:
     post:
       consumes:
