@@ -3,6 +3,7 @@ package server
 
 import (
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,7 +21,11 @@ import (
 )
 
 func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config) *gin.Engine {
-	router := gin.Default()
+	// gin.Default() = gin.Logger (logs query string) + gin.Recovery (dumps
+	// headers incl. Cookie on panic) — both leak PHI (audit T2), so use the
+	// PHI-safe middlewares from logging.go instead. Recovery first, then logger.
+	router := gin.New()
+	router.Use(Recovery(os.Stdout), RequestLogger(os.Stdout))
 	router.GET("/healthz", HealthzHandler)
 	router.GET("/version", VersionHandler)
 	// Public for now — auth on the docs page itself is deferred, see README.
