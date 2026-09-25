@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"net/http"
@@ -37,6 +38,34 @@ func generateCode() (string, error) {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// InsertWithUniqueCode runs insert with a fresh code from gen, retrying on a
+// unique violation up to codeGenerateMaxAttempts times. Each attempt runs inside
+// a SAVEPOINT (pgx nested transaction): without it, a failed INSERT aborts the
+// caller's whole transaction and every retry fails with 25P02. Set any session
+// GUC (set_config(..., true)) BEFORE calling this — a set_config issued inside a
+// rolled-back savepoint is undone with it.
+func InsertWithUniqueCode[T any](ctx context.Context, tx pgx.Tx, gen func() (string, error), insert func(q *sqlcgen.Queries, code string) (T, error)) (T, error) {
+	var zero T
+	for attempt := 0; ; attempt++ {
+		code, err := gen()
+		if err != nil {
+			return zero, err
+		}
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return zero, err
+		}
+		row, err := insert(sqlcgen.New(sp), code)
+		if err == nil {
+			return row, sp.Commit(ctx)
+		}
+		_ = sp.Rollback(ctx)
+		if !isUniqueViolation(err) || attempt >= codeGenerateMaxAttempts-1 {
+			return zero, err
+		}
+	}
 }
 
 // RegisterTenancyRoutes wires the PLATFORM-WIDE-only tenancy routes — company
