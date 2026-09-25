@@ -322,6 +322,40 @@ const docTemplate = `{
                 }
             }
         },
+        "/auth/mfa": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Read-only snapshot for the frontend: whether TOTP is enabled on\nthe account, whether the active merchant's auth.require_totp\npolicy demands it, and when the caller's grace window ends.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mfa"
+                ],
+                "summary": "Report the caller's TOTP enrollment status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/auth/mfa/confirm": {
             "post": {
                 "security": [
@@ -405,6 +439,59 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/mfa/enroll": {
+            "post": {
+                "description": "Public. Completes the mandatory setup started by a login that\nreturned mfa_setup_required: verifies the enrollment token and\nTOTP code, stores the secret, and returns one-time recovery codes.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mfa"
+                ],
+                "summary": "Finish tenant TOTP enrollment with a login-time enrollment token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Company UUID",
+                        "name": "X-Company-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Enrollment token, secret, code",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.mfaEnrollRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -3331,6 +3418,58 @@ const docTemplate = `{
                 }
             }
         },
+        "/platform/admin-users/{id}/mfa/reset": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Clears the target's TOTP secret and recovery codes — the target\nmust enroll again at next login and loses every active session.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Reset another platform admin's MFA",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Admin user UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/platform/companies": {
             "get": {
                 "security": [
@@ -3612,6 +3751,7 @@ const docTemplate = `{
         },
         "/platform/login": {
             "post": {
+                "description": "Returns totp_required when the admin has TOTP enabled and no/invalid\ncode was given, or mfa_setup_required once the enrollment grace\nperiod has ended (no session is issued in that case).",
                 "consumes": [
                     "application/json"
                 ],
@@ -3663,6 +3803,128 @@ const docTemplate = `{
                     "platform"
                 ],
                 "summary": "Platform admin logout",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/mfa/confirm": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Verifies the code against the secret from PlatformMFASetupHandler,\nrequires password re-confirmation, persists the secret, and\nreturns one-time recovery codes. Re-enrollment goes through an\nMFA reset by another admin instead.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Confirm platform admin TOTP enrollment",
+                "parameters": [
+                    {
+                        "description": "Secret, code, password",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.platformMFAConfirmRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/mfa/enroll": {
+            "post": {
+                "description": "Public. Completes the mandatory setup started by a login that\nreturned mfa_setup_required: verifies the enrollment token and\nTOTP code, stores the secret, and returns one-time recovery codes.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Finish platform admin TOTP enrollment with a login-time enrollment token",
+                "parameters": [
+                    {
+                        "description": "Enrollment token, secret, code",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.platformMFAEnrollRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/platform/mfa/setup": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Writes nothing to the database — the secret only persists once\nPlatformMFAConfirmHandler verifies it.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "platform"
+                ],
+                "summary": "Generate a new platform admin TOTP secret",
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -5861,6 +6123,25 @@ const docTemplate = `{
                 }
             }
         },
+        "server.mfaEnrollRequest": {
+            "type": "object",
+            "required": [
+                "code",
+                "enrollment_token",
+                "secret"
+            ],
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "enrollment_token": {
+                    "type": "string"
+                },
+                "secret": {
+                    "type": "string"
+                }
+            }
+        },
         "server.mrnConfigRequest": {
             "type": "object",
             "required": [
@@ -6065,7 +6346,48 @@ const docTemplate = `{
                 "password": {
                     "type": "string"
                 },
+                "totp_code": {
+                    "type": "string"
+                },
                 "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.platformMFAConfirmRequest": {
+            "type": "object",
+            "required": [
+                "code",
+                "password",
+                "secret"
+            ],
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "secret": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.platformMFAEnrollRequest": {
+            "type": "object",
+            "required": [
+                "code",
+                "enrollment_token",
+                "secret"
+            ],
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "enrollment_token": {
+                    "type": "string"
+                },
+                "secret": {
                     "type": "string"
                 }
             }
