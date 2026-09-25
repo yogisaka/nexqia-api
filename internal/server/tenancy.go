@@ -68,15 +68,12 @@ func InsertWithUniqueCode[T any](ctx context.Context, tx pgx.Tx, gen func() (str
 	}
 }
 
-// RegisterTenancyRoutes wires the PLATFORM-WIDE-only tenancy routes — company
-// creation/listing spans tenants by nature (sub-project 0d, NEXQIA's own
-// platform-admin scope), gated by the unsplit PermCompanyManage. Everything
+// RegisterTenancyRoutes wires tenancy routes on the locked group. Tenant-side
+// company create/list was removed: creation is platform-admin scope
+// (sub-project 0d) and never worked under RLS. Everything
 // company-scoped-to-self or merchant-scoped lives in RegisterCompanyLevelRoutes
 // instead (docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §3).
-func RegisterTenancyRoutes(rg *gin.RouterGroup) {
-	rg.POST("/companies", CreateCompanyHandler)
-	rg.GET("/companies", ListCompaniesHandler)
-}
+func RegisterTenancyRoutes(rg *gin.RouterGroup) {}
 
 // RegisterCompanyLevelRoutes wires company-self-management + merchant CRUD —
 // deliberately registered under companyOnlyAuthed (CompanyOnlyMiddleware, no
@@ -93,66 +90,6 @@ func RegisterCompanyLevelRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	rg.GET("/merchants/:id", GetMerchantHandler)
 	rg.PATCH("/merchants/:id", UpdateMerchantHandler)
 	rg.DELETE("/merchants/:id", DeleteMerchantHandler)
-}
-
-type createCompanyRequest struct {
-	Name string `json:"name" binding:"required"`
-}
-
-// CreateCompanyHandler godoc
-// @Summary Create a company
-// @Description Platform-admin scope — company creation spans tenants by nature.
-// @Tags tenancy
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param request body createCompanyRequest true "Company data"
-// @Success 201 {object} apiResponse
-// @Failure 403 {object} apiErrorResponse
-// @Router /companies [post]
-func CreateCompanyHandler(c *gin.Context) {
-	if !RequirePermission(c, PermCompanyManage) {
-		return
-	}
-	var req createCompanyRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	company, err := InsertWithUniqueCode(c.Request.Context(), TxFromContext(c), generateCode, func(q *sqlcgen.Queries, code string) (sqlcgen.CoreCompany, error) {
-		return q.CreateCompany(c.Request.Context(), sqlcgen.CreateCompanyParams{
-			Code: code, Name: req.Name, CreatedBy: AuthUserID(c),
-		})
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"data": company, "meta": gin.H{}})
-}
-
-// ListCompaniesHandler godoc
-// @Summary List companies
-// @Description Lists across ALL tenants — platform-admin only.
-// @Tags tenancy
-// @Produce json
-// @Security BearerAuth
-// @Param limit query int false "Page size"
-// @Param offset query int false "Page offset"
-// @Success 200 {object} apiResponse
-// @Router /companies [get]
-func ListCompaniesHandler(c *gin.Context) {
-	if !RequirePermission(c, PermCompanyManage) {
-		return
-	}
-	limit, offset := paginationParams(c)
-	q := sqlcgen.New(TxFromContext(c))
-	companies, err := q.ListCompanies(c.Request.Context(), sqlcgen.ListCompaniesParams{Limit: limit, Offset: offset})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": companies, "meta": gin.H{"limit": limit, "offset": offset}})
 }
 
 // GetCompanyHandler godoc
