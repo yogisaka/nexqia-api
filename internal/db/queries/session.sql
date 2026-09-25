@@ -9,7 +9,7 @@ SELECT count(*) FROM core.refresh_token
 WHERE user_id = $1 AND company_id = $2 AND revoked_at IS NULL AND expires_at > now();
 
 -- name: ListActiveRefreshTokens :many
-SELECT id, device_label, merchant_id, issued_at, last_used_at
+SELECT id, device_id, device_label, merchant_id, issued_at, last_used_at
 FROM core.refresh_token
 WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
 ORDER BY last_used_at DESC;

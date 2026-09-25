@@ -812,6 +812,47 @@ func (q *Queries) UpdateAppUserPassword(ctx context.Context, arg UpdateAppUserPa
 	return err
 }
 
+const updateOwnAppUserContact = `-- name: UpdateOwnAppUserContact :one
+UPDATE core.app_user
+SET email = $1, phone = $2, updated_by = $3
+WHERE id = $3 AND deleted_at IS NULL
+RETURNING id, company_id, person_id, username, email, password_hash, mfa_secret, is_active, last_login_at, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, pin_hash, phone, mfa_grace_until
+`
+
+type UpdateOwnAppUserContactParams struct {
+	Email pgtype.Text
+	Phone pgtype.Text
+	ID    pgtype.UUID
+}
+
+// Self-service profile edit (spec 2026-09-25-account-menu §3). NULL clears a value.
+func (q *Queries) UpdateOwnAppUserContact(ctx context.Context, arg UpdateOwnAppUserContactParams) (CoreAppUser, error) {
+	row := q.db.QueryRow(ctx, updateOwnAppUserContact, arg.Email, arg.Phone, arg.ID)
+	var i CoreAppUser
+	err := row.Scan(
+		&i.ID,
+		&i.CompanyID,
+		&i.PersonID,
+		&i.Username,
+		&i.Email,
+		&i.PasswordHash,
+		&i.MfaSecret,
+		&i.IsActive,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.UpdatedBy,
+		&i.DeletedAt,
+		&i.DeletedBy,
+		&i.RowVersion,
+		&i.PinHash,
+		&i.Phone,
+		&i.MfaGraceUntil,
+	)
+	return i, err
+}
+
 const updatePermission = `-- name: UpdatePermission :one
 UPDATE core.permission
 SET description = $2, module = $3

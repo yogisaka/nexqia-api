@@ -106,3 +106,6 @@ RETURNING *;
 SELECT * FROM core.person_merge_log
 WHERE surviving_person_id = $1 OR merged_person_id = $1
 ORDER BY merged_at DESC;
+
+-- name: UpdatePersonFullName :exec
+UPDATE core.person SET full_name = $2, updated_by = $3 WHERE id = $1 AND deleted_at IS NULL;

@@ -170,3 +170,10 @@ UPDATE core.app_user
 SET mfa_grace_until = now() + make_interval(days => sqlc.arg(grace_days)::int)
 WHERE id = sqlc.arg(id) AND mfa_grace_until IS NULL AND deleted_at IS NULL
 RETURNING mfa_grace_until;
+
+-- name: UpdateOwnAppUserContact :one
+-- Self-service profile edit (spec 2026-09-25-account-menu §3). NULL clears a value.
+UPDATE core.app_user
+SET email = sqlc.narg(email), phone = sqlc.narg(phone), updated_by = sqlc.arg(id)
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL
+RETURNING *;
