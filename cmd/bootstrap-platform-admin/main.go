@@ -22,6 +22,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
+	"github.com/yogisaka/nexqia-api/internal/config"
 )
 
 func main() {
@@ -45,9 +46,16 @@ func main() {
 	}
 	defer conn.Close(ctx)
 
-	hasher := auth.NewPasswordHasher(4, 2*time.Second, auth.Argon2Params{
-		MemoryKiB: 19456, Iterations: 2, Parallelism: 1,
-	})
+	cfg := config.Load()
+	hasher := auth.NewPasswordHasher(
+		cfg.PasswordHashMaxConcurrent,
+		time.Duration(cfg.PasswordHashQueueTimeoutMS)*time.Millisecond,
+		auth.Argon2Params{
+			MemoryKiB:   cfg.Argon2MemoryKiB,
+			Iterations:  cfg.Argon2Iterations,
+			Parallelism: cfg.Argon2Parallelism,
+		},
+	)
 	passwordHash, err := hasher.Hash(ctx, password)
 	if err != nil {
 		fmt.Printf("failed to hash password: %v\n", err)
