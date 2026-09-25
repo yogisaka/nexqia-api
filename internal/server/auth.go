@@ -863,26 +863,16 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 			return
 		}
 
-		var company sqlcgen.CoreCompany
-		for attempt := 0; ; attempt++ {
-			code, err := generateCode()
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID.String()); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
-				return
-			}
-			company, err = q.CreateCompanyWithID(ctx, sqlcgen.CreateCompanyWithIDParams{
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID.String()); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
+			return
+		}
+		company, err := InsertWithUniqueCode(ctx, tx, generateCode, func(q *sqlcgen.Queries, code string) (sqlcgen.CoreCompany, error) {
+			return q.CreateCompanyWithID(ctx, sqlcgen.CreateCompanyWithIDParams{
 				ID: companyID, Code: code, Name: req.CompanyName, CreatedBy: pgtype.UUID{},
 			})
-			if err == nil {
-				break
-			}
-			if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
-				continue
-			}
+		})
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

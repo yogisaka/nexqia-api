@@ -119,23 +119,12 @@ func CreateCompanyHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	q := sqlcgen.New(TxFromContext(c))
-	var company sqlcgen.CoreCompany
-	for attempt := 0; ; attempt++ {
-		code, err := generateCode()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		company, err = q.CreateCompany(c.Request.Context(), sqlcgen.CreateCompanyParams{
+	company, err := InsertWithUniqueCode(c.Request.Context(), TxFromContext(c), generateCode, func(q *sqlcgen.Queries, code string) (sqlcgen.CoreCompany, error) {
+		return q.CreateCompany(c.Request.Context(), sqlcgen.CreateCompanyParams{
 			Code: code, Name: req.Name, CreatedBy: AuthUserID(c),
 		})
-		if err == nil {
-			break
-		}
-		if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
-			continue
-		}
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -314,14 +303,8 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		q := sqlcgen.New(TxFromContext(c))
-		var merchant sqlcgen.CoreMerchant
-		for attempt := 0; ; attempt++ {
-			code, err := generateCode()
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			merchant, err = q.CreateMerchant(c.Request.Context(), sqlcgen.CreateMerchantParams{
+		merchant, err := InsertWithUniqueCode(c.Request.Context(), TxFromContext(c), generateCode, func(q *sqlcgen.Queries, code string) (sqlcgen.CoreMerchant, error) {
+			return q.CreateMerchant(c.Request.Context(), sqlcgen.CreateMerchantParams{
 				CompanyID:          companyID,
 				Code:               code,
 				Name:               req.Name,
@@ -330,12 +313,8 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 				Timezone:           req.Timezone,
 				CreatedBy:          AuthUserID(c),
 			})
-			if err == nil {
-				break
-			}
-			if isUniqueViolation(err) && attempt < codeGenerateMaxAttempts-1 {
-				continue
-			}
+		})
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
