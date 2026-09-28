@@ -102,9 +102,13 @@ type updateMeRequest struct {
 // @Param request body updateMeRequest true "Profile fields"
 // @Success 200 {object} apiResponse
 // @Failure 400 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
 // @Failure 409 {object} apiErrorResponse
 // @Router /auth/me [patch]
 func UpdateMeHandler(c *gin.Context) {
+	if rejectDuringImpersonation(c) {
+		return
+	}
 	var req updateMeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -197,10 +201,14 @@ type changePasswordRequest struct {
 // @Success 200 {object} apiResponse
 // @Failure 400 {object} apiErrorResponse
 // @Failure 401 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
 // @Failure 429 {object} apiErrorResponse
 // @Router /auth/password [post]
 func ChangePasswordHandler(hasher *auth.PasswordHasher, limiter *ratelimit.Limiter, cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if rejectDuringImpersonation(c) {
+			return
+		}
 		var req changePasswordRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

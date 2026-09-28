@@ -75,9 +75,13 @@ type pinSetRequest struct {
 // @Param request body pinSetRequest true "Password + new 6-digit PIN"
 // @Success 200 {object} apiResponse
 // @Failure 401 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
 // @Router /auth/pin/set [post]
 func PinSetHandler(hasher *auth.PasswordHasher, redisClient *redis.Client, cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if rejectDuringImpersonation(c) {
+			return
+		}
 		var req pinSetRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -140,9 +144,13 @@ type pinDisableRequest struct {
 // @Param request body pinDisableRequest true "Password"
 // @Success 200 {object} apiResponse
 // @Failure 401 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
 // @Router /auth/pin/disable [post]
 func PinDisableHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if rejectDuringImpersonation(c) {
+			return
+		}
 		var req pinDisableRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

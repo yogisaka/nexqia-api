@@ -115,6 +115,18 @@ func AuthImpersonatedBy(c *gin.Context) string {
 	return c.MustGet(authImpersonatedByContextKey).(string)
 }
 
+// rejectDuringImpersonation blocks self-service account writes on an
+// impersonation session (platform admin acting as the user): the admin must
+// not change the user's contact data, credentials, PIN, MFA or sessions.
+// Writes the 403 and returns true when the caller must return immediately.
+func rejectDuringImpersonation(c *gin.Context) bool {
+	if AuthImpersonatedBy(c) == "" {
+		return false
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": "not allowed during impersonation"})
+	return true
+}
+
 // RequirePermission checks the caller holds `code` in the merchant from X-Merchant-ID
 // (already required by TenantMiddleware). On failure it writes the response and returns false —
 // callers must `return` immediately when this returns false.
@@ -790,9 +802,13 @@ func ListSessionsHandler(c *gin.Context) {
 // @Security BearerAuth
 // @Param id path string true "Session (refresh token) UUID"
 // @Success 200 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
 // @Failure 404 {object} apiErrorResponse
 // @Router /auth/sessions/{id} [delete]
 func RevokeSessionHandler(c *gin.Context) {
+	if rejectDuringImpersonation(c) {
+		return
+	}
 	sessionID, ok := parseUUID(c.Param("id"))
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid session id"})

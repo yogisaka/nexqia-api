@@ -42,9 +42,13 @@ func RegisterMFARoutes(rg *gin.RouterGroup, enc *mfa.Encryptor, hasher *auth.Pas
 // @Produce json
 // @Security BearerAuth
 // @Success 200 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
 // @Router /auth/mfa/setup [post]
 func MFASetupHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if rejectDuringImpersonation(c) {
+			return
+		}
 		q := sqlcgen.New(TxFromContext(c))
 		user, err := q.GetAppUserByID(c.Request.Context(), AuthUserID(c))
 		if err != nil {
@@ -90,9 +94,13 @@ type mfaConfirmRequest struct {
 // @Param request body mfaConfirmRequest true "Secret, code, password"
 // @Success 200 {object} apiResponse
 // @Failure 401 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
 // @Router /auth/mfa/confirm [post]
 func MFAConfirmHandler(enc *mfa.Encryptor, hasher *auth.PasswordHasher) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if rejectDuringImpersonation(c) {
+			return
+		}
 		var req mfaConfirmRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -152,9 +160,13 @@ type mfaDisableRequest struct {
 // @Param request body mfaDisableRequest true "Password"
 // @Success 200 {object} apiResponse
 // @Failure 401 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
 // @Router /auth/mfa/disable [post]
 func MFADisableHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if rejectDuringImpersonation(c) {
+			return
+		}
 		var req mfaDisableRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
