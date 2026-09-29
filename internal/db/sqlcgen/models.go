@@ -448,6 +448,18 @@ type CoreRolePermission struct {
 	PermissionID pgtype.UUID
 }
 
+type CoreSecuritySettingLog struct {
+	ID              pgtype.UUID
+	CompanyID       pgtype.UUID
+	MerchantID      pgtype.UUID
+	FlagKey         string
+	OldValue        []byte
+	NewValue        []byte
+	ChangedBy       pgtype.UUID
+	PlatformAdminID pgtype.UUID
+	ChangedAt       pgtype.Timestamptz
+}
+
 type CoreServiceItem struct {
 	ID         pgtype.UUID
 	CompanyID  pgtype.UUID
