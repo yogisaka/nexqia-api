@@ -41,28 +41,28 @@ func PayerSummaryHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	summary, err := q.SummarizeTodayAdmissionsByPayerType(c.Request.Context(), merchantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": summary, "meta": gin.H{}})
 }
 
 type createAdmissionRequest struct {
-	PersonID          string `json:"person_id" binding:"required"`
-	DepartmentID      string `json:"department_id" binding:"required"`
-	PhysicianID       string `json:"physician_id"`
-	PrimaryPayerID    string `json:"primary_payer_id"`
-	Complaint         string `json:"complaint"`
-	ReferralSource    string `json:"referral_source"`
-	Note              string `json:"note"`
-	PolicyNumber      string `json:"policy_number"`
-	GuarantorName     string `json:"guarantor_name"`
-	DiagnosisText     string `json:"diagnosis_text"`
-	TreatmentBarriers string `json:"treatment_barriers"`
+	PersonID           string `json:"person_id" binding:"required"`
+	DepartmentID       string `json:"department_id" binding:"required"`
+	PhysicianID        string `json:"physician_id"`
+	PrimaryPayerID     string `json:"primary_payer_id"`
+	Complaint          string `json:"complaint"`
+	ReferralSource     string `json:"referral_source"`
+	Note               string `json:"note"`
+	PolicyNumber       string `json:"policy_number"`
+	GuarantorName      string `json:"guarantor_name"`
+	DiagnosisText      string `json:"diagnosis_text"`
+	TreatmentBarriers  string `json:"treatment_barriers"`
 	SpecialPatientType string `json:"special_patient_type"`
-	NeedsCompanion    bool   `json:"needs_companion"`
-	CompanionName     string `json:"companion_name"`
-	ReferralOrigin    string `json:"referral_origin"`
+	NeedsCompanion     bool   `json:"needs_companion"`
+	CompanionName      string `json:"companion_name"`
+	ReferralOrigin     string `json:"referral_origin"`
 }
 
 // CreateAdmissionHandler is FO check-in (spec §4 point 1): registers the
@@ -124,7 +124,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -132,7 +132,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 		MerchantID: merchantID, DepartmentID: departmentID,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	visitNo := fmt.Sprintf("%s%s-%04d", department.Code, time.Now().Format("20060102"), admissionSeq+1)
@@ -145,7 +145,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 		CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -159,7 +159,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 			CreatedBy: AuthUserID(c),
 		}); err != nil {
 			c.Error(err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 	}
@@ -169,7 +169,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 	})
 	if err != nil {
 		c.Error(err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	queueNumber := fmt.Sprintf("%s-%03d", department.Code, queueSeq+1)
@@ -180,7 +180,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 	})
 	if err != nil {
 		c.Error(err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"admission": admission, "queue": queue}, "meta": gin.H{}})
@@ -222,7 +222,7 @@ func ListAdmissionsHandler(c *gin.Context) {
 		MerchantID: merchantID, DepartmentID: departmentID, Status: status, Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": admissions, "meta": gin.H{"limit": limit, "offset": offset}})
@@ -250,7 +250,7 @@ func GetAdmissionHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermVisitManage, admission.MerchantID) {
@@ -294,7 +294,7 @@ func UpdateAdmissionHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermVisitManage, existing.MerchantID) {
@@ -322,7 +322,7 @@ func UpdateAdmissionHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": admission, "meta": gin.H{}})

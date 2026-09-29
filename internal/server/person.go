@@ -150,12 +150,12 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 		tx := TxFromContext(c)
 		nik, err := encryptNIK(c.Request.Context(), tx, req.NIK, cfg.NIKEncryptionKey)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		hash, err := hashNIK(c.Request.Context(), tx, req.NIK, cfg.NIKSearchKey)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		q := sqlcgen.New(tx)
@@ -168,38 +168,38 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
 			mrn, err = generateMedicalRecordNo(c.Request.Context(), q, AuthCompanyID(c), merchantID)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				respondInternalError(c, err)
 				return
 			}
 		}
 		person, err := q.CreatePerson(c.Request.Context(), sqlcgen.CreatePersonParams{
-			CompanyID:          AuthCompanyID(c),
-			Nik:                nik,
-			MedicalRecordNo:    optText(mrn),
-			FullName:           req.FullName,
-			BirthDate:          birthDate,
-			BirthPlace:         optText(req.BirthPlace),
-			Gender:             optText(req.Gender),
-			BloodType:          optText(req.BloodType),
-			MaritalStatus:      optText(req.MaritalStatus),
-			ReligionConceptID:  optUUID(req.ReligionConceptID),
-			EducationConceptID: optUUID(req.EducationConceptID),
-			EthnicityConceptID: optUUID(req.EthnicityConceptID),
+			CompanyID:              AuthCompanyID(c),
+			Nik:                    nik,
+			MedicalRecordNo:        optText(mrn),
+			FullName:               req.FullName,
+			BirthDate:              birthDate,
+			BirthPlace:             optText(req.BirthPlace),
+			Gender:                 optText(req.Gender),
+			BloodType:              optText(req.BloodType),
+			MaritalStatus:          optText(req.MaritalStatus),
+			ReligionConceptID:      optUUID(req.ReligionConceptID),
+			EducationConceptID:     optUUID(req.EducationConceptID),
+			EthnicityConceptID:     optUUID(req.EthnicityConceptID),
 			RegionVillageConceptID: optUUID(req.RegionVillageConceptID),
 			CitizenshipConceptID:   optUUID(req.CitizenshipConceptID),
 			IdentityTypeConceptID:  optUUID(req.IdentityTypeConceptID),
 			JobConceptID:           optUUID(req.JobConceptID),
 			MaritalStatusConceptID: optUUID(req.MaritalStatusConceptID),
 			BloodTypeConceptID:     optUUID(req.BloodTypeConceptID),
-			Phone:              optText(req.Phone),
-			Email:              optText(req.Email),
-			Address:            optText(req.Address),
-			FamilyID:           optUUID(req.FamilyID),
-			NikSearchHash:      optText(hash),
-			CreatedBy:          AuthUserID(c),
+			Phone:                  optText(req.Phone),
+			Email:                  optText(req.Email),
+			Address:                optText(req.Address),
+			FamilyID:               optUUID(req.FamilyID),
+			NikSearchHash:          optText(hash),
+			CreatedBy:              AuthUserID(c),
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		person.Nik = optText(req.NIK) // echo the plaintext just submitted, avoid a decrypt round-trip
@@ -227,7 +227,7 @@ func ListPersonsHandler(c *gin.Context) {
 		CompanyID: AuthCompanyID(c), Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	for i := range persons {
@@ -261,7 +261,7 @@ func SearchPersonsHandler(cfg config.Config) gin.HandlerFunc {
 		tx := TxFromContext(c)
 		hash, err := hashNIK(c.Request.Context(), tx, query, cfg.NIKSearchKey)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		q := sqlcgen.New(tx)
@@ -270,7 +270,7 @@ func SearchPersonsHandler(cfg config.Config) gin.HandlerFunc {
 			NikSearchHash: optText(hash), Limit: limit,
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		for i := range persons {
@@ -308,7 +308,7 @@ func GetPersonHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if person.CompanyID != AuthCompanyID(c) {
@@ -317,7 +317,7 @@ func GetPersonHandler(cfg config.Config) gin.HandlerFunc {
 		}
 		plainNIK, err := decryptNIK(c.Request.Context(), tx, person.Nik, cfg.NIKEncryptionKey)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		person.Nik = optText(plainNIK)
@@ -354,7 +354,7 @@ func UpdatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if existing.CompanyID != AuthCompanyID(c) {
@@ -373,46 +373,46 @@ func UpdatePersonHandler(cfg config.Config) gin.HandlerFunc {
 		}
 		nik, err := encryptNIK(c.Request.Context(), tx, req.NIK, cfg.NIKEncryptionKey)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		hash, err := hashNIK(c.Request.Context(), tx, req.NIK, cfg.NIKSearchKey)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		person, err := q.UpdatePerson(c.Request.Context(), sqlcgen.UpdatePersonParams{
-			ID:                 id,
-			Nik:                nik,
-			MedicalRecordNo:    optText(req.MedicalRecordNo),
-			FullName:           req.FullName,
-			BirthDate:          birthDate,
-			BirthPlace:         optText(req.BirthPlace),
-			Gender:             optText(req.Gender),
-			BloodType:          optText(req.BloodType),
-			MaritalStatus:      optText(req.MaritalStatus),
-			ReligionConceptID:  optUUID(req.ReligionConceptID),
-			EducationConceptID: optUUID(req.EducationConceptID),
-			EthnicityConceptID: optUUID(req.EthnicityConceptID),
+			ID:                     id,
+			Nik:                    nik,
+			MedicalRecordNo:        optText(req.MedicalRecordNo),
+			FullName:               req.FullName,
+			BirthDate:              birthDate,
+			BirthPlace:             optText(req.BirthPlace),
+			Gender:                 optText(req.Gender),
+			BloodType:              optText(req.BloodType),
+			MaritalStatus:          optText(req.MaritalStatus),
+			ReligionConceptID:      optUUID(req.ReligionConceptID),
+			EducationConceptID:     optUUID(req.EducationConceptID),
+			EthnicityConceptID:     optUUID(req.EthnicityConceptID),
 			RegionVillageConceptID: optUUID(req.RegionVillageConceptID),
 			CitizenshipConceptID:   optUUID(req.CitizenshipConceptID),
 			IdentityTypeConceptID:  optUUID(req.IdentityTypeConceptID),
 			JobConceptID:           optUUID(req.JobConceptID),
 			MaritalStatusConceptID: optUUID(req.MaritalStatusConceptID),
 			BloodTypeConceptID:     optUUID(req.BloodTypeConceptID),
-			Phone:              optText(req.Phone),
-			Email:              optText(req.Email),
-			Address:            optText(req.Address),
-			FamilyID:           optUUID(req.FamilyID),
-			NikSearchHash:      optText(hash),
-			UpdatedBy:          AuthUserID(c),
+			Phone:                  optText(req.Phone),
+			Email:                  optText(req.Email),
+			Address:                optText(req.Address),
+			FamilyID:               optUUID(req.FamilyID),
+			NikSearchHash:          optText(hash),
+			UpdatedBy:              AuthUserID(c),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		person.Nik = optText(req.NIK)
@@ -445,7 +445,7 @@ func DeletePersonHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -453,7 +453,7 @@ func DeletePersonHandler(c *gin.Context) {
 		return
 	}
 	if err := q.SoftDeletePerson(c.Request.Context(), sqlcgen.SoftDeletePersonParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

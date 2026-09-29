@@ -22,12 +22,12 @@ func RegisterPatientAllergyRoutes(rg *gin.RouterGroup) {
 }
 
 type patientAllergyRequest struct {
-	AllergyType    string `json:"allergy_type" binding:"required"`
-	SubstanceName  string `json:"substance_name" binding:"required"`
-	Reaction       string `json:"reaction"`
-	Severity       string `json:"severity"`
-	EffectSide     string `json:"effect_side"`
-	EventDate      string `json:"event_date"`
+	AllergyType   string `json:"allergy_type" binding:"required"`
+	SubstanceName string `json:"substance_name" binding:"required"`
+	Reaction      string `json:"reaction"`
+	Severity      string `json:"severity"`
+	EffectSide    string `json:"effect_side"`
+	EventDate     string `json:"event_date"`
 }
 
 type updatePatientAllergyRequest struct {
@@ -57,7 +57,7 @@ func ListPatientAllergiesHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	allergies, err := q.ListPatientAllergiesByPerson(c.Request.Context(), personID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": allergies, "meta": gin.H{}})
@@ -107,7 +107,7 @@ func CreatePatientAllergyHandler(c *gin.Context) {
 		EventDate:     eventDate,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": allergy, "meta": gin.H{}})
@@ -140,7 +140,7 @@ func UpdatePatientAllergyHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -172,7 +172,7 @@ func UpdatePatientAllergyHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": allergy, "meta": gin.H{}})
@@ -203,7 +203,7 @@ func DeletePatientAllergyHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -211,7 +211,7 @@ func DeletePatientAllergyHandler(c *gin.Context) {
 		return
 	}
 	if err := q.DeactivatePatientAllergy(c.Request.Context(), sqlcgen.DeactivatePatientAllergyParams{ID: id, UpdatedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
