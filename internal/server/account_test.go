@@ -121,7 +121,7 @@ func currentSessionID(t *testing.T, sessions accountSessionsResponse) string {
 }
 
 // TestAccount_GetMe_Shape — spec §5: me GET shape. full_name/photo_url null
-// rules, has_pin/pin_lock_enabled false for a fresh registered owner.
+// rules, has_pin false; pin_lock_enabled true for a merchant created via the API.
 func TestAccount_GetMe_Shape(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
@@ -162,8 +162,8 @@ func TestAccount_GetMe_Shape(t *testing.T) {
 	if resp.Data.HasPin {
 		t.Errorf("has_pin = true, want false for fresh owner")
 	}
-	if resp.Data.PinLockEnabled {
-		t.Errorf("pin_lock_enabled = true, want false (flag not seeded)")
+	if !resp.Data.PinLockEnabled {
+		t.Errorf("pin_lock_enabled = false, want true (new merchants get PIN lock by default)")
 	}
 }
 
