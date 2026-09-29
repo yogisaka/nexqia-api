@@ -908,6 +908,114 @@ paths:
         widget)
       tags:
       - admission
+  /audit/access-logs:
+    get:
+      description: |-
+        Returns core.access_log rows for the caller's company, newest
+        first. Only rows the authenticated company owns are ever returned.
+      parameters:
+      - description: 'Range start, RFC3339 (default: to − 7 days)'
+        in: query
+        name: from
+        type: string
+      - description: 'Range end, RFC3339 (default: now)'
+        in: query
+        name: to
+        type: string
+      - description: Filter by actor UUID
+        in: query
+        name: actor_id
+        type: string
+      - description: Filter by resource name (e.g. person)
+        in: query
+        name: resource
+        type: string
+      - description: Filter by resource UUID
+        in: query
+        name: resource_id
+        type: string
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List access-log rows (who read which patient data)
+      tags:
+      - audit
+  /audit/change-logs:
+    get:
+      description: |-
+        Returns core.audit_log rows for the caller's company, newest
+        first. Field names only — old/new values are never stored or returned.
+      parameters:
+      - description: 'Range start, RFC3339 (default: to − 7 days)'
+        in: query
+        name: from
+        type: string
+      - description: 'Range end, RFC3339 (default: now)'
+        in: query
+        name: to
+        type: string
+      - description: Filter by table name (e.g. core.person)
+        in: query
+        name: table_name
+        type: string
+      - description: Filter by record UUID
+        in: query
+        name: record_id
+        type: string
+      - description: Filter by changed_by user UUID
+        in: query
+        name: changed_by
+        type: string
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List change-log rows (who changed which patient-data fields)
+      tags:
+      - audit
   /auth/login:
     post:
       consumes:
@@ -1009,6 +1117,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
         "409":
           description: Conflict
           schema:
@@ -1066,6 +1178,10 @@ paths:
           description: Unauthorized
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
       security:
       - BearerAuth: []
       summary: Confirm TOTP enrollment
@@ -1093,6 +1209,10 @@ paths:
             $ref: '#/definitions/server.apiResponse'
         "401":
           description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
       security:
@@ -1149,6 +1269,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
       security:
       - BearerAuth: []
       summary: Generate a new TOTP secret
@@ -1187,6 +1311,10 @@ paths:
           description: Unauthorized
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
         "429":
           description: Too Many Requests
           schema:
@@ -1218,6 +1346,10 @@ paths:
           description: Unauthorized
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
       security:
       - BearerAuth: []
       summary: Clear the caller's app-lock PIN
@@ -1243,6 +1375,10 @@ paths:
             $ref: '#/definitions/server.apiResponse'
         "401":
           description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
       security:
@@ -1407,6 +1543,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
         "404":
           description: Not Found
           schema:
