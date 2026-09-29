@@ -171,6 +171,8 @@ type CoreMediaLink struct {
 	CreatedBy  pgtype.UUID
 	DeletedAt  pgtype.Timestamptz
 	DeletedBy  pgtype.UUID
+	CompanyID  pgtype.UUID
+	MerchantID pgtype.UUID
 }
 
 type CoreMedium struct {
@@ -374,6 +376,7 @@ type CorePersonMergeLog struct {
 	Reason            pgtype.Text
 	MergedAt          pgtype.Timestamptz
 	MergedBy          pgtype.UUID
+	CompanyID         pgtype.UUID
 }
 
 type CorePhysician struct {
@@ -587,6 +590,8 @@ type OperationsAdmissionGuarantor struct {
 	Sequence      int16
 	CreatedAt     pgtype.Timestamptz
 	CreatedBy     pgtype.UUID
+	CompanyID     pgtype.UUID
+	MerchantID    pgtype.UUID
 }
 
 type OperationsCounter struct {
@@ -680,6 +685,8 @@ type OperationsQueueStatusHistory struct {
 	ToStatus   string
 	ChangedBy  pgtype.UUID
 	ChangedAt  pgtype.Timestamptz
+	CompanyID  pgtype.UUID
+	MerchantID pgtype.UUID
 }
 
 type PlatformAdminMfaRecoveryCode struct {
