@@ -13,10 +13,6 @@ CREATE OR REPLACE FUNCTION core.trg_audit_row() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, core AS $$
 DECLARE
     old_row jsonb := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
-    -- <> 'DELETE', not 000046's <> 'INSERT': NEW exists on INSERT and UPDATE; only
-    -- DELETE lacks it. The 000046 copy left new_row NULL on INSERT, so the recorder
-    -- wrote record_id NULL (SQLSTATE 23502) whenever the session GUC supplied the
-    -- company (e.g. self-registration).
     new_row jsonb := CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END;
     cur_row jsonb := COALESCE(new_row, old_row);
     v_company uuid := COALESCE(
