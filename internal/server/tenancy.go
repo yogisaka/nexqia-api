@@ -282,6 +282,14 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to set merchant context: " + err.Error()})
 			return
 		}
+		// spec §3: new merchants get PIN-lock enabled by default (no idle_minutes
+		// key — the idle window falls back to APP_LOCK_DEFAULT_IDLE_MINUTES).
+		if _, err := q.UpsertFeatureFlag(c.Request.Context(), sqlcgen.UpsertFeatureFlagParams{
+			MerchantID: merchant.ID, FlagKey: pinLockFlagKey, FlagValue: []byte(`{"enabled":true}`), CreatedBy: AuthUserID(c),
+		}); err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to enable pin lock"})
+			return
+		}
 		ucr, err := q.ListUserCompanyRoles(c.Request.Context(), AuthUserID(c))
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -115,3 +115,60 @@ func TestCreateMerchantHandler_ActivatesNewMerchantForMerchantLessCaller(t *test
 		t.Fatalf("expected merchant.ID in response, got empty")
 	}
 }
+
+// TestCreateMerchantHandler_EnablesPinLock — spec §3: every new merchant gets an
+// auth.pin_lock feature flag with {"enabled":true} at creation time.
+func TestCreateMerchantHandler_EnablesPinLock(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, _, token, ownerCookie := registerTenantMFAOwner(t, router, "pinlock.owner", "081234520001")
+	merchantID := createTenantMerchant(t, ctx, pool, router, token, ownerCookie, companyID, "Klinik PinLock")
+
+	var enabled string
+	if err := pool.QueryRow(ctx, "SELECT flag_value->>'enabled' FROM core.feature_flag WHERE merchant_id = $1 AND flag_key = 'auth.pin_lock'", merchantID).Scan(&enabled); err != nil {
+		t.Fatalf("query auth.pin_lock flag for new merchant: %v", err)
+	}
+	if enabled != "true" {
+		t.Fatalf("expected auth.pin_lock enabled = true for new merchant, got %q", enabled)
+	}
+}
+
+// TestCreateMerchantHandler_PinNudgeOnNextLogin — spec §3: after the flag exists,
+// a user without a PIN logging into that merchant gets pin_nudge in the response.
+func TestCreateMerchantHandler_PinNudgeOnNextLogin(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, _, token, ownerCookie := registerTenantMFAOwner(t, router, "pinnudge.owner", "081234520002")
+	merchantID := createTenantMerchant(t, ctx, pool, router, token, ownerCookie, companyID, "Klinik PinNudge")
+	_ = merchantID
+
+	// Logout revokes the register auto-login session so login below doesn't hit
+	// checkDeviceLimit.
+	logoutReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+	logoutReq.Header.Set("X-Company-ID", companyID)
+	logoutReq.AddCookie(ownerCookie)
+	logoutRec := httptest.NewRecorder()
+	router.ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout expected 200, got %d: %s", logoutRec.Code, logoutRec.Body.String())
+	}
+
+	// Exactly one merchant → login selects it directly and issues the session.
+	loginRec := tenantLogin(t, router, companyID, "pinnudge.owner", "Passw0rd123!", "")
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login expected 200, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+	data := decodePlatformData(t, loginRec)
+	if data["requires_merchant_selection"] == true {
+		t.Fatalf("expected single-merchant login, got selection payload %+v", data)
+	}
+	if nudge, ok := data["pin_nudge"].(bool); !ok || !nudge {
+		t.Fatalf("expected pin_nudge: true for PIN-less user on pin-locked merchant, got %+v", data)
+	}
+}
