@@ -558,6 +558,27 @@ definitions:
     - phone
     - username
     type: object
+  server.securitySettingsRequest:
+    properties:
+      password:
+        type: string
+      pin_lock:
+        properties:
+          enabled:
+            type: boolean
+          idle_minutes:
+            type: integer
+        required:
+        - enabled
+        - idle_minutes
+        type: object
+      require_totp:
+        type: boolean
+    required:
+    - password
+    - pin_lock
+    - require_totp
+    type: object
   server.selectMerchantRequest:
     properties:
       merchant_id:
@@ -4215,6 +4236,121 @@ paths:
       summary: Update a service rate
       tags:
       - tariff
+  /settings/security:
+    get:
+      description: |-
+        Returns the PIN-lock state (enabled + effective idle window), the
+        allowed idle range, the MFA-nudge policy, per-user PIN/MFA
+        adoption stats, and can_edit (core.merchant.manage holders outside
+        impersonation; audit.log.view holders get a read-only view).
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Show the merchant's security settings
+      tags:
+      - settings
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Re-confirms the caller's password (rate-limited per user), then
+        saves the PIN-lock flag (enabled + idle minutes inside the
+        configured range) and the MFA-nudge policy. Every change lands in
+        the immutable security setting log. Enabling the lock seeds the
+        caller's own device so the saver is not locked out mid-session.
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Password + PIN-lock + MFA policy
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.securitySettingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "429":
+          description: Too Many Requests
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update the merchant's security settings
+      tags:
+      - settings
+  /settings/security/history:
+    get:
+      description: |-
+        Returns core.security_setting_log rows (who changed which flag,
+        from what to what), newest first. old_value/new_value are raw
+        JSON (null when the flag had no previous value) — the log is
+        written only by the DB trigger and never by this endpoint.
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List the merchant's security setting changes
+      tags:
+      - settings
   /terminology/code-systems:
     get:
       parameters:

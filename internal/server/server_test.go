@@ -51,6 +51,8 @@ func testConfig() config.Config {
 		AppLockDefaultIdleMinutes:      5,
 		AppLockMaxPinAttempts:          3,
 		AppLockAttemptWindowMinutes:    15,
+		AppLockMinIdleMinutes:          1,
+		AppLockMaxIdleMinutes:          30,
 		PlatformMFAGraceDays:           7,
 		TenantMFAGraceDays:             7,
 		TrustedProxies:                 []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},

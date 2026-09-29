@@ -3,6 +3,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -171,11 +172,45 @@ func TestLoad_ReadsAppLockConfig(t *testing.T) {
 	if cfg.AppLockDefaultIdleMinutes != 5 {
 		t.Errorf("expected default AppLockDefaultIdleMinutes 5, got %d", cfg.AppLockDefaultIdleMinutes)
 	}
+	if cfg.AppLockMinIdleMinutes != 1 {
+		t.Errorf("expected default AppLockMinIdleMinutes 1, got %d", cfg.AppLockMinIdleMinutes)
+	}
+	if cfg.AppLockMaxIdleMinutes != 30 {
+		t.Errorf("expected default AppLockMaxIdleMinutes 30, got %d", cfg.AppLockMaxIdleMinutes)
+	}
 	if cfg.AppLockMaxPinAttempts != 5 {
 		t.Errorf("expected default AppLockMaxPinAttempts 5, got %d", cfg.AppLockMaxPinAttempts)
 	}
 	if cfg.AppLockAttemptWindowMinutes != 15 {
 		t.Errorf("expected default AppLockAttemptWindowMinutes 15, got %d", cfg.AppLockAttemptWindowMinutes)
+	}
+}
+
+// TestValidateAppLockIdle — the idle-window fence (spec
+// 2026-09-29-merchant-security-settings §3): a valid range passes; min below 1
+// or above max, and a default outside [min,max], each fail naming their env.
+func TestValidateAppLockIdle(t *testing.T) {
+	if err := validateAppLockIdle(1, 30, 5); err != nil {
+		t.Errorf("expected valid range 1..30 with default 5 to pass, got %v", err)
+	}
+	if err := validateAppLockIdle(1, 1, 1); err != nil {
+		t.Errorf("expected min == max == default to pass, got %v", err)
+	}
+	err := validateAppLockIdle(0, 30, 5)
+	if err == nil || !strings.Contains(err.Error(), "APP_LOCK_MIN_IDLE_MINUTES") {
+		t.Errorf("expected min 0 to fail naming APP_LOCK_MIN_IDLE_MINUTES, got %v", err)
+	}
+	err = validateAppLockIdle(31, 30, 5)
+	if err == nil || !strings.Contains(err.Error(), "APP_LOCK_MIN_IDLE_MINUTES") {
+		t.Errorf("expected min > max to fail naming APP_LOCK_MIN_IDLE_MINUTES, got %v", err)
+	}
+	err = validateAppLockIdle(1, 30, 0)
+	if err == nil || !strings.Contains(err.Error(), "APP_LOCK_DEFAULT_IDLE_MINUTES") {
+		t.Errorf("expected default below range to fail naming APP_LOCK_DEFAULT_IDLE_MINUTES, got %v", err)
+	}
+	err = validateAppLockIdle(1, 30, 31)
+	if err == nil || !strings.Contains(err.Error(), "APP_LOCK_DEFAULT_IDLE_MINUTES") {
+		t.Errorf("expected default above range to fail naming APP_LOCK_DEFAULT_IDLE_MINUTES, got %v", err)
 	}
 }
 

@@ -65,6 +65,14 @@ type Config struct {
 	AppLockMaxPinAttempts       int
 	AppLockAttemptWindowMinutes int
 
+	// AppLockMinIdleMinutes/AppLockMaxIdleMinutes — hard fence (env
+	// APP_LOCK_MIN_IDLE_MINUTES/APP_LOCK_MAX_IDLE_MINUTES) both a merchant's
+	// idle_minutes (PUT /settings/security) and AppLockDefaultIdleMinutes must
+	// fall inside; validated fail-fast in Load(), see
+	// docs/design/specs/2026-09-29-merchant-security-settings-design.md §3.
+	AppLockMinIdleMinutes int
+	AppLockMaxIdleMinutes int
+
 	// PlatformMFAGraceDays/TenantMFAGraceDays — grace period (days) after a user
 	// becomes MFA-mandatory before login is hard-blocked, see
 	// docs/design/specs/2026-09-25-mfa-grace-enforcement-design.md §6.
@@ -82,7 +90,7 @@ type Config struct {
 }
 
 func Load() Config {
-	return Config{
+	cfg := Config{
 		DBHost:             getEnv("DB_HOST", "localhost"),
 		DBPort:             getEnv("DB_PORT", "5432"),
 		DBName:             getEnv("DB_NAME", "nexqia"),
@@ -121,11 +129,34 @@ func Load() Config {
 		AppLockMaxPinAttempts:       getEnvInt("APP_LOCK_MAX_PIN_ATTEMPTS", 5),
 		AppLockAttemptWindowMinutes: getEnvInt("APP_LOCK_ATTEMPT_WINDOW_MINUTES", 15),
 
+		AppLockMinIdleMinutes: getEnvInt("APP_LOCK_MIN_IDLE_MINUTES", 1),
+		AppLockMaxIdleMinutes: getEnvInt("APP_LOCK_MAX_IDLE_MINUTES", 30),
+
 		PlatformMFAGraceDays: getEnvInt("PLATFORM_MFA_GRACE_DAYS", 7),
 		TenantMFAGraceDays:   getEnvInt("TENANT_MFA_GRACE_DAYS", 7),
 
 		TrustedProxies: getTrustedProxies(),
 	}
+	// Fail fast at startup: an idle fence the API would have to half-enforce is
+	// worse than refusing to boot (spec 2026-09-29-merchant-security-settings §3).
+	if err := validateAppLockIdle(cfg.AppLockMinIdleMinutes, cfg.AppLockMaxIdleMinutes, cfg.AppLockDefaultIdleMinutes); err != nil {
+		panic(err)
+	}
+	return cfg
+}
+
+// validateAppLockIdle checks the idle-window fence: min must be at least 1 and
+// not exceed max, and the default must fall inside [min, max] — otherwise a
+// merchant admin could save an idle_minutes value AppLockMiddleware would never
+// honor consistently.
+func validateAppLockIdle(min, max, def int) error {
+	if min < 1 || min > max {
+		return fmt.Errorf("APP_LOCK_MIN_IDLE_MINUTES/APP_LOCK_MAX_IDLE_MINUTES invalid")
+	}
+	if def < min || def > max {
+		return fmt.Errorf("APP_LOCK_DEFAULT_IDLE_MINUTES must be between APP_LOCK_MIN_IDLE_MINUTES and APP_LOCK_MAX_IDLE_MINUTES")
+	}
+	return nil
 }
 
 func (c Config) AppRuntimeDSN() string {

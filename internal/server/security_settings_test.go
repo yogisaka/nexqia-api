@@ -4,12 +4,16 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
@@ -38,7 +42,7 @@ func securityLogRows(t *testing.T, q securityLogQuerier, merchantID string) []se
 		       company_id::text
 		FROM core.security_setting_log
 		WHERE merchant_id = $1
-		ORDER BY changed_at, id`, merchantID)
+		ORDER BY changed_at DESC, id DESC`, merchantID)
 	if err != nil {
 		t.Fatalf("query security_setting_log: %v", err)
 	}
@@ -353,5 +357,424 @@ func TestSecuritySettingLog_RLSPerMerchant(t *testing.T) {
 	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatalf("rollback tx: %v", err)
+	}
+}
+
+// seedMerchantStaff inserts a staff app_user at merchantID (PIN hashed from pin,
+// or none when empty) attached to a fresh role granted exactly perms — mirrors
+// the restricted-user seeding in access_log_test.go/audit_test.go.
+func seedMerchantStaff(t *testing.T, ctx context.Context, pool *pgxpool.Pool, companyID, merchantID, username, pin string, perms ...string) string {
+	t.Helper()
+	userID := "6e6e6e6e-6e6e-6e6e-6e6e-6e6e6e6e6e6e"
+	roleID := "6f6f6f6f-6f6f-6f6f-6f6f-6f6f6f6f6f6f"
+	if _, err := pool.Exec(ctx, "INSERT INTO core.role (id, company_id, name) VALUES ($1, $2, $3)", roleID, companyID, username); err != nil {
+		t.Fatalf("seed staff role: %v", err)
+	}
+	passwordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash staff password: %v", err)
+	}
+	var pinHash *string
+	if pin != "" {
+		h, err := testHasher().Hash(ctx, pin)
+		if err != nil {
+			t.Fatalf("hash staff pin: %v", err)
+		}
+		pinHash = &h
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.app_user (id, company_id, username, password_hash, pin_hash, is_active) VALUES ($1, $2, $3, $4, $5, true)", userID, companyID, username, passwordHash, pinHash); err != nil {
+		t.Fatalf("seed staff user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)", userID, merchantID, roleID); err != nil {
+		t.Fatalf("seed staff user_merchant_role: %v", err)
+	}
+	for _, code := range perms {
+		if _, err := pool.Exec(ctx, "INSERT INTO core.role_permission (role_id, permission_id) SELECT $1, id FROM core.permission WHERE code = $2", roleID, code); err != nil {
+			t.Fatalf("grant %s to staff role: %v", code, err)
+		}
+	}
+	return userID
+}
+
+// rawFlagValue reads a core.feature_flag flag_value (jsonb) straight from the
+// DB as text — exactly what the enforcement code will read back.
+func rawFlagValue(t *testing.T, ctx context.Context, pool *pgxpool.Pool, merchantID, flagKey string) string {
+	t.Helper()
+	var raw *string
+	if err := pool.QueryRow(ctx, "SELECT flag_value::text FROM core.feature_flag WHERE merchant_id = $1 AND flag_key = $2", merchantID, flagKey).Scan(&raw); err != nil {
+		t.Fatalf("read flag %s: %v", flagKey, err)
+	}
+	if raw == nil {
+		return ""
+	}
+	return *raw
+}
+
+// securitySettingsDataResponse mirrors the GET/PUT /settings/security data body.
+type securitySettingsDataResponse struct {
+	PinLock struct {
+		Enabled     bool `json:"enabled"`
+		IdleMinutes int  `json:"idle_minutes"`
+	} `json:"pin_lock"`
+	Limits struct {
+		MinIdleMinutes int `json:"min_idle_minutes"`
+		MaxIdleMinutes int `json:"max_idle_minutes"`
+	} `json:"limits"`
+	RequireTOTP     bool  `json:"require_totp"`
+	UsersTotal      int64 `json:"users_total"`
+	UsersWithoutPin int64 `json:"users_without_pin"`
+	UsersWithoutMfa int64 `json:"users_without_mfa"`
+	CanEdit         bool  `json:"can_edit"`
+}
+
+// TestSecuritySettings_GetShapeAndStats — the GET shape: owner gets can_edit
+// true, the merchant's default-enabled pin_lock with the config fallback idle
+// window, the configured limits, and stats counting owner + a PIN-less/MFA-less
+// staff member.
+func TestSecuritySettings_GetShapeAndStats(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "secset.get", "081234560001")
+	seedMerchantStaff(t, ctx, pool, companyID, merchantID, "secset.get.staff", "")
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/settings/security", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /settings/security expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data securitySettingsDataResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Data.CanEdit {
+		t.Errorf("can_edit = false, want true for the owner")
+	}
+	if !resp.Data.PinLock.Enabled {
+		t.Errorf("pin_lock.enabled = false, want true (new merchants get PIN lock by default)")
+	}
+	if resp.Data.PinLock.IdleMinutes != testConfig().AppLockDefaultIdleMinutes {
+		t.Errorf("pin_lock.idle_minutes = %d, want config default %d", resp.Data.PinLock.IdleMinutes, testConfig().AppLockDefaultIdleMinutes)
+	}
+	if resp.Data.Limits.MinIdleMinutes != 1 || resp.Data.Limits.MaxIdleMinutes != 30 {
+		t.Errorf("limits = {%d,%d}, want {1,30}", resp.Data.Limits.MinIdleMinutes, resp.Data.Limits.MaxIdleMinutes)
+	}
+	if resp.Data.UsersTotal != 2 || resp.Data.UsersWithoutPin != 2 || resp.Data.UsersWithoutMfa != 2 {
+		t.Errorf("stats = total %d / no-pin %d / no-mfa %d, want 2/2/2 (owner + PIN-less staff)",
+			resp.Data.UsersTotal, resp.Data.UsersWithoutPin, resp.Data.UsersWithoutMfa)
+	}
+}
+
+// TestSecuritySettings_PutSavesFlagsReadByEnforcement — a PUT persists both
+// flags exactly as the enforcement code (getPinLockFlag/checkMFANudge) reads
+// them back, the GET reflects the new values, and the history gains one row per
+// changed flag.
+func TestSecuritySettings_PutSavesFlagsReadByEnforcement(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "secset.put", "081234560011")
+
+	body := []byte(`{"password":"Passw0rd123!","pin_lock":{"enabled":false,"idle_minutes":10},"require_totp":true}`)
+	rec := accountRequest(router, http.MethodPut, "/api/v1/settings/security", token, companyID, merchantID, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /settings/security expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Raw flag_value as the DB stores it — what getPinLockFlag parses.
+	var pinFlag map[string]any
+	if err := json.Unmarshal([]byte(rawFlagValue(t, ctx, pool, merchantID, "auth.pin_lock")), &pinFlag); err != nil {
+		t.Fatalf("decode stored auth.pin_lock %q: %v", rawFlagValue(t, ctx, pool, merchantID, "auth.pin_lock"), err)
+	}
+	if pinFlag["enabled"] != false || pinFlag["idle_minutes"] != float64(10) {
+		t.Fatalf("stored auth.pin_lock = %+v, want enabled false idle_minutes 10", pinFlag)
+	}
+	var totp bool
+	if err := json.Unmarshal([]byte(rawFlagValue(t, ctx, pool, merchantID, "auth.require_totp")), &totp); err != nil || !totp {
+		t.Fatalf("stored auth.require_totp = %q (err %v), want true", rawFlagValue(t, ctx, pool, merchantID, "auth.require_totp"), err)
+	}
+
+	rec = accountRequest(router, http.MethodGet, "/api/v1/settings/security", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET after PUT expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data securitySettingsDataResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if resp.Data.PinLock.Enabled || resp.Data.PinLock.IdleMinutes != 10 || !resp.Data.RequireTOTP {
+		t.Fatalf("GET must reflect the saved flags, got %+v", resp.Data)
+	}
+
+	rows := securityLogRows(t, pool, merchantID)
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 history rows (seed pin_lock insert + pin_lock update + require_totp insert), got %d: %+v", len(rows), rows)
+	}
+	// Newest first: require_totp insert, then the pin_lock update.
+	if rows[0].FlagKey != "auth.require_totp" || rows[0].OldValue != "" || rows[0].NewValue != "true" || rows[0].ChangedBy != userID {
+		t.Fatalf("history row 1 must be the require_totp insert by the owner, got %+v", rows[0])
+	}
+	if rows[1].FlagKey != "auth.pin_lock" || !strings.Contains(rows[1].OldValue, `"enabled": true`) || !strings.Contains(rows[1].NewValue, `"idle_minutes": 10`) {
+		t.Fatalf("history row 2 must be the pin_lock update, got %+v", rows[1])
+	}
+}
+
+// TestSecuritySettings_PutValidation — malformed bodies and out-of-range idle
+// values are rejected with 400 before anything is saved; a wrong password is
+// 401. Bind failures run before the rate limiter, so only the three bodies that
+// reach it consume attempts (max 5 in testConfig).
+func TestSecuritySettings_PutValidation(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "secset.valid", "081234560021")
+
+	cases := []struct {
+		name    string
+		body    string
+		want    int
+		wantErr string
+	}{
+		{"wrong password", `{"password":"wrong-pass","pin_lock":{"enabled":true,"idle_minutes":10},"require_totp":false}`, http.StatusUnauthorized, "invalid password"},
+		{"missing pin_lock", `{"password":"Passw0rd123!","require_totp":true}`, http.StatusBadRequest, ""},
+		{"idle as string", `{"password":"Passw0rd123!","pin_lock":{"enabled":true,"idle_minutes":"5"},"require_totp":true}`, http.StatusBadRequest, ""},
+		{"idle zero", `{"password":"Passw0rd123!","pin_lock":{"enabled":true,"idle_minutes":0},"require_totp":true}`, http.StatusBadRequest, "idle_minutes must be between 1 and 30"},
+		{"idle over max", `{"password":"Passw0rd123!","pin_lock":{"enabled":true,"idle_minutes":31},"require_totp":true}`, http.StatusBadRequest, "idle_minutes must be between 1 and 30"},
+		{"missing require_totp", `{"password":"Passw0rd123!","pin_lock":{"enabled":true,"idle_minutes":10}}`, http.StatusBadRequest, ""},
+	}
+	for _, tc := range cases {
+		rec := accountRequest(router, http.MethodPut, "/api/v1/settings/security", token, companyID, merchantID, []byte(tc.body))
+		if rec.Code != tc.want {
+			t.Errorf("%s: expected %d, got %d: %s", tc.name, tc.want, rec.Code, rec.Body.String())
+			continue
+		}
+		if tc.wantErr != "" {
+			var resp struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || !strings.Contains(resp.Error, tc.wantErr) {
+				t.Errorf("%s: expected error containing %q, got %q (err %v)", tc.name, tc.wantErr, resp.Error, err)
+			}
+		}
+	}
+}
+
+// TestSecuritySettings_PutRateLimited — saving is rate-limited per user like
+// password changes: with the limit at 2, the third PUT within the window is 429.
+func TestSecuritySettings_PutRateLimited(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	cfg := testConfig()
+	cfg.RateLimitLoginMaxAttempts = 2
+	router := server.NewRouter(pool, redisClient, cfg)
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "secset.ratelim", "081234560031")
+
+	body := []byte(`{"password":"Passw0rd123!","pin_lock":{"enabled":false,"idle_minutes":10},"require_totp":true}`)
+	for i := 1; i <= 2; i++ {
+		rec := accountRequest(router, http.MethodPut, "/api/v1/settings/security", token, companyID, merchantID, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT %d expected 200, got %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	rec := accountRequest(router, http.MethodPut, "/api/v1/settings/security", token, companyID, merchantID, body)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("third PUT expected 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || resp.Error != "too many attempts, try again later" {
+		t.Fatalf("expected 429 error message, got %q (err %v)", resp.Error, err)
+	}
+}
+
+// TestSecuritySettings_PutRejectedDuringImpersonation — an impersonation session
+// cannot save security settings, and the merchant's flags stay untouched
+// (rejectDuringImpersonation runs before anything else).
+func TestSecuritySettings_PutRejectedDuringImpersonation(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, _, _ := seedAccountOwner(t, ctx, pool, router, "secset.imp", "081234560041")
+	impToken := impersonationToken(t, userID, companyID, merchantID)
+
+	body := []byte(`{"password":"Passw0rd123!","pin_lock":{"enabled":false,"idle_minutes":10},"require_totp":true}`)
+	rec := accountRequest(router, http.MethodPut, "/api/v1/settings/security", impToken, companyID, merchantID, body)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("PUT during impersonation expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || resp.Error != "not allowed during impersonation" {
+		t.Fatalf("expected \"not allowed during impersonation\", got %q (err %v)", resp.Error, err)
+	}
+	var pinFlag map[string]any
+	if err := json.Unmarshal([]byte(rawFlagValue(t, ctx, pool, merchantID, "auth.pin_lock")), &pinFlag); err != nil || pinFlag["enabled"] != true {
+		t.Fatalf("auth.pin_lock must be unchanged, got %q (err %v)", rawFlagValue(t, ctx, pool, merchantID, "auth.pin_lock"), err)
+	}
+}
+
+// TestSecuritySettings_AuditViewerReadOnly — a role holding only audit.log.view
+// opens the page and its history (can_edit false, plan review focus 5) but PUT
+// stays 403; a user with neither permission gets 403 on GET.
+func TestSecuritySettings_AuditViewerReadOnly(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, _, _ := seedAccountOwner(t, ctx, pool, router, "secset.view", "081234560051")
+	viewerID := seedMerchantStaff(t, ctx, pool, companyID, merchantID, "secset.viewer", "", "audit.log.view")
+	viewerToken, err := auth.GenerateToken(testJWTSecret, viewerID, companyID, merchantID, "secset.viewer", "secset-viewer-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate viewer token: %v", err)
+	}
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/settings/security", viewerToken, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("viewer GET /settings/security expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data securitySettingsDataResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode viewer GET response: %v", err)
+	}
+	if resp.Data.CanEdit {
+		t.Fatalf("viewer can_edit = true, want false (audit.log.view only)")
+	}
+
+	rec = accountRequest(router, http.MethodGet, "/api/v1/settings/security/history", viewerToken, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("viewer GET history expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body := []byte(`{"password":"correct-horse","pin_lock":{"enabled":false,"idle_minutes":10},"require_totp":true}`)
+	rec = accountRequest(router, http.MethodPut, "/api/v1/settings/security", viewerToken, companyID, merchantID, body)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer PUT expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Neither permission → the page itself is 403.
+	nobodyID := seedRestrictedAuditUser(t, ctx, pool, companyID, merchantID, "secset.noview")
+	nobodyToken, err := auth.GenerateToken(testJWTSecret, nobodyID, companyID, merchantID, "secset.noview", "secset-noview-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate nobody token: %v", err)
+	}
+	rec = accountRequest(router, http.MethodGet, "/api/v1/settings/security", nobodyToken, companyID, merchantID, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET without any of the two permissions expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSecuritySettings_EnablingPinLockKeepsSaverUnlocked — plan review focus 1:
+// the admin who saves enabled:true keeps working on their own device (the PUT
+// seeds their applock key, so the response carries pin_lock_idle_minutes and
+// their next request is 200), while another PIN-enrolled user locks (423).
+func TestSecuritySettings_EnablingPinLockKeepsSaverUnlocked(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, ownerToken, _ := seedAccountOwner(t, ctx, pool, router, "secset.lock", "081234560061")
+
+	// New merchants get pin_lock enabled by default — turn it off first so
+	// nobody is locked while the scenario is set up.
+	body := []byte(`{"password":"Passw0rd123!","pin_lock":{"enabled":false,"idle_minutes":10},"require_totp":false}`)
+	rec := accountRequest(router, http.MethodPut, "/api/v1/settings/security", ownerToken, companyID, merchantID, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT disabling pin_lock expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Owner enrolls a PIN while the flag is off (no applock key is seeded).
+	rec = accountRequest(router, http.MethodPost, "/api/v1/auth/pin/set", ownerToken, companyID, merchantID, []byte(`{"password":"Passw0rd123!","pin":"123456"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner /auth/pin/set expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	staffID := seedMerchantStaff(t, ctx, pool, companyID, merchantID, "secset.lock.staff", "654321")
+	staffToken, err := auth.GenerateToken(testJWTSecret, staffID, companyID, merchantID, "secset.lock.staff", "secset-lock-staff-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate staff token: %v", err)
+	}
+
+	if rec = accountRequest(router, http.MethodGet, "/api/v1/auth/me", ownerToken, companyID, merchantID, nil); rec.Code != http.StatusOK {
+		t.Fatalf("owner /auth/me while disabled expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec = accountRequest(router, http.MethodGet, "/api/v1/auth/me", staffToken, companyID, merchantID, nil); rec.Code != http.StatusOK {
+		t.Fatalf("staff /auth/me while disabled expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Owner re-enables the lock — their device must not lock mid-session.
+	body = []byte(`{"password":"Passw0rd123!","pin_lock":{"enabled":true,"idle_minutes":10},"require_totp":false}`)
+	rec = accountRequest(router, http.MethodPut, "/api/v1/settings/security", ownerToken, companyID, merchantID, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT enabling pin_lock expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var putResp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &putResp); err != nil {
+		t.Fatalf("decode PUT response: %v", err)
+	}
+	if got, ok := putResp.Data["pin_lock_idle_minutes"]; !ok || got != float64(10) {
+		t.Fatalf("PUT response must carry pin_lock_idle_minutes 10, got %+v (present %t)", got, ok)
+	}
+
+	if rec = accountRequest(router, http.MethodGet, "/api/v1/auth/me", ownerToken, companyID, merchantID, nil); rec.Code != http.StatusOK {
+		t.Fatalf("owner /auth/me after enabling expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = accountRequest(router, http.MethodGet, "/api/v1/auth/me", staffToken, companyID, merchantID, nil)
+	if rec.Code != http.StatusLocked {
+		t.Fatalf("staff /auth/me after enabling expected 423, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSecuritySettings_PutOmitsIdleWhenDisabled — the pin_lock_idle_minutes key
+// exists in the PUT response only when the lock is being enabled (and the saver
+// has a PIN): disabling omits it even for a PIN-enrolled owner.
+func TestSecuritySettings_PutOmitsIdleWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "secset.omit", "081234560071")
+
+	// Enroll a PIN first (merchant default flag is on, so /auth/pin/set seeds
+	// the applock key) — the omission below is then driven by enabled:false
+	// alone, not by the saver lacking a PIN.
+	if rec := accountRequest(router, http.MethodPost, "/api/v1/auth/pin/set", token, companyID, merchantID, []byte(`{"password":"Passw0rd123!","pin":"123456"}`)); rec.Code != http.StatusOK {
+		t.Fatalf("owner /auth/pin/set expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body := []byte(`{"password":"Passw0rd123!","pin_lock":{"enabled":false,"idle_minutes":10},"require_totp":false}`)
+	rec := accountRequest(router, http.MethodPut, "/api/v1/settings/security", token, companyID, merchantID, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode PUT response: %v", err)
+	}
+	if _, exists := resp.Data["pin_lock_idle_minutes"]; exists {
+		t.Fatalf("disabled pin_lock must not carry pin_lock_idle_minutes, got %+v", resp.Data)
 	}
 }
