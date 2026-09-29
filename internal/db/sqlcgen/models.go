@@ -11,15 +11,17 @@ import (
 )
 
 type CoreAccessLog struct {
-	ID         pgtype.UUID
-	CompanyID  pgtype.UUID
-	MerchantID pgtype.UUID
-	ActorID    pgtype.UUID
-	Resource   string
-	ResourceID pgtype.UUID
-	Action     string
-	IpAddress  *netip.Addr
-	CreatedAt  pgtype.Timestamptz
+	ID              pgtype.UUID
+	CompanyID       pgtype.UUID
+	MerchantID      pgtype.UUID
+	ActorID         pgtype.UUID
+	Resource        string
+	ResourceID      pgtype.UUID
+	Action          string
+	IpAddress       *netip.Addr
+	CreatedAt       pgtype.Timestamptz
+	PlatformAdminID pgtype.UUID
+	StatusCode      int16
 }
 
 type CoreAppUser struct {
@@ -45,16 +47,16 @@ type CoreAppUser struct {
 }
 
 type CoreAuditLog struct {
-	ID         pgtype.UUID
-	CompanyID  pgtype.UUID
-	MerchantID pgtype.UUID
-	TableName  string
-	RecordID   pgtype.UUID
-	Action     string
-	OldValue   []byte
-	NewValue   []byte
-	ChangedBy  pgtype.UUID
-	ChangedAt  pgtype.Timestamptz
+	ID              pgtype.UUID
+	CompanyID       pgtype.UUID
+	MerchantID      pgtype.UUID
+	TableName       string
+	RecordID        pgtype.UUID
+	Action          string
+	ChangedBy       pgtype.UUID
+	ChangedAt       pgtype.Timestamptz
+	ChangedFields   []string
+	PlatformAdminID pgtype.UUID
 }
 
 type CoreBed struct {
