@@ -27,9 +27,9 @@ const PermPersonManage = "core.person.manage"
 // responses omit the field entirely.
 func RegisterPersonRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	rg.POST("/persons", CreatePersonHandler(cfg))
-	rg.GET("/persons", ListPersonsHandler)
-	rg.GET("/persons/search", SearchPersonsHandler(cfg))
-	rg.GET("/persons/:id", GetPersonHandler(cfg))
+	rg.GET("/persons", AccessLog("person", "list", ""), ListPersonsHandler)
+	rg.GET("/persons/search", AccessLog("person", "search", ""), SearchPersonsHandler(cfg))
+	rg.GET("/persons/:id", AccessLog("person", "view", "id"), GetPersonHandler(cfg))
 	rg.PATCH("/persons/:id", UpdatePersonHandler(cfg))
 	rg.DELETE("/persons/:id", DeletePersonHandler)
 }

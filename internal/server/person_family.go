@@ -15,7 +15,7 @@ import (
 // spec §4.2). Company-scoped like person.go: list/create are keyed off
 // AuthCompanyID and the :id routes verify the row's company before writing.
 func RegisterPersonFamilyRoutes(rg *gin.RouterGroup) {
-	rg.GET("/persons/:id/families", ListPersonFamiliesHandler)
+	rg.GET("/persons/:id/families", AccessLog("person_family", "list", "id"), ListPersonFamiliesHandler)
 	rg.POST("/persons/:id/families", CreatePersonFamilyHandler)
 	rg.PATCH("/person-families/:id", UpdatePersonFamilyHandler)
 	rg.DELETE("/person-families/:id", DeletePersonFamilyHandler)

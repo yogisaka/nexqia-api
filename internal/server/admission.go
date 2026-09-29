@@ -16,9 +16,9 @@ import (
 
 func RegisterAdmissionRoutes(rg *gin.RouterGroup) {
 	rg.POST("/admissions", CreateAdmissionHandler)
-	rg.GET("/admissions", ListAdmissionsHandler)
+	rg.GET("/admissions", AccessLog("admission", "list", ""), ListAdmissionsHandler)
 	rg.GET("/admissions/payer-summary", PayerSummaryHandler)
-	rg.GET("/admissions/:id", GetAdmissionHandler)
+	rg.GET("/admissions/:id", AccessLog("admission", "view", "id"), GetAdmissionHandler)
 	rg.PATCH("/admissions/:id", UpdateAdmissionHandler)
 }
 

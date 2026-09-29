@@ -43,9 +43,9 @@ var queueValidTransitions = map[string][]string{
 }
 
 func RegisterQueueRoutes(rg *gin.RouterGroup) {
-	rg.GET("/queue", ListQueueHandler)
+	rg.GET("/queue", AccessLog("queue", "list", ""), ListQueueHandler)
 	rg.GET("/queue/board", ListQueueBoardHandler)
-	rg.GET("/queue/:id", GetQueueHandler)
+	rg.GET("/queue/:id", AccessLog("queue", "view", "id"), GetQueueHandler)
 	rg.PATCH("/queue/:id", UpdateQueueStatusHandler)
 }
 

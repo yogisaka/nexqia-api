@@ -15,7 +15,7 @@ import (
 // 000006). Company-scoped via AuthCompanyID; :id routes verify the row's
 // company before writing. sqlc queries live in person.sql.
 func RegisterPatientAllergyRoutes(rg *gin.RouterGroup) {
-	rg.GET("/persons/:id/allergies", ListPatientAllergiesHandler)
+	rg.GET("/persons/:id/allergies", AccessLog("patient_allergy", "list", "id"), ListPatientAllergiesHandler)
 	rg.POST("/persons/:id/allergies", CreatePatientAllergyHandler)
 	rg.PATCH("/patient-allergies/:id", UpdatePatientAllergyHandler)
 	rg.DELETE("/patient-allergies/:id", DeletePatientAllergyHandler)
