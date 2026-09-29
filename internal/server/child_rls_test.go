@@ -19,13 +19,13 @@ import (
 // department + payer + person + admission + queue chain (owner pool, so no RLS
 // applies to the seed itself).
 type childRLSTenant struct {
-	companyID   string
-	merchantID  string
+	companyID    string
+	merchantID   string
 	departmentID string
-	payerID     string
-	personID    string
-	admissionID string
-	queueID     string
+	payerID      string
+	personID     string
+	admissionID  string
+	queueID      string
 }
 
 // childRLSChangedBy is a filler uuid for NOT NULL actor columns that carry no
