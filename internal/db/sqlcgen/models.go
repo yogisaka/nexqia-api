@@ -22,6 +22,7 @@ type CoreAccessLog struct {
 	CreatedAt       pgtype.Timestamptz
 	PlatformAdminID pgtype.UUID
 	StatusCode      int16
+	PersonID        pgtype.UUID
 }
 
 type CoreAppUser struct {
@@ -57,6 +58,7 @@ type CoreAuditLog struct {
 	ChangedAt       pgtype.Timestamptz
 	ChangedFields   []string
 	PlatformAdminID pgtype.UUID
+	PersonID        pgtype.UUID
 }
 
 type CoreBed struct {
