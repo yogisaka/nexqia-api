@@ -56,6 +56,7 @@ const (
 	PermMerchantManage   = "core.merchant.manage"
 	PermUserManage       = "core.user.manage"
 	PermRoleManage       = "core.role.manage"
+	PermAuditLogView     = "audit.log.view"
 )
 
 // AuthMiddleware validates the Bearer JWT issued by LoginHandler and binds the
