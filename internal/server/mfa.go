@@ -5,7 +5,6 @@ package server
 import (
 	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 	"time"
 
@@ -199,7 +198,7 @@ func MFADisableHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 		}
 		// Admin-permission holders must keep TOTP (spec §2) — refuse before any write.
 		merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID")) // same source AppLockMiddleware uses
-		required, err := mfaRequired(c, q, userID, merchantID)
+		required, err := mfaRequired(c, q, user, merchantID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to evaluate MFA policy"})
 			return
@@ -234,28 +233,23 @@ var mfaAdminPermissions = []string{
 	PermUserManage, PermRoleManage, PermMerchantManage, PermCompanyManageOwn, PermAuditLogView,
 }
 
-// mfaRequired reports whether TOTP is mandatory for userID at merchantID: the
-// merchant's auth.require_totp flag, or an admin permission. checkMFANudge runs
-// first because it also sets app.current_merchant_id for this transaction.
-func mfaRequired(c *gin.Context, q *sqlcgen.Queries, userID, merchantID pgtype.UUID) (bool, error) {
+// mfaRequired reports whether TOTP is mandatory for user at merchantID: the
+// merchant's auth.require_totp flag, or an admin permission held ANYWHERE in the
+// user's company (company role or a merchant role at any of its merchants). The
+// admin check must not depend on X-Merchant-ID: that header is client-supplied,
+// so a per-merchant check let an admin opt out by naming another merchant.
+// checkMFANudge runs first because it also sets app.current_merchant_id for this
+// transaction.
+func mfaRequired(c *gin.Context, q *sqlcgen.Queries, user sqlcgen.CoreAppUser, merchantID pgtype.UUID) (bool, error) {
 	if !merchantID.Valid {
 		return false, nil // merchant-less session (Owner before the first merchant)
 	}
 	if checkMFANudge(c, q, merchantID) {
 		return true, nil
 	}
-	codes, err := q.ListPermissionCodesByUserMerchant(c.Request.Context(), sqlcgen.ListPermissionCodesByUserMerchantParams{
-		UserID: userID, MerchantID: merchantID,
+	return q.UserHasCompanyLevelPermission(c.Request.Context(), sqlcgen.UserHasCompanyLevelPermissionParams{
+		UserID: user.ID, CompanyID: user.CompanyID, Codes: mfaAdminPermissions,
 	})
-	if err != nil {
-		return false, err
-	}
-	for _, code := range codes {
-		if slices.Contains(mfaAdminPermissions, code) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // tenantMFAGrace evaluates the merchant's auth.require_totp policy (spec §5)
@@ -265,7 +259,7 @@ func tenantMFAGrace(c *gin.Context, q *sqlcgen.Queries, cfg config.Config, user 
 	if user.MfaSecret.Valid {
 		return mfaGraceNotApplicable, time.Time{}, nil
 	}
-	required, err := mfaRequired(c, q, user.ID, merchantID)
+	required, err := mfaRequired(c, q, user, merchantID)
 	if err != nil {
 		return 0, time.Time{}, err
 	}
@@ -444,7 +438,7 @@ func MFAStatusHandler() gin.HandlerFunc {
 			return
 		}
 		merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID")) // same source AppLockMiddleware uses; TenantMiddleware already rejected a missing header
-		required, err := mfaRequired(c, q, user.ID, merchantID)
+		required, err := mfaRequired(c, q, user, merchantID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to evaluate MFA policy"})
 			return

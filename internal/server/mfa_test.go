@@ -617,6 +617,58 @@ func TestTenantMFA_DisableRefusedWhenRequired(t *testing.T) {
 	}
 }
 
+func TestTenantMFA_DisableRefusedWithForeignMerchantHeader(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, _, _ := setupTenantMFAUser(t, ctx, pool, router, "mfadisableforeign.owner", "081234510017")
+	secret, _ := enrollTenantMFA(t, ctx, pool, router, companyID, "mfadisableforeign.owner")
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate totp code: %v", err)
+	}
+	rec := tenantLogin(t, router, companyID, "mfadisableforeign.owner", "Passw0rd123!", code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login with code expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	token, _ := decodePlatformData(t, rec)["token"].(string)
+	if token == "" {
+		t.Fatalf("expected a session token, got %+v", decodePlatformData(t, rec))
+	}
+
+	body, _ := json.Marshal(map[string]string{"password": "Passw0rd123!"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/mfa/disable", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Company-ID", companyID)
+	req.Header.Set("X-Merchant-ID", "7a7a7a7a-7a7a-7a7a-7a7a-7a7a7a7a7a7a")
+	disableRec := httptest.NewRecorder()
+	router.ServeHTTP(disableRec, req)
+
+	if disableRec.Code != http.StatusForbidden {
+		t.Fatalf("disable expected 403, got %d: %s", disableRec.Code, disableRec.Body.String())
+	}
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(disableRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode disable response: %v", err)
+	}
+	if resp.Error != "mfa is required for this account" {
+		t.Fatalf("expected refusal error, got %+v", resp)
+	}
+	var secretSet bool
+	if err := pool.QueryRow(ctx, "SELECT mfa_secret IS NOT NULL FROM core.app_user WHERE username = 'mfadisableforeign.owner'").Scan(&secretSet); err != nil {
+		t.Fatalf("read mfa_secret: %v", err)
+	}
+	if !secretSet {
+		t.Fatalf("expected TOTP secret to survive the refused disable")
+	}
+}
+
 func TestTenantMFA_StatusRequiredForAdmin(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
