@@ -25,6 +25,14 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// headers incl. Cookie on panic) — both leak PHI (audit T2), so use the
 	// PHI-safe middlewares from logging.go instead. Recovery first, then logger.
 	router := gin.New()
+	// Trust only the configured proxies for X-Forwarded-For (spec
+	// 2026-09-29-small-security-fixes §1): gin's default trusts everything,
+	// letting a client spoof c.ClientIP() (rate-limit bypass, untrustworthy
+	// access_log IPs). Invalid config → panic at startup, same fail-fast
+	// posture as the MFA key below.
+	if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		panic(err)
+	}
 	router.Use(Recovery(os.Stdout), RequestLogger(os.Stdout))
 	router.GET("/healthz", HealthzHandler)
 	router.GET("/version", VersionHandler)

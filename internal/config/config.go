@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -69,6 +70,15 @@ type Config struct {
 	// docs/design/specs/2026-09-25-mfa-grace-enforcement-design.md §6.
 	PlatformMFAGraceDays int
 	TenantMFAGraceDays   int
+
+	// TrustedProxies — IP/CIDR addresses gin may trust as X-Forwarded-For sources
+	// (router.SetTrustedProxies). Gin's default trusts every proxy, so a client
+	// could spoof c.ClientIP() (rate-limit bypass, untrustworthy access_log IPs).
+	// Default = the private ranges: deployment topology is nginx on the host →
+	// nginx container → API on the Docker network (API port is never published),
+	// so X-Forwarded-For only ever arrives from those addresses. Env
+	// TRUSTED_PROXIES (comma-separated); the single value "none" trusts nobody.
+	TrustedProxies []string
 }
 
 func Load() Config {
@@ -113,6 +123,8 @@ func Load() Config {
 
 		PlatformMFAGraceDays: getEnvInt("PLATFORM_MFA_GRACE_DAYS", 7),
 		TenantMFAGraceDays:   getEnvInt("TENANT_MFA_GRACE_DAYS", 7),
+
+		TrustedProxies: getTrustedProxies(),
 	}
 }
 
@@ -157,4 +169,25 @@ func getEnvInt(key string, fallback int) int {
 		panic(fmt.Sprintf("environment variable %s must be an integer, got %q", key, v))
 	}
 	return n
+}
+
+// getTrustedProxies parses TRUSTED_PROXIES: comma-separated IP/CIDR, items
+// trimmed, empties dropped. Unset/empty → the private ranges (nginx topology,
+// see TrustedProxies doc comment); the single value "none" → empty slice.
+func getTrustedProxies() []string {
+	v := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
+	if v == "" {
+		return []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	}
+	if v == "none" {
+		return []string{}
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
