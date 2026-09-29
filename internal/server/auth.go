@@ -707,7 +707,7 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 		userID := AuthUserID(c)
 		has, err := session.MerchantIsAssigned(c.Request.Context(), TxFromContext(c), userID, merchantID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to switch merchant"})
 			return
 		}
 		if !has {
@@ -721,7 +721,7 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to switch merchant"})
 			return
 		}
 		// Same policy gate as login, but for the TARGET merchant — switching
@@ -742,7 +742,7 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			case errors.Is(err, session.ErrNoSession), errors.Is(err, session.ErrSessionRevoked), errors.Is(err, session.ErrSessionMismatch):
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or revoked, please log in again"})
 			default:
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to switch merchant"})
 			}
 			return
 		}

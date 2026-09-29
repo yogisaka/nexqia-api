@@ -241,6 +241,39 @@ func TestAccount_PatchMe_DuplicateEmail_409(t *testing.T) {
 	}
 }
 
+// TestAccount_PatchMe_InvalidEmail_400 — stricter email validation
+// (net/mail.ParseAddress, display-name forms rejected): "budi@" and
+// "Budi <budi@example.com>" → 400, a plain address → 200.
+func TestAccount_PatchMe_InvalidEmail_400(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "account.email.bad", "081234500010")
+
+	for _, email := range []string{"budi@", "Budi <budi@example.com>"} {
+		body, _ := json.Marshal(map[string]string{"email": email})
+		rec := accountRequest(router, http.MethodPatch, "/api/v1/auth/me", token, companyID, merchantID, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("PATCH email %q expected 400, got %d: %s", email, rec.Code, rec.Body.String())
+		}
+		var resp accountErrorResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if resp.Error != "invalid email format" {
+			t.Errorf("email %q: error = %q, want %q", email, resp.Error, "invalid email format")
+		}
+	}
+
+	body, _ := json.Marshal(map[string]string{"email": "budi@example.com"})
+	rec := accountRequest(router, http.MethodPatch, "/api/v1/auth/me", token, companyID, merchantID, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH valid email expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestAccount_PatchMe_FullNameWithoutPerson_400 — spec §5: full_name given
 // while the account has no person record → 400; empty after trim → 400.
 func TestAccount_PatchMe_FullNameWithoutPerson_400(t *testing.T) {

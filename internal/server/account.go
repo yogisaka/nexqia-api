@@ -8,6 +8,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 
@@ -74,7 +75,7 @@ func GetMeHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": meData(c, q, user), "meta": gin.H{}})
@@ -121,7 +122,7 @@ func UpdateMeHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
 		return
 	}
 	var newFullName string
@@ -141,9 +142,13 @@ func UpdateMeHandler(c *gin.Context) {
 	params := sqlcgen.UpdateOwnAppUserContactParams{Email: user.Email, Phone: user.Phone, ID: user.ID}
 	if req.Email != nil {
 		trimmed := strings.TrimSpace(*req.Email)
-		if trimmed != "" && !strings.Contains(trimmed, "@") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
-			return
+		if trimmed != "" {
+			addr, err := mail.ParseAddress(trimmed)
+			// addr.Address == trimmed also rejects "Name <a@b.c>" display-name forms.
+			if err != nil || addr.Address != trimmed {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
+				return
+			}
 		}
 		params.Email = pgtype.Text{String: trimmed, Valid: trimmed != ""}
 	}
@@ -159,21 +164,21 @@ func UpdateMeHandler(c *gin.Context) {
 			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "email or phone already used"})
 			return
 		}
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
 		return
 	}
 	if req.FullName != nil {
 		if err := q.UpdatePersonFullName(c.Request.Context(), sqlcgen.UpdatePersonFullNameParams{
 			ID: user.PersonID, FullName: newFullName, UpdatedBy: user.ID,
 		}); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
 			return
 		}
 	}
 	// Response = GET shape — reload after the writes.
 	user, err = q.GetAppUserByID(c.Request.Context(), user.ID)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": meData(c, q, user), "meta": gin.H{}})
@@ -246,12 +251,12 @@ func ChangePasswordHandler(hasher *auth.PasswordHasher, limiter *ratelimit.Limit
 			ID: userID, PasswordHash: hash, UpdatedBy: userID,
 		}); err != nil {
 			// Abort: the failed write poisons the request tx (see UpdateMeHandler).
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to change password"})
 			return
 		}
 		currentRawToken, _ := c.Cookie(refreshCookieName)
 		if err := session.RevokeAllExceptCurrent(c.Request.Context(), q, userID, currentRawToken); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke sessions"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})

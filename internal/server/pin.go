@@ -39,7 +39,7 @@ func verifyOwnPassword(c *gin.Context, q *sqlcgen.Queries, hasher *auth.Password
 		return false
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
 		return false
 	}
 	valid, err := hasher.Verify(c.Request.Context(), user.PasswordHash, password)
@@ -48,7 +48,7 @@ func verifyOwnPassword(c *gin.Context, q *sqlcgen.Queries, hasher *auth.Password
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
 			return false
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify password"})
 		return false
 	}
 	if !valid {
@@ -108,7 +108,7 @@ func PinSetHandler(hasher *auth.PasswordHasher, redisClient *redis.Client, cfg c
 		if err := q.SetAppUserPin(c.Request.Context(), sqlcgen.SetAppUserPinParams{
 			ID: userID, PinHash: pgtype.Text{String: hash, Valid: true}, UpdatedBy: userID,
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save pin"})
 			return
 		}
 		data := gin.H{}
@@ -164,7 +164,7 @@ func PinDisableHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 		if err := q.ClearAppUserPin(c.Request.Context(), sqlcgen.ClearAppUserPinParams{
 			ID: userID, UpdatedBy: userID,
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable pin"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
@@ -225,7 +225,7 @@ func PinVerifyHandler(hasher *auth.PasswordHasher, redisClient *redis.Client, cf
 		q := sqlcgen.New(TxFromContext(c))
 		user, err := q.GetAppUserByID(ctx, userID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify pin"})
 			return
 		}
 		valid := false
@@ -236,7 +236,7 @@ func PinVerifyHandler(hasher *auth.PasswordHasher, redisClient *redis.Client, cf
 					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
 					return
 				}
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify pin"})
 				return
 			}
 		}

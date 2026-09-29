@@ -52,7 +52,7 @@ func MFASetupHandler() gin.HandlerFunc {
 		q := sqlcgen.New(TxFromContext(c))
 		user, err := q.GetAppUserByID(c.Request.Context(), AuthUserID(c))
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
 			return
 		}
 		secret, otpauthURI, err := mfa.GenerateSecret(mfaTOTPIssuer, user.Username)
@@ -110,7 +110,7 @@ func MFAConfirmHandler(enc *mfa.Encryptor, hasher *auth.PasswordHasher) gin.Hand
 		q := sqlcgen.New(TxFromContext(c))
 		user, err := q.GetAppUserByID(c.Request.Context(), userID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
 			return
 		}
 		valid, err := hasher.Verify(c.Request.Context(), user.PasswordHash, req.Password)
@@ -119,7 +119,7 @@ func MFAConfirmHandler(enc *mfa.Encryptor, hasher *auth.PasswordHasher) gin.Hand
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify password"})
 			return
 		}
 		if !valid {
@@ -180,7 +180,7 @@ func MFADisableHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
 			return
 		}
 		valid, err := hasher.Verify(c.Request.Context(), user.PasswordHash, req.Password)
@@ -189,7 +189,7 @@ func MFADisableHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify password"})
 			return
 		}
 		if !valid {
@@ -199,16 +199,16 @@ func MFADisableHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 		if err := q.ClearAppUserMFASecret(c.Request.Context(), sqlcgen.ClearAppUserMFASecretParams{
 			ID: userID, UpdatedBy: userID,
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable MFA"})
 			return
 		}
 		if err := q.DeleteMFARecoveryCodesForUser(c.Request.Context(), userID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable MFA"})
 			return
 		}
 		currentRawToken, _ := c.Cookie(refreshCookieName)
 		if err := session.RevokeAllExceptCurrent(c.Request.Context(), q, userID, currentRawToken); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke sessions"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
@@ -351,7 +351,7 @@ func MFAEnrollHandler(cfg config.Config, limiter *ratelimit.Limiter, enc *mfa.En
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
 			return
 		}
 		if !user.IsActive {
@@ -390,7 +390,7 @@ func MFAStatusHandler() gin.HandlerFunc {
 		q := sqlcgen.New(TxFromContext(c))
 		user, err := q.GetAppUserByID(c.Request.Context(), AuthUserID(c))
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
 			return
 		}
 		merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID")) // same source AppLockMiddleware uses; TenantMiddleware already rejected a missing header

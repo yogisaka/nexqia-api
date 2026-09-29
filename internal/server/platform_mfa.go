@@ -226,7 +226,7 @@ func PlatformMFAEnrollHandler(limiter *ratelimit.Limiter, cfg config.Config, enc
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load admin user"})
 			return
 		}
 		if admin.MfaSecret.Valid {
@@ -259,7 +259,7 @@ func PlatformMFASetupHandler() gin.HandlerFunc {
 		q := sqlcgen.New(TxFromContext(c))
 		admin, err := q.GetPlatformAdminUserByID(c.Request.Context(), PlatformAdminUserID(c))
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load admin user"})
 			return
 		}
 		secret, otpauthURI, err := mfa.GenerateSecret(platformMFATOTPIssuer, admin.Username)
@@ -312,7 +312,7 @@ func PlatformMFAConfirmHandler(enc *mfa.Encryptor, hasher *auth.PasswordHasher) 
 		q := sqlcgen.New(TxFromContext(c))
 		admin, err := q.GetPlatformAdminUserByID(c.Request.Context(), adminID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load admin user"})
 			return
 		}
 		valid, err := hasher.Verify(c.Request.Context(), admin.PasswordHash, req.Password)
@@ -321,7 +321,7 @@ func PlatformMFAConfirmHandler(enc *mfa.Encryptor, hasher *auth.PasswordHasher) 
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify password"})
 			return
 		}
 		if !valid {

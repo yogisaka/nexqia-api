@@ -191,8 +191,9 @@ func ParsePlatformAdminToken(secret, tokenString string) (*PlatformAdminClaims, 
 // MFAEnrollmentPurpose and PlatformMFAEnrollmentPurpose tag short-lived MFA
 // enrollment tokens (spec §3 "Enrollment token", see
 // docs/design/plans/2026-09-25-mfa-grace-enforcement.md): the tenant one
-// is issued by POST /auth/mfa/setup and spent at POST /auth/mfa/enroll, the
-// platform one by POST /platform/mfa/setup and spent at POST /platform/mfa/enroll.
+// is issued by the login flow (issueLoginSession once the MFA grace period has
+// ended) and spent at POST /auth/mfa/enroll, the platform one by
+// POST /platform/login and spent at POST /platform/mfa/enroll.
 // They are exported because server handlers build the enrollment payload and
 // pick the purpose; the two purposes must never be interchangeable (a tenant
 // user must not enroll through a platform route and vice versa) — enforced by
