@@ -176,15 +176,48 @@ func enrollTenantMFA(t *testing.T, ctx context.Context, pool *pgxpool.Pool, rout
 	return secret, codes
 }
 
+// seedTenantNonAdminUser inserts, via SQL, a user in the same company/merchant
+// whose only role holds just core.person.manage — no admin permission, so MFA
+// stays optional for them even though the Owner is forced to enroll (spec §2).
+// Fixed UUIDs are safe: every test gets its own Postgres container.
+func seedTenantNonAdminUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, companyID, merchantID, username string) {
+	t.Helper()
+	roleID := "8f8f8f8f-8f8f-8f8f-8f8f-8f8f8f8f8f8f"
+	userID := "8e8e8e8e-8e8e-8e8e-8e8e-8e8e8e8e8e8e"
+	if _, err := pool.Exec(ctx, "INSERT INTO core.role (id, company_id, name) VALUES ($1, $2, 'Person Only')", roleID, companyID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.permission (code, description, module) VALUES ('core.person.manage', 'test', 'core') ON CONFLICT (code) DO NOTHING"); err != nil {
+		t.Fatalf("seed permission: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.role_permission (role_id, permission_id) SELECT $1, id FROM core.permission WHERE code = 'core.person.manage'", roleID); err != nil {
+		t.Fatalf("seed role_permission: %v", err)
+	}
+	passwordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.app_user (id, company_id, username, password_hash, is_active) VALUES ($1, $2, $3, $4, true)", userID, companyID, username, passwordHash); err != nil {
+		t.Fatalf("seed non-admin user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)", userID, merchantID, roleID); err != nil {
+		t.Fatalf("seed user_merchant_role: %v", err)
+	}
+}
+
 func TestTenantMFA_FlagOffUnchanged(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
 	redisClient := newTestRedisClient(t, ctx)
 	router := server.NewRouter(pool, redisClient, testConfig())
 
-	companyID, _, _ := setupTenantMFAUser(t, ctx, pool, router, "mfaflagoff.owner", "081234510001")
+	companyID, _, merchantID := setupTenantMFAUser(t, ctx, pool, router, "mfaflagoff.owner", "081234510001")
+	// The Owner is admin-required regardless of the flag (spec §2), so the
+	// no-policy behaviour for a flag-off merchant must be asserted on a plain
+	// staff user whose only role holds core.person.manage.
+	seedTenantNonAdminUser(t, ctx, pool, companyID, merchantID, "mfaflagoff.staff")
 
-	rec := tenantLogin(t, router, companyID, "mfaflagoff.owner", "Passw0rd123!", "")
+	rec := tenantLogin(t, router, companyID, "mfaflagoff.staff", "correct-horse", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -196,7 +229,7 @@ func TestTenantMFA_FlagOffUnchanged(t *testing.T) {
 		t.Fatalf("expected no mfa_setup_due_at with the flag off, got %+v", data)
 	}
 	var graceUntil *time.Time
-	if err := pool.QueryRow(ctx, "SELECT mfa_grace_until FROM core.app_user WHERE username = 'mfaflagoff.owner'").Scan(&graceUntil); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT mfa_grace_until FROM core.app_user WHERE username = 'mfaflagoff.staff'").Scan(&graceUntil); err != nil {
 		t.Fatalf("read mfa_grace_until: %v", err)
 	}
 	if graceUntil != nil {
@@ -475,5 +508,147 @@ func TestTenantMFA_StatusShape(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339, graceUntil.(string)); err != nil {
 		t.Fatalf("expected RFC3339 grace_until, got %v", graceUntil)
+	}
+}
+
+func TestTenantMFA_AdminRequiredWithoutFlag(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	// No enableRequireTOTP: the Owner's admin permissions alone make TOTP
+	// mandatory (spec §2).
+	companyID, _, _ := setupTenantMFAUser(t, ctx, pool, router, "mfaadminreq.owner", "081234510013")
+
+	rec := tenantLogin(t, router, companyID, "mfaadminreq.owner", "Passw0rd123!", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	data := decodePlatformData(t, rec)
+	if data["token"] == "" {
+		t.Fatalf("expected a token within the grace window, got %+v", data)
+	}
+	if _, ok := data["mfa_setup_due_at"].(string); !ok {
+		t.Fatalf("expected mfa_setup_due_at in login response, got %+v", data)
+	}
+
+	expireTenantMFAGrace(t, ctx, pool, "mfaadminreq.owner")
+	rec = tenantLogin(t, router, companyID, "mfaadminreq.owner", "Passw0rd123!", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login after grace expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if decodePlatformData(t, rec)["mfa_setup_required"] != true {
+		t.Fatalf("expected mfa_setup_required after grace, got %+v", decodePlatformData(t, rec))
+	}
+}
+
+func TestTenantMFA_NonAdminWithoutFlagUnchanged(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, _, merchantID := setupTenantMFAUser(t, ctx, pool, router, "mfanonadmin.owner", "081234510014")
+	seedTenantNonAdminUser(t, ctx, pool, companyID, merchantID, "mfanonadmin.staff")
+
+	rec := tenantLogin(t, router, companyID, "mfanonadmin.staff", "correct-horse", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	data := decodePlatformData(t, rec)
+	if data["token"] == "" {
+		t.Fatalf("expected a normal login, got %+v", data)
+	}
+	if _, ok := data["mfa_setup_due_at"]; ok {
+		t.Fatalf("expected no mfa_setup_due_at for a non-admin, got %+v", data)
+	}
+}
+
+func TestTenantMFA_DisableRefusedWhenRequired(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, _, merchantID := setupTenantMFAUser(t, ctx, pool, router, "mfadisableref.owner", "081234510015")
+	secret, _ := enrollTenantMFA(t, ctx, pool, router, companyID, "mfadisableref.owner")
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate totp code: %v", err)
+	}
+	rec := tenantLogin(t, router, companyID, "mfadisableref.owner", "Passw0rd123!", code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login with code expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	token, _ := decodePlatformData(t, rec)["token"].(string)
+	if token == "" {
+		t.Fatalf("expected a session token, got %+v", decodePlatformData(t, rec))
+	}
+
+	body, _ := json.Marshal(map[string]string{"password": "Passw0rd123!"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/mfa/disable", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Company-ID", companyID)
+	req.Header.Set("X-Merchant-ID", merchantID)
+	disableRec := httptest.NewRecorder()
+	router.ServeHTTP(disableRec, req)
+
+	if disableRec.Code != http.StatusForbidden {
+		t.Fatalf("disable expected 403, got %d: %s", disableRec.Code, disableRec.Body.String())
+	}
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(disableRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode disable response: %v", err)
+	}
+	if resp.Error != "mfa is required for this account" {
+		t.Fatalf("expected refusal error, got %+v", resp)
+	}
+	var secretSet bool
+	if err := pool.QueryRow(ctx, "SELECT mfa_secret IS NOT NULL FROM core.app_user WHERE username = 'mfadisableref.owner'").Scan(&secretSet); err != nil {
+		t.Fatalf("read mfa_secret: %v", err)
+	}
+	if !secretSet {
+		t.Fatalf("expected TOTP secret to survive the refused disable")
+	}
+}
+
+func TestTenantMFA_StatusRequiredForAdmin(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	// Owner WITHOUT the flag → required=true purely from admin permissions.
+	companyID, _, merchantID := setupTenantMFAUser(t, ctx, pool, router, "mfastatusadmin.owner", "081234510016")
+
+	rec := tenantLogin(t, router, companyID, "mfastatusadmin.owner", "Passw0rd123!", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	loginToken, _ := decodePlatformData(t, rec)["token"].(string)
+	if loginToken == "" {
+		t.Fatalf("expected a token within the grace window")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/mfa", nil)
+	req.Header.Set("Authorization", "Bearer "+loginToken)
+	req.Header.Set("X-Company-ID", companyID)
+	req.Header.Set("X-Merchant-ID", merchantID)
+	statusRec := httptest.NewRecorder()
+	router.ServeHTTP(statusRec, req)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status expected 200, got %d: %s", statusRec.Code, statusRec.Body.String())
+	}
+	data := decodePlatformData(t, statusRec)
+	if data["required"] != true {
+		t.Fatalf("expected required=true for an admin without the flag, got %+v", data)
+	}
+	if data["enabled"] != false {
+		t.Fatalf("expected enabled=false before enrollment, got %v", data["enabled"])
 	}
 }
