@@ -84,7 +84,7 @@ func ListCodeSystemsHandler(c *gin.Context) {
 		systems, err = q.ListCodeSystems(c.Request.Context())
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": systems, "meta": gin.H{}})
@@ -114,7 +114,7 @@ func GetCompanyDiagnosisConfigHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(cfg.CompanyID, cfg.MerchantID, cfg.CodeSystem, false, false), "meta": gin.H{}})
@@ -153,7 +153,7 @@ func UpsertCompanyDiagnosisConfigHandler(c *gin.Context) {
 		CompanyID: id, CodeSystem: req.CodeSystem, CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(cfg.CompanyID, cfg.MerchantID, cfg.CodeSystem, false, false), "meta": gin.H{}})
@@ -183,21 +183,21 @@ func GetMerchantDiagnosisConfigHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	cfg, err := q.GetMerchantDiagnosisConfig(c.Request.Context(), id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		codeSystem, err := resolveDiagnosisCodeSystem(c.Request.Context(), q, AuthCompanyID(c), pgtype.UUID{})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(AuthCompanyID(c), id, codeSystem, false, false), "meta": gin.H{"is_override": false}})
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(cfg.CompanyID, cfg.MerchantID, cfg.CodeSystem, false, true), "meta": gin.H{"is_override": true}})
@@ -238,14 +238,14 @@ func UpsertMerchantDiagnosisConfigHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	cfg, err := q.UpsertMerchantDiagnosisConfig(c.Request.Context(), sqlcgen.UpsertMerchantDiagnosisConfigParams{
 		CompanyID: AuthCompanyID(c), MerchantID: id, CodeSystem: req.CodeSystem, CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": diagnosisConfigData(cfg.CompanyID, cfg.MerchantID, cfg.CodeSystem, false, true), "meta": gin.H{}})
@@ -275,11 +275,11 @@ func DeleteMerchantDiagnosisConfigHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if err := q.DeleteMerchantDiagnosisConfig(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

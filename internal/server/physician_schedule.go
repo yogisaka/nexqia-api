@@ -172,7 +172,7 @@ func CreatePhysicianScheduleHandler(c *gin.Context) {
 		CreatedBy:     AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": toScheduleResponse(schedule), "meta": gin.H{}})
@@ -203,7 +203,7 @@ func ListPhysicianSchedulesHandler(c *gin.Context) {
 		MerchantID: merchantID, Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	out := make([]gin.H, len(schedules))
@@ -235,7 +235,7 @@ func GetPhysicianScheduleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermScheduleManage, schedule.MerchantID) {
@@ -278,7 +278,7 @@ func UpdatePhysicianScheduleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermScheduleManage, existing.MerchantID) {
@@ -328,7 +328,7 @@ func UpdatePhysicianScheduleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": toScheduleResponse(schedule), "meta": gin.H{}})
@@ -356,14 +356,14 @@ func DeletePhysicianScheduleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermScheduleManage, existing.MerchantID) {
 		return
 	}
 	if err := q.SoftDeletePhysicianSchedule(c.Request.Context(), sqlcgen.SoftDeletePhysicianScheduleParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

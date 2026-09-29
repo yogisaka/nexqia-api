@@ -117,7 +117,7 @@ func GetCompanyHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": company, "meta": gin.H{}})
@@ -166,7 +166,7 @@ func UpdateCompanyHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": company, "meta": gin.H{}})
@@ -196,7 +196,7 @@ func DeleteCompanyHandler(c *gin.Context) {
 	}
 	q := sqlcgen.New(TxFromContext(c))
 	if err := q.SoftDeleteCompany(c.Request.Context(), sqlcgen.SoftDeleteCompanyParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -252,7 +252,7 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			})
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		// §3 poin 6: if the creator has a company-wide role (the Owner-bootstrap
@@ -279,7 +279,7 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 		// whole request fails loudly (AbortWithStatusJSON), not silently leaves
 		// the Owner locked out of their own new merchant.
 		if _, err := TxFromContext(c).Exec(c.Request.Context(), "SELECT set_config('app.current_merchant_id', $1, true)", merchant.ID.String()); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to set merchant context: " + err.Error()})
+			abortInternalError(c, err)
 			return
 		}
 		// spec §3: new merchants get PIN-lock enabled by default (no idle_minutes
@@ -292,7 +292,7 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 		}
 		ucr, err := q.ListUserCompanyRoles(c.Request.Context(), AuthUserID(c))
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			abortInternalError(c, err)
 			return
 		}
 		for _, r := range ucr {
@@ -300,7 +300,7 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 				if _, err := q.AddUserMerchantRole(c.Request.Context(), sqlcgen.AddUserMerchantRoleParams{
 					UserID: AuthUserID(c), MerchantID: merchant.ID, RoleID: r.RoleID, CreatedBy: AuthUserID(c),
 				}); err != nil {
-					c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					abortInternalError(c, err)
 					return
 				}
 			}
@@ -322,7 +322,7 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			// activate new merchant" generik pas bug ini dilaporin live, gak bisa
 			// dibedain error mana (ErrNoSession/ErrSessionRevoked/ErrSessionMismatch/
 			// DB error lain) tanpa akses log server langsung.
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to activate new merchant: " + err.Error()})
+			abortInternalError(c, err)
 			return
 		}
 
@@ -358,7 +358,7 @@ func ListMerchantsHandler(c *gin.Context) {
 		CompanyID: companyID, Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": merchants, "meta": gin.H{"limit": limit, "offset": offset}})
@@ -386,7 +386,7 @@ func GetMerchantHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if merchant.CompanyID != AuthCompanyID(c) {
@@ -428,7 +428,7 @@ func UpdateMerchantHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -457,7 +457,7 @@ func UpdateMerchantHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": merchant, "meta": gin.H{}})
@@ -485,7 +485,7 @@ func DeleteMerchantHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -496,7 +496,7 @@ func DeleteMerchantHandler(c *gin.Context) {
 		return
 	}
 	if err := q.SoftDeleteMerchant(c.Request.Context(), sqlcgen.SoftDeleteMerchantParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

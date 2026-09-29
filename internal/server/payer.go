@@ -43,7 +43,7 @@ func ListPayersHandler(c *gin.Context) {
 		MerchantID: merchantID, Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": payers, "meta": gin.H{"limit": limit, "offset": offset}})

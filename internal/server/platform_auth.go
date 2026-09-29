@@ -129,7 +129,7 @@ func RequirePlatformPermission(c *gin.Context, code string) bool {
 		AdminUserID: PlatformAdminUserID(c), Code: code,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return false
 	}
 	if !has {

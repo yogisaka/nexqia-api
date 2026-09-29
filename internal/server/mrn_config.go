@@ -84,7 +84,7 @@ func GetCompanyMRNConfigHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(cfg.CompanyID, cfg.MerchantID, cfg.Format, false, false), "meta": gin.H{}})
@@ -123,7 +123,7 @@ func UpsertCompanyMRNConfigHandler(c *gin.Context) {
 		CompanyID: id, Format: req.Format, CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(cfg.CompanyID, cfg.MerchantID, cfg.Format, false, false), "meta": gin.H{}})
@@ -153,7 +153,7 @@ func GetMerchantMRNConfigHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	cfg, err := q.GetMerchantMRNConfig(c.Request.Context(), id)
@@ -163,14 +163,14 @@ func GetMerchantMRNConfigHandler(c *gin.Context) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			format = defaultMRNFormat
 		} else if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(AuthCompanyID(c), id, format, false, false), "meta": gin.H{"is_override": false}})
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(cfg.CompanyID, cfg.MerchantID, cfg.Format, false, true), "meta": gin.H{"is_override": true}})
@@ -211,14 +211,14 @@ func UpsertMerchantMRNConfigHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	cfg, err := q.UpsertMerchantMRNConfig(c.Request.Context(), sqlcgen.UpsertMerchantMRNConfigParams{
 		CompanyID: AuthCompanyID(c), MerchantID: id, Format: req.Format, CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": mrnConfigData(cfg.CompanyID, cfg.MerchantID, cfg.Format, false, true), "meta": gin.H{}})
@@ -248,11 +248,11 @@ func DeleteMerchantMRNConfigHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if err := q.DeleteMerchantMRNConfig(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

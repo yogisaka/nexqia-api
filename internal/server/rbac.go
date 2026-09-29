@@ -127,7 +127,7 @@ func CreateAppUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 				c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": msg})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		user.PasswordHash = ""
@@ -154,7 +154,7 @@ func ListAppUsersHandler(c *gin.Context) {
 		CompanyID: AuthCompanyID(c), Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	for i := range users {
@@ -186,7 +186,7 @@ func GetAppUserHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if user.CompanyID != AuthCompanyID(c) {
@@ -230,7 +230,7 @@ func UpdateAppUserHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -259,7 +259,7 @@ func UpdateAppUserHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	user.PasswordHash = ""
@@ -298,7 +298,7 @@ func UpdateAppUserPasswordHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if existing.CompanyID != AuthCompanyID(c) {
@@ -325,7 +325,7 @@ func UpdateAppUserPasswordHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 		if err := q.UpdateAppUserPassword(c.Request.Context(), sqlcgen.UpdateAppUserPasswordParams{
 			ID: id, PasswordHash: hash, UpdatedBy: AuthUserID(c),
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		c.Status(http.StatusNoContent)
@@ -354,7 +354,7 @@ func DeleteAppUserHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -365,7 +365,7 @@ func DeleteAppUserHandler(c *gin.Context) {
 		return
 	}
 	if err := q.SoftDeleteAppUser(c.Request.Context(), sqlcgen.SoftDeleteAppUserParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -385,7 +385,7 @@ func ListPermissionsHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	permissions, err := q.ListPermissions(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": permissions, "meta": gin.H{}})
@@ -436,7 +436,7 @@ func CreateRoleHandler(c *gin.Context) {
 		CreatedBy:             AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": role, "meta": gin.H{}})
@@ -461,7 +461,7 @@ func ListRolesHandler(c *gin.Context) {
 		CompanyID: AuthCompanyID(c), Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": roles, "meta": gin.H{"limit": limit, "offset": offset}})
@@ -492,7 +492,7 @@ func GetRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if role.CompanyID != AuthCompanyID(c) {
@@ -532,7 +532,7 @@ func UpdateRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -557,7 +557,7 @@ func UpdateRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": role, "meta": gin.H{}})
@@ -585,7 +585,7 @@ func DeleteRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -596,7 +596,7 @@ func DeleteRoleHandler(c *gin.Context) {
 		return
 	}
 	if err := q.SoftDeleteRole(c.Request.Context(), sqlcgen.SoftDeleteRoleParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -624,7 +624,7 @@ func ListRolePermissionsHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if role.CompanyID != AuthCompanyID(c) {
@@ -636,7 +636,7 @@ func ListRolePermissionsHandler(c *gin.Context) {
 	}
 	permissions, err := q.ListPermissionsByRole(c.Request.Context(), roleID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": permissions, "meta": gin.H{}})
@@ -670,7 +670,7 @@ func AddRolePermissionHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if role.CompanyID != AuthCompanyID(c) {
@@ -693,7 +693,7 @@ func AddRolePermissionHandler(c *gin.Context) {
 	if err := q.AddRolePermission(c.Request.Context(), sqlcgen.AddRolePermissionParams{
 		RoleID: roleID, PermissionID: permissionID,
 	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -727,7 +727,7 @@ func RemoveRolePermissionHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if role.CompanyID != AuthCompanyID(c) {
@@ -740,7 +740,7 @@ func RemoveRolePermissionHandler(c *gin.Context) {
 	if err := q.RemoveRolePermission(c.Request.Context(), sqlcgen.RemoveRolePermissionParams{
 		RoleID: roleID, PermissionID: permissionID,
 	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -776,7 +776,7 @@ func AddUserMerchantRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if targetUser.CompanyID != AuthCompanyID(c) {
@@ -802,7 +802,7 @@ func AddUserMerchantRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if merchant.CompanyID != AuthCompanyID(c) {
@@ -820,7 +820,7 @@ func AddUserMerchantRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if role.CompanyID != AuthCompanyID(c) {
@@ -835,7 +835,7 @@ func AddUserMerchantRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": assignment, "meta": gin.H{}})
@@ -864,7 +864,7 @@ func ListUserMerchantRolesHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if targetUser.CompanyID != AuthCompanyID(c) {
@@ -876,7 +876,7 @@ func ListUserMerchantRolesHandler(c *gin.Context) {
 	}
 	assignments, err := q.ListUserMerchantRolesByUser(c.Request.Context(), userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": assignments, "meta": gin.H{}})
@@ -911,7 +911,7 @@ func ListUserRolesInMerchantHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if targetUser.CompanyID != AuthCompanyID(c) {
@@ -925,7 +925,7 @@ func ListUserRolesInMerchantHandler(c *gin.Context) {
 		UserID: userID, MerchantID: merchantID,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": roles, "meta": gin.H{}})
@@ -953,12 +953,12 @@ func RemoveUserMerchantRoleHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	targetUser, err := q.GetAppUserByID(c.Request.Context(), assignment.UserID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if targetUser.CompanyID != AuthCompanyID(c) {
@@ -969,7 +969,7 @@ func RemoveUserMerchantRoleHandler(c *gin.Context) {
 		return
 	}
 	if err := q.RemoveUserMerchantRole(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -1004,7 +1004,7 @@ func ListUserPermissionsHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if targetUser.CompanyID != AuthCompanyID(c) {
@@ -1018,7 +1018,7 @@ func ListUserPermissionsHandler(c *gin.Context) {
 		UserID: userID, MerchantID: merchantID,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": codes, "meta": gin.H{}})

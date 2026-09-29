@@ -44,7 +44,7 @@ func SearchTerminologyHandler(c *gin.Context) {
 	if c.Query("full") == "true" {
 		concepts, err := q.ListConceptsBySystem(c.Request.Context(), system)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": concepts})
@@ -61,7 +61,7 @@ func SearchTerminologyHandler(c *gin.Context) {
 		Name: system, Column2: pgtype.Text{String: query, Valid: true}, Limit: limit,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": concepts, "meta": gin.H{"limit": limit}})

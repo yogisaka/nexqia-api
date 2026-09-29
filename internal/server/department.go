@@ -74,7 +74,7 @@ func CreateDepartmentHandler(c *gin.Context) {
 		CreatedBy:          AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": department, "meta": gin.H{}})
@@ -105,7 +105,7 @@ func ListDepartmentsHandler(c *gin.Context) {
 		MerchantID: merchantID, Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": departments, "meta": gin.H{"limit": limit, "offset": offset}})
@@ -133,7 +133,7 @@ func GetDepartmentHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermDepartmentManage, department.MerchantID) {
@@ -172,7 +172,7 @@ func UpdateDepartmentHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermDepartmentManage, existing.MerchantID) {
@@ -195,7 +195,7 @@ func UpdateDepartmentHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": department, "meta": gin.H{}})
@@ -223,14 +223,14 @@ func DeleteDepartmentHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermDepartmentManage, existing.MerchantID) {
 		return
 	}
 	if err := q.SoftDeleteDepartment(c.Request.Context(), sqlcgen.SoftDeleteDepartmentParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

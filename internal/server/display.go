@@ -51,7 +51,7 @@ func DisplayQueueHandler(c *gin.Context) {
 		MerchantID: merchantID, DepartmentID: departmentID,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": queue, "meta": gin.H{}})
@@ -87,7 +87,7 @@ func DisplayScheduleHandler(c *gin.Context) {
 		EffectiveFrom: pgtype.Date{Time: today, Valid: true},
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	out := make([]gin.H, len(schedules))

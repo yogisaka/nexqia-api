@@ -159,7 +159,7 @@ func PingHandler(c *gin.Context) {
 		"SELECT current_setting('app.current_company_id'), current_setting('app.current_merchant_id')",
 	).Scan(&companyID, &merchantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

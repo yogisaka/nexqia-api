@@ -57,7 +57,7 @@ func ListPersonFamiliesHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	families, err := q.ListPersonFamiliesByPerson(c.Request.Context(), personID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": families, "meta": gin.H{}})
@@ -112,7 +112,7 @@ func CreatePersonFamilyHandler(c *gin.Context) {
 		CreatedBy:              AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": family, "meta": gin.H{}})
@@ -145,7 +145,7 @@ func UpdatePersonFamilyHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -184,7 +184,7 @@ func UpdatePersonFamilyHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": family, "meta": gin.H{}})
@@ -215,7 +215,7 @@ func DeletePersonFamilyHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if existing.CompanyID != AuthCompanyID(c) {
@@ -223,7 +223,7 @@ func DeletePersonFamilyHandler(c *gin.Context) {
 		return
 	}
 	if err := q.SoftDeletePersonFamily(c.Request.Context(), sqlcgen.SoftDeletePersonFamilyParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

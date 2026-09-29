@@ -88,7 +88,7 @@ func CreateServiceItemHandler(c *gin.Context) {
 		CreatedBy:  AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": item, "meta": gin.H{}})
@@ -119,7 +119,7 @@ func ListServiceItemsHandler(c *gin.Context) {
 		MerchantID: merchantID, Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{"limit": limit, "offset": offset}})
@@ -147,7 +147,7 @@ func GetServiceItemHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, item.MerchantID) {
@@ -186,7 +186,7 @@ func UpdateServiceItemHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, existing.MerchantID) {
@@ -205,7 +205,7 @@ func UpdateServiceItemHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": item, "meta": gin.H{}})
@@ -233,14 +233,14 @@ func DeleteServiceItemHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, existing.MerchantID) {
 		return
 	}
 	if err := q.SoftDeleteServiceItem(c.Request.Context(), sqlcgen.SoftDeleteServiceItemParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -287,7 +287,7 @@ func CreateRateComponentHandler(c *gin.Context) {
 		CompanyID: AuthCompanyID(c), MerchantID: merchantID, Code: req.Code, Name: req.Name, CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": component, "meta": gin.H{}})
@@ -313,7 +313,7 @@ func ListRateComponentsHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	components, err := q.ListRateComponentsByMerchant(c.Request.Context(), merchantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": components, "meta": gin.H{}})
@@ -341,7 +341,7 @@ func GetRateComponentHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, component.MerchantID) {
@@ -378,7 +378,7 @@ func UpdateRateComponentHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, existing.MerchantID) {
@@ -397,7 +397,7 @@ func UpdateRateComponentHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": component, "meta": gin.H{}})
@@ -425,14 +425,14 @@ func DeleteRateComponentHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, existing.MerchantID) {
 		return
 	}
 	if err := q.SoftDeleteRateComponent(c.Request.Context(), sqlcgen.SoftDeleteRateComponentParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -516,7 +516,7 @@ func CreateServiceRateHandler(c *gin.Context) {
 		CreatedBy:       AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": rate, "meta": gin.H{}})
@@ -544,7 +544,7 @@ func ListServiceRatesHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, item.MerchantID) {
@@ -554,7 +554,7 @@ func ListServiceRatesHandler(c *gin.Context) {
 		MerchantID: item.MerchantID, ServiceItemID: serviceItemID,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": rates, "meta": gin.H{}})
@@ -582,7 +582,7 @@ func GetServiceRateHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, rate.MerchantID) {
@@ -620,7 +620,7 @@ func UpdateServiceRateHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, existing.MerchantID) {
@@ -649,7 +649,7 @@ func UpdateServiceRateHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": rate, "meta": gin.H{}})
@@ -677,14 +677,14 @@ func DeleteServiceRateHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermTariffManage, existing.MerchantID) {
 		return
 	}
 	if err := q.SoftDeleteServiceRate(c.Request.Context(), sqlcgen.SoftDeleteServiceRateParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

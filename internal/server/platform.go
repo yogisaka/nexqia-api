@@ -81,7 +81,7 @@ func PlatformAdminLoginHandler(limiter *ratelimit.Limiter, cfg config.Config, ha
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if !adminUser.IsActive {
@@ -94,7 +94,7 @@ func PlatformAdminLoginHandler(limiter *ratelimit.Limiter, cfg config.Config, ha
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if !valid {
@@ -143,7 +143,7 @@ func PlatformAdminLoginHandler(limiter *ratelimit.Limiter, cfg config.Config, ha
 			// above already wrote in this SAME tx; a plain c.JSON would let it
 			// commit despite the 500, mutating last_login_at for a failed login
 			// (PlatformTxMiddleware rolls back only when c.IsAborted()).
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			abortInternalError(c, err)
 			return
 		}
 		setPlatformRefreshCookie(c, cfg, issued.RefreshToken, issued.RefreshExpiresAt)
@@ -195,7 +195,7 @@ func PlatformAdminRefreshHandler(cfg config.Config) gin.HandlerFunc {
 				// branches above MUST stay plain c.JSON: their revocations
 				// (reuse-detection device-chain revoke, expired-token revoke)
 				// are security effects meant to persist.
-				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				abortInternalError(c, err)
 			}
 			return
 		}
@@ -240,7 +240,7 @@ func ListPlatformCompaniesHandler(c *gin.Context) {
 	tx := TxFromContext(c)
 	rows, err := tx.Query(c.Request.Context(), "SELECT * FROM platform.list_companies($1, $2)", limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	defer rows.Close()
@@ -252,18 +252,18 @@ func ListPlatformCompaniesHandler(c *gin.Context) {
 			&comp.CreatedAt, &comp.CreatedBy, &comp.UpdatedAt, &comp.UpdatedBy,
 			&comp.DeletedAt, &comp.DeletedBy, &comp.RowVersion, &comp.MaxConcurrentSessions,
 		); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		companies = append(companies, comp)
 	}
 	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	var total int64
 	if err := tx.QueryRow(c.Request.Context(), "SELECT platform.count_companies()").Scan(&total); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": companies, "meta": gin.H{"limit": limit, "offset": offset, "total": total}})
@@ -312,7 +312,7 @@ func GetPlatformCompanyDetailHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": detail, "meta": gin.H{}})
@@ -332,7 +332,7 @@ func ListPlatformRolesHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	roles, err := q.ListPlatformRoles(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": roles, "meta": gin.H{}})
@@ -373,7 +373,7 @@ func CreatePlatformAdminUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc
 		}
 		passwordHash, err := hasher.Hash(c.Request.Context(), req.Password)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		q := sqlcgen.New(TxFromContext(c))
@@ -382,7 +382,7 @@ func CreatePlatformAdminUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc
 			PasswordHash: passwordHash, CreatedBy: PlatformAdminUserID(c),
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if err := q.CreatePlatformAdminUserRole(c.Request.Context(), sqlcgen.CreatePlatformAdminUserRoleParams{
@@ -395,7 +395,7 @@ func CreatePlatformAdminUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc
 			// tx — silently leaving an admin_user row with no role/permissions at
 			// all (e.g. if role_id parses as a UUID but doesn't exist in
 			// platform.role, an FK violation here).
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			abortInternalError(c, err)
 			return
 		}
 		// Explicit whitelist, NOT the raw struct — sqlcgen.PlatformAdminUser
@@ -429,7 +429,7 @@ func SuspendPlatformCompanyHandler(c *gin.Context) {
 	tx := TxFromContext(c)
 	var found bool
 	if err := tx.QueryRow(c.Request.Context(), "SELECT platform.suspend_company($1, $2)", id, PlatformAdminUserID(c)).Scan(&found); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		abortInternalError(c, err)
 		return
 	}
 	if !found {
@@ -461,7 +461,7 @@ func ActivatePlatformCompanyHandler(c *gin.Context) {
 	tx := TxFromContext(c)
 	var found bool
 	if err := tx.QueryRow(c.Request.Context(), "SELECT platform.activate_company($1, $2)", id, PlatformAdminUserID(c)).Scan(&found); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		abortInternalError(c, err)
 		return
 	}
 	if !found {
@@ -541,7 +541,7 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 		// earlier writes in this local tx on rejection.
 		var companyID pgtype.UUID
 		if err := tx.QueryRow(ctx, "SELECT uuid_generate_v7()").Scan(&companyID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -561,7 +561,7 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 			})
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -574,7 +574,7 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 			CreatedBy: adminID,
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -599,7 +599,7 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 				c.JSON(http.StatusConflict, gin.H{"error": "email or phone number already registered"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -607,13 +607,13 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 			CompanyID: companyID, Name: "Owner", Description: pgtype.Text{String: "Company owner — full access", Valid: true}, IsSystem: true, CreatedBy: adminID,
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
 		permissions, err := q.ListPermissions(ctx)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		for _, p := range permissions {
@@ -621,7 +621,7 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 				continue // core.company.manage — platform-wide, never in the Owner bundle
 			}
 			if err := q.AddRolePermission(ctx, sqlcgen.AddRolePermissionParams{RoleID: role.ID, PermissionID: p.ID}); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				respondInternalError(c, err)
 				return
 			}
 		}
@@ -629,7 +629,7 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 		if _, err := q.CreateUserCompanyRole(ctx, sqlcgen.CreateUserCompanyRoleParams{
 			UserID: user.ID, CompanyID: companyID, RoleID: role.ID, CreatedBy: adminID,
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -723,7 +723,7 @@ func ImpersonateHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -737,7 +737,7 @@ func ImpersonateHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if !targetUser.IsActive {
@@ -758,7 +758,7 @@ func ImpersonateHandler(cfg config.Config) gin.HandlerFunc {
 			AdminUserID: adminID, TargetUserID: targetUser.ID, TargetCompanyID: companyID,
 			Reason: req.Reason, ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true}, StartedIp: ip,
 		}); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			abortInternalError(c, err)
 			return
 		}
 
@@ -767,7 +767,7 @@ func ImpersonateHandler(cfg config.Config) gin.HandlerFunc {
 			targetUser.Username, "impersonation", adminID.String(), impersonationTokenTTL,
 		)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			abortInternalError(c, err)
 			return
 		}
 

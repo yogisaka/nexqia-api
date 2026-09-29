@@ -167,7 +167,7 @@ func RequirePermissionForMerchant(c *gin.Context, code string, merchantID pgtype
 		UserID: AuthUserID(c), MerchantID: merchantID, Code: code,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return false
 	}
 	if !has {
@@ -191,7 +191,7 @@ func RequireCompanyLevelPermission(c *gin.Context, codes ...string) bool {
 		UserID: AuthUserID(c), CompanyID: AuthCompanyID(c), Codes: codes,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return false
 	}
 	if !has {
@@ -250,12 +250,12 @@ func checkDeviceLimit(c *gin.Context, q *sqlcgen.Queries, userID, companyID pgty
 	ctx := c.Request.Context()
 	max, err := q.GetCompanyMaxConcurrentSessions(ctx, companyID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return false
 	}
 	count, err := q.CountActiveRefreshTokens(ctx, sqlcgen.CountActiveRefreshTokensParams{UserID: userID, CompanyID: companyID})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return false
 	}
 	if count >= int64(max) {
@@ -452,7 +452,7 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if !company.IsActive {
@@ -467,7 +467,7 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if !user.IsActive {
@@ -480,7 +480,7 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if !valid {
@@ -512,7 +512,7 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 
 		merchants, err := session.ListUserMerchants(c.Request.Context(), TxFromContext(c), user.ID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if len(merchants) == 0 {
@@ -592,7 +592,7 @@ func SelectMerchantHandler(secret string, cfg config.Config, redisClient *redis.
 		}
 		has, err := session.MerchantIsAssigned(c.Request.Context(), TxFromContext(c), userID, merchantID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		if !has {
@@ -606,7 +606,7 @@ func SelectMerchantHandler(secret string, cfg config.Config, redisClient *redis.
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		issueLoginSession(c, cfg, q, redisClient, user, merchantID)
@@ -644,7 +644,7 @@ func RefreshHandler(cfg config.Config) gin.HandlerFunc {
 			case errors.Is(err, session.ErrNoSession), errors.Is(err, session.ErrSessionExpired), errors.Is(err, session.ErrSessionRevoked):
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or revoked, please log in again"})
 			default:
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				respondInternalError(c, err)
 			}
 			return
 		}
@@ -832,7 +832,7 @@ func RevokeSessionHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if row.UserID != AuthUserID(c) {
@@ -844,7 +844,7 @@ func RevokeSessionHandler(c *gin.Context) {
 		return
 	}
 	if err := q.RevokeRefreshToken(c.Request.Context(), sessionID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{}, "meta": gin.H{}})
@@ -939,7 +939,7 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 
 		var companyID pgtype.UUID
 		if err := tx.QueryRow(ctx, "SELECT uuid_generate_v7()").Scan(&companyID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -953,7 +953,7 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 			})
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -967,7 +967,7 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 			CreatedBy: pgtype.UUID{},
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -992,7 +992,7 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 				c.JSON(http.StatusConflict, gin.H{"error": "email or phone number already registered"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
@@ -1000,13 +1000,13 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 			CompanyID: companyID, Name: "Owner", Description: pgtype.Text{String: "Company owner — full access", Valid: true}, IsSystem: true, CreatedBy: user.ID,
 		})
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 
 		permissions, err := q.ListPermissions(ctx)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		for _, p := range permissions {
@@ -1014,7 +1014,7 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 				continue // §4: platform-wide, never in the Owner bundle
 			}
 			if err := q.AddRolePermission(ctx, sqlcgen.AddRolePermissionParams{RoleID: role.ID, PermissionID: p.ID}); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				respondInternalError(c, err)
 				return
 			}
 		}
@@ -1022,7 +1022,7 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 		if _, err := q.CreateUserCompanyRole(ctx, sqlcgen.CreateUserCompanyRoleParams{
 			UserID: user.ID, CompanyID: companyID, RoleID: role.ID, CreatedBy: user.ID,
 		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 

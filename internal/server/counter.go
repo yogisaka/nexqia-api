@@ -72,7 +72,7 @@ func CreateCounterHandler(c *gin.Context) {
 		CreatedBy:    AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": counter, "meta": gin.H{}})
@@ -103,7 +103,7 @@ func ListCountersHandler(c *gin.Context) {
 		MerchantID: merchantID, Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": counters, "meta": gin.H{"limit": limit, "offset": offset}})
@@ -131,7 +131,7 @@ func GetCounterHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermCounterManage, counter.MerchantID) {
@@ -170,7 +170,7 @@ func UpdateCounterHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermCounterManage, existing.MerchantID) {
@@ -189,7 +189,7 @@ func UpdateCounterHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": counter, "meta": gin.H{}})
@@ -221,7 +221,7 @@ func CallNextQueueHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermCounterManage, counter.MerchantID) {
@@ -236,7 +236,7 @@ func CallNextQueueHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	calledAt := pgtype.Timestamptz{Time: time.Now(), Valid: true}
@@ -245,7 +245,7 @@ func CallNextQueueHandler(c *gin.Context) {
 		CalledAt: calledAt, UpdatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if err := q.CreateQueueStatusHistory(ctx, sqlcgen.CreateQueueStatusHistoryParams{
@@ -253,7 +253,7 @@ func CallNextQueueHandler(c *gin.Context) {
 		FromStatus: optText(next.Status), ToStatus: "called", ChangedBy: AuthUserID(c),
 	}); err != nil {
 		c.Error(err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": updated, "meta": gin.H{}})

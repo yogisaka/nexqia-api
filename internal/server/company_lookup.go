@@ -49,7 +49,7 @@ func CompanyLookupHandler(pool *pgxpool.Pool) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			respondInternalError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{

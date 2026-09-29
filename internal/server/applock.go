@@ -88,7 +88,7 @@ func AppLockMiddleware(redisClient *redis.Client, cfg config.Config) gin.Handler
 		userID := AuthUserID(c)
 		user, err := q.GetAppUserByID(c.Request.Context(), userID)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			abortInternalError(c, err)
 			return
 		}
 		if !user.PinHash.Valid {

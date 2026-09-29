@@ -81,7 +81,7 @@ func ListQueueHandler(c *gin.Context) {
 		MerchantID: merchantID, QueueType: queueType, Status: status, Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": queue, "meta": gin.H{"limit": limit, "offset": offset}})
@@ -109,7 +109,7 @@ func GetQueueHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermVisitManage, queue.MerchantID) {
@@ -156,7 +156,7 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermVisitManage, existing.MerchantID) {
@@ -184,14 +184,14 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 		ID: id, Status: req.Status, CounterID: existing.CounterID, CalledAt: existing.CalledAt, UpdatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	if err := q.CreateQueueStatusHistory(ctx, sqlcgen.CreateQueueStatusHistoryParams{
 		QueueID: id, CounterID: existing.CounterID, FromStatus: optText(existing.Status), ToStatus: req.Status, ChangedBy: AuthUserID(c),
 	}); err != nil {
 		c.Error(err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -201,7 +201,7 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 			department, err := q.GetDepartmentByID(ctx, existing.DepartmentID)
 			if err != nil {
 				c.Error(err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				respondInternalError(c, err)
 				return
 			}
 			seq, err := q.CountTodayQueueByType(ctx, sqlcgen.CountTodayQueueByTypeParams{
@@ -209,7 +209,7 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 			})
 			if err != nil {
 				c.Error(err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				respondInternalError(c, err)
 				return
 			}
 			queueNumber := fmt.Sprintf("%s-%03d", department.Code, seq+1)
@@ -220,7 +220,7 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 			})
 			if err != nil {
 				c.Error(err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				respondInternalError(c, err)
 				return
 			}
 			nextQueue = &created
@@ -274,7 +274,7 @@ func ListQueueBoardHandler(c *gin.Context) {
 		Search: optText(c.Query("search")), Limit: limit, Offset: offset,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": board, "meta": gin.H{"limit": limit, "offset": offset}})
