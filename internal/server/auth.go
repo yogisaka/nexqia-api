@@ -88,6 +88,16 @@ func AuthMiddleware(secret string) gin.HandlerFunc {
 		c.Set(authCompanyIDContextKey, companyID)
 		c.Set(authDeviceIDContextKey, claims.DeviceID)
 		c.Set(authImpersonatedByContextKey, claims.ImpersonatedBy)
+		// Audit trail (spec 2026-09-29-audit-trail §3): tell core.trg_audit_row() who is
+		// writing. Transaction-scoped; every group using AuthMiddleware opens the tx first.
+		if txVal, ok := c.Get(txContextKey); ok {
+			if _, err := txVal.(pgx.Tx).Exec(c.Request.Context(),
+				"SELECT set_config('app.current_user_id', $1, true), set_config('app.platform_admin_id', $2, true)",
+				userID.String(), claims.ImpersonatedBy); err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to set audit context"})
+				return
+			}
+		}
 		c.Next()
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -91,6 +92,15 @@ func PlatformAdminAuthMiddleware(secret string) gin.HandlerFunc {
 		}
 		c.Set(platformAdminUserIDContextKey, adminUserID)
 		c.Set(platformAdminDeviceIDContextKey, claims.DeviceID)
+		// Audit trail: changes made through platform endpoints (e.g. POST /platform/companies
+		// creating the owner person) are attributed to this admin.
+		if txVal, ok := c.Get(txContextKey); ok {
+			if _, err := txVal.(pgx.Tx).Exec(c.Request.Context(),
+				"SELECT set_config('app.platform_admin_id', $1, true)", adminUserID.String()); err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to set audit context"})
+				return
+			}
+		}
 		c.Next()
 	}
 }

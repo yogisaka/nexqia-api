@@ -549,6 +549,12 @@ func CreatePlatformCompanyHandler(pool *pgxpool.Pool, hasher *auth.PasswordHashe
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
 			return
 		}
+		// Audit trail: this handler's own tx never sees the middleware GUC, so the
+		// platform admin attribution for the owner person created below is set here.
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.platform_admin_id', $1, true)", PlatformAdminUserID(c).String()); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set tenant context"})
+			return
+		}
 		company, err := InsertWithUniqueCode(ctx, tx, generateCode, func(q *sqlcgen.Queries, code string) (sqlcgen.CoreCompany, error) {
 			return q.CreateCompanyWithID(ctx, sqlcgen.CreateCompanyWithIDParams{
 				ID: companyID, Code: code, Name: req.CompanyName, CreatedBy: adminID,
