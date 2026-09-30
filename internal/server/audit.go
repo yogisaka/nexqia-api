@@ -78,7 +78,7 @@ func ListAccessLogsHandler(c *gin.Context) {
 		RowLimit:   limit,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load logs"})
+		respondInternalError(c, err)
 		return
 	}
 	data := make([]gin.H, 0, len(rows))
@@ -151,7 +151,7 @@ func ListChangeLogsHandler(c *gin.Context) {
 		RowLimit:  limit,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load logs"})
+		respondInternalError(c, err)
 		return
 	}
 	data := make([]gin.H, 0, len(rows))
@@ -204,7 +204,7 @@ func SearchAuditPatientsHandler(c *gin.Context) {
 		Q:         search,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search patients"})
+		respondInternalError(c, err)
 		return
 	}
 	data := make([]gin.H, 0, len(rows))
@@ -251,7 +251,7 @@ func SearchAuditUsersHandler(c *gin.Context) {
 		Pattern:   escapeLike(search),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search users"})
+		respondInternalError(c, err)
 		return
 	}
 	data := make([]gin.H, 0, len(rows))
