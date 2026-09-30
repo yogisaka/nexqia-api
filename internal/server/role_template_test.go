@@ -4,13 +4,20 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sort"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
@@ -183,5 +190,353 @@ func TestRoleTemplate_CompanyIsolation(t *testing.T) {
 		if err := tx.Rollback(ctx); err != nil {
 			t.Fatalf("rollback: %v", err)
 		}
+	}
+}
+
+type roleTemplateRoleView struct {
+	ID                    string                  `json:"id"`
+	Name                  string                  `json:"name"`
+	RequiresPhysicianData bool                    `json:"requires_physician_data"`
+	RequiresMFA           bool                    `json:"requires_mfa"`
+	Permissions           []struct{ Code string } `json:"permissions"`
+	Status                string                  `json:"status"`
+	SimilarTo             json.RawMessage         `json:"similar_to"`
+}
+
+type roleTemplateView struct {
+	ID      string                 `json:"id"`
+	Code    string                 `json:"code"`
+	Version int                    `json:"version"`
+	Roles   []roleTemplateRoleView `json:"roles"`
+}
+
+type applyTemplateResponse struct {
+	Data struct {
+		Created []struct {
+			RoleID string `json:"role_id"`
+			Name   string `json:"name"`
+		} `json:"created"`
+		Skipped []struct {
+			Name   string `json:"name"`
+			Reason string `json:"reason"`
+		} `json:"skipped"`
+	} `json:"data"`
+}
+
+func listRoleTemplatesAPI(t *testing.T, router *gin.Engine, token, companyID, merchantID string) map[string]roleTemplateView {
+	t.Helper()
+	rec := accountRequest(router, http.MethodGet, "/api/v1/role-templates", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /role-templates expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []roleTemplateView `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode role templates: %v", err)
+	}
+	byCode := map[string]roleTemplateView{}
+	for _, tpl := range resp.Data {
+		byCode[tpl.Code] = tpl
+	}
+	return byCode
+}
+
+func templateRoleByName(t *testing.T, tpl roleTemplateView, name string) roleTemplateRoleView {
+	t.Helper()
+	for _, r := range tpl.Roles {
+		if r.Name == name {
+			return r
+		}
+	}
+	t.Fatalf("template %s has no role %q", tpl.Code, name)
+	return roleTemplateRoleView{}
+}
+
+func templateRoleIDs(tpl roleTemplateView) []string {
+	ids := make([]string, 0, len(tpl.Roles))
+	for _, r := range tpl.Roles {
+		ids = append(ids, r.ID)
+	}
+	return ids
+}
+
+func applyRoleTemplateAPI(t *testing.T, router *gin.Engine, token, companyID, merchantID, templateID string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal apply body: %v", err)
+	}
+	return accountRequest(router, http.MethodPost, "/api/v1/role-templates/"+templateID+"/apply", token, companyID, merchantID, raw)
+}
+
+func decodeApply(t *testing.T, rec *httptest.ResponseRecorder) applyTemplateResponse {
+	t.Helper()
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("apply expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp applyTemplateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode apply: %v", err)
+	}
+	return resp
+}
+
+// seedStatusRoles gives the company an active "kasir " and a deleted "Perawat".
+func seedStatusRoles(t *testing.T, ctx context.Context, pool *pgxpool.Pool, companyID, userID string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, "INSERT INTO core.role (company_id, name) VALUES ($1, 'kasir ')", companyID); err != nil {
+		t.Fatalf("seed active role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.role (company_id, name, deleted_at, deleted_by) VALUES ($1, 'Perawat', now(), $2)", companyID, userID); err != nil {
+		t.Fatalf("seed deleted role: %v", err)
+	}
+}
+
+func assertError(t *testing.T, rec *httptest.ResponseRecorder, code int, msg string) {
+	t.Helper()
+	var resp struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if rec.Code != code || resp.Error != msg {
+		t.Fatalf("expected %d %q, got %d: %s", code, msg, rec.Code, rec.Body.String())
+	}
+}
+
+// TestRoleTemplate_ListShowsStatus — names match case/space-insensitively,
+// deleted roles still count, and MFA/physician flags come from the template.
+func TestRoleTemplate_ListShowsStatus(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.list", "081234570904")
+	seedStatusRoles(t, ctx, pool, companyID, userID)
+
+	tpls := listRoleTemplatesAPI(t, router, token, companyID, merchantID)
+	pratama := tpls["klinik_pratama"]
+	if r := templateRoleByName(t, pratama, "Kasir"); r.Status != "exists" || r.RequiresMFA {
+		t.Fatalf("Kasir: expected status exists, requires_mfa false; got %+v", r)
+	}
+	if r := templateRoleByName(t, pratama, "Perawat"); r.Status != "deleted_exists" {
+		t.Fatalf("Perawat: expected deleted_exists, got %q", r.Status)
+	}
+	if r := templateRoleByName(t, pratama, "Dokter"); r.Status != "new" || !r.RequiresPhysicianData {
+		t.Fatalf("Dokter: expected new + requires_physician_data; got %+v", r)
+	}
+	if r := templateRoleByName(t, pratama, "Admin Klinik"); !r.RequiresMFA {
+		t.Fatal("Admin Klinik: expected requires_mfa true")
+	}
+	if r := templateRoleByName(t, tpls["rumah_sakit"], "Manajemen"); !r.RequiresMFA {
+		t.Fatal("Manajemen: expected requires_mfa true")
+	}
+	kasir := templateRoleByName(t, pratama, "Kasir")
+	var codes []string
+	for _, p := range kasir.Permissions {
+		codes = append(codes, p.Code)
+	}
+	if len(codes) != 2 || codes[0] != "billing.invoice.create" || codes[1] != "billing.invoice.view" {
+		t.Fatalf("Kasir permissions: got %v", codes)
+	}
+}
+
+// TestRoleTemplate_SimilarOnlyWarns — a similar (not equal) name keeps the
+// role selectable and only reports the similar name.
+func TestRoleTemplate_SimilarOnlyWarns(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.similar", "081234570905")
+	if _, err := pool.Exec(ctx, "INSERT INTO core.role (company_id, name) VALUES ($1, 'Kasir Rajal')", companyID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+
+	pratama := listRoleTemplatesAPI(t, router, token, companyID, merchantID)["klinik_pratama"]
+	kasir := templateRoleByName(t, pratama, "Kasir")
+	if kasir.Status != "new" || string(kasir.SimilarTo) != `["Kasir Rajal"]` {
+		t.Fatalf("Kasir: expected new + similar_to [Kasir Rajal], got %q %s", kasir.Status, kasir.SimilarTo)
+	}
+	if perawat := templateRoleByName(t, pratama, "Perawat"); string(perawat.SimilarTo) != "[]" {
+		t.Fatalf("Perawat: expected similar_to [], got %s", perawat.SimilarTo)
+	}
+}
+
+// TestRoleTemplate_ApplyCreatesRoles — applying a whole template copies roles,
+// permissions and flags, and records the application.
+func TestRoleTemplate_ApplyCreatesRoles(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.apply", "081234570906")
+	pratama := listRoleTemplatesAPI(t, router, token, companyID, merchantID)["klinik_pratama"]
+
+	resp := decodeApply(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, map[string]any{"role_ids": templateRoleIDs(pratama)}))
+	if len(resp.Data.Created) != 5 || len(resp.Data.Skipped) != 0 {
+		t.Fatalf("expected 5 created / 0 skipped, got %+v", resp.Data)
+	}
+
+	var roles, systemRoles int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE is_system) FROM core.role
+		WHERE company_id = $1 AND name IN ('Admin Klinik', 'Pendaftaran', 'Dokter', 'Perawat', 'Kasir')`, companyID).Scan(&roles, &systemRoles); err != nil {
+		t.Fatalf("count created roles: %v", err)
+	}
+	if roles != 5 || systemRoles != 0 {
+		t.Fatalf("expected 5 non-system roles, got %d (%d system)", roles, systemRoles)
+	}
+	var physician bool
+	if err := pool.QueryRow(ctx, "SELECT requires_physician_data FROM core.role WHERE company_id = $1 AND name = 'Dokter'", companyID).Scan(&physician); err != nil || !physician {
+		t.Fatalf("Dokter requires_physician_data: %v %v", physician, err)
+	}
+	var adminPerms int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM core.role_permission rp JOIN core.role r ON r.id = rp.role_id
+		WHERE r.company_id = $1 AND r.name = 'Admin Klinik'`, companyID).Scan(&adminPerms); err != nil {
+		t.Fatalf("count admin permissions: %v", err)
+	}
+	if adminPerms != 10 {
+		t.Fatalf("expected 10 Admin Klinik permissions, got %d", adminPerms)
+	}
+
+	var version int
+	var created []string
+	var appliedBy string
+	var platformAdmin *string
+	if err := pool.QueryRow(ctx, `
+		SELECT template_version, roles_created, applied_by::text, platform_admin_id::text
+		FROM core.template_application WHERE company_id = $1`, companyID).Scan(&version, &created, &appliedBy, &platformAdmin); err != nil {
+		t.Fatalf("read template_application: %v", err)
+	}
+	sort.Strings(created)
+	if version != 1 || len(created) != 5 || appliedBy != userID || platformAdmin != nil {
+		t.Fatalf("template_application: version %d, created %v, applied_by %s, platform_admin %v", version, created, appliedBy, platformAdmin)
+	}
+}
+
+// TestRoleTemplate_SkipsExactAndDeleted — exact names (any case/spacing) and
+// names held by deleted roles are skipped, never duplicated or a 500.
+func TestRoleTemplate_SkipsExactAndDeleted(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.skip", "081234570907")
+	seedStatusRoles(t, ctx, pool, companyID, userID)
+	pratama := listRoleTemplatesAPI(t, router, token, companyID, merchantID)["klinik_pratama"]
+
+	resp := decodeApply(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, map[string]any{"role_ids": templateRoleIDs(pratama)}))
+	reasons := map[string]string{}
+	for _, s := range resp.Data.Skipped {
+		reasons[s.Name] = s.Reason
+	}
+	if len(resp.Data.Created) != 3 || len(reasons) != 2 || reasons["Kasir"] != "exists" || reasons["Perawat"] != "deleted_exists" {
+		t.Fatalf("expected 3 created, Kasir exists + Perawat deleted_exists skipped; got %+v", resp.Data)
+	}
+	var kasirRoles int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.role WHERE company_id = $1 AND lower(trim(name)) = 'kasir'", companyID).Scan(&kasirRoles); err != nil {
+		t.Fatalf("count kasir roles: %v", err)
+	}
+	if kasirRoles != 1 {
+		t.Fatalf("expected a single Kasir role, got %d", kasirRoles)
+	}
+}
+
+// TestRoleTemplate_ApplyTwiceSkipsAll — a second apply (e.g. a stale dialog)
+// skips everything and still records the attempt.
+func TestRoleTemplate_ApplyTwiceSkipsAll(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.twice", "081234570908")
+	pratama := listRoleTemplatesAPI(t, router, token, companyID, merchantID)["klinik_pratama"]
+	body := map[string]any{"role_ids": templateRoleIDs(pratama)}
+
+	decodeApply(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, body))
+	second := decodeApply(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, body))
+	if len(second.Data.Created) != 0 || len(second.Data.Skipped) != 5 {
+		t.Fatalf("second apply: expected 0 created / 5 skipped, got %+v", second.Data)
+	}
+	for _, s := range second.Data.Skipped {
+		if s.Reason != "exists" {
+			t.Fatalf("second apply: %s skipped with %q, want exists", s.Name, s.Reason)
+		}
+	}
+	var applications int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.template_application WHERE company_id = $1", companyID).Scan(&applications); err != nil {
+		t.Fatalf("count applications: %v", err)
+	}
+	if applications != 2 {
+		t.Fatalf("expected 2 template_application rows, got %d", applications)
+	}
+}
+
+// TestRoleTemplate_RejectsBadInput — exact 400/404 messages from spec §4.3.
+func TestRoleTemplate_RejectsBadInput(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.bad", "081234570909")
+	tpls := listRoleTemplatesAPI(t, router, token, companyID, merchantID)
+	pratama, utama := tpls["klinik_pratama"], tpls["klinik_utama"]
+	firstID := pratama.Roles[0].ID
+
+	assertError(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, map[string]any{"role_ids": []string{utama.Roles[0].ID}}),
+		http.StatusBadRequest, "role_ids must belong to the template")
+	assertError(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, map[string]any{"role_ids": []string{}}),
+		http.StatusBadRequest, "role_ids is required")
+	assertError(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, map[string]any{"role_ids": []string{firstID, firstID}}),
+		http.StatusBadRequest, "role_ids must not repeat")
+	assertError(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, "0190f1a2-0000-7000-8000-000000000000", map[string]any{"role_ids": []string{firstID}}),
+		http.StatusNotFound, "template not found")
+	assertError(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, "abc", map[string]any{"role_ids": []string{firstID}}),
+		http.StatusBadRequest, "invalid id")
+}
+
+// TestRoleTemplate_RequiresPermission — both endpoints need core.role.manage.
+func TestRoleTemplate_RequiresPermission(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.perm", "081234570910")
+	pratama := listRoleTemplatesAPI(t, router, token, companyID, merchantID)["klinik_pratama"]
+
+	restrictedUserID := "7a7a7a7a-7a7a-7a7a-7a7a-7a7a7a7a7a7a"
+	roleID := "7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b7b"
+	if _, err := pool.Exec(ctx, "INSERT INTO core.role (id, company_id, name) VALUES ($1, $2, 'No Role Manage')", roleID, companyID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	passwordHash, err := testHasher().Hash(ctx, "correct-horse")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.app_user (id, company_id, username, password_hash, is_active) VALUES ($1, $2, 'roletpl.norole', $3, true)", restrictedUserID, companyID, passwordHash); err != nil {
+		t.Fatalf("seed restricted user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)", restrictedUserID, merchantID, roleID); err != nil {
+		t.Fatalf("seed user_merchant_role: %v", err)
+	}
+	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "roletpl.norole", "roletpl-norole-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate restricted token: %v", err)
+	}
+
+	if rec := accountRequest(router, http.MethodGet, "/api/v1/role-templates", restrictedToken, companyID, merchantID, nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("GET without permission expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := applyRoleTemplateAPI(t, router, restrictedToken, companyID, merchantID, pratama.ID, map[string]any{"role_ids": templateRoleIDs(pratama)}); rec.Code != http.StatusForbidden {
+		t.Fatalf("apply without permission expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

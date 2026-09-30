@@ -27,6 +27,13 @@ definitions:
       data: {}
       meta: {}
     type: object
+  server.applyRoleTemplateRequest:
+    properties:
+      role_ids:
+        items:
+          type: string
+        type: array
+    type: object
   server.changePasswordRequest:
     properties:
       current_password:
@@ -4107,6 +4114,68 @@ paths:
       summary: Update a rate component
       tags:
       - tariff
+  /role-templates:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List role templates with per-role status against the company's roles
+      tags:
+      - rbac
+  /role-templates/{id}/apply:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Template ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Template role IDs to copy
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/server.applyRoleTemplateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Copy selected roles of a role template into the company
+      tags:
+      - rbac
   /roles:
     get:
       parameters:

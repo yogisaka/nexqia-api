@@ -38,6 +38,9 @@ func RegisterRBACRoutes(rg *gin.RouterGroup, hasher *auth.PasswordHasher) {
 	rg.POST("/roles/:id/permissions", AddRolePermissionHandler)
 	rg.DELETE("/roles/:id/permissions/:permission_id", RemoveRolePermissionHandler)
 
+	rg.GET("/role-templates", ListRoleTemplatesHandler)
+	rg.POST("/role-templates/:id/apply", ApplyRoleTemplateHandler)
+
 	rg.POST("/users/:id/merchant-roles", AddUserMerchantRoleHandler)
 	rg.GET("/users/:id/merchant-roles", ListUserMerchantRolesHandler)
 	rg.GET("/users/:id/roles", ListUserRolesInMerchantHandler)
