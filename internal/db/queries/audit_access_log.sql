@@ -42,3 +42,24 @@ WHERE l.company_id = sqlc.arg(company_id)  -- explicit, not only RLS (tests and 
   AND (sqlc.narg(action)::text IS NULL OR l.action = sqlc.narg(action))
 ORDER BY l.changed_at DESC
 LIMIT sqlc.arg(row_limit) OFFSET sqlc.arg(row_offset);
+
+-- Search lookups that feed the person/user filter dropdowns in the audit UI
+-- (spec §4.3). Soft-deleted rows stay searchable so old log rows stay readable;
+-- the handler escapes LIKE wildcards in the pattern itself.
+
+-- name: SearchAuditPatients :many
+SELECT id, full_name, medical_record_no, birth_date, (deleted_at IS NOT NULL) AS deleted
+FROM core.person
+WHERE company_id = @company_id
+  AND (full_name ILIKE '%' || @pattern::text || '%' OR medical_record_no = @q::text)
+ORDER BY full_name
+LIMIT 20;
+
+-- name: SearchAuditUsers :many
+SELECT u.id, u.username, p.full_name, u.is_active, (u.deleted_at IS NOT NULL) AS deleted
+FROM core.app_user u
+LEFT JOIN core.person p ON p.id = u.person_id
+WHERE u.company_id = @company_id
+  AND (u.username ILIKE '%' || @pattern::text || '%' OR p.full_name ILIKE '%' || @pattern::text || '%')
+ORDER BY u.username
+LIMIT 20;

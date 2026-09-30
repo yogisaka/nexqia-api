@@ -6,6 +6,7 @@ package server
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,10 +18,13 @@ import (
 // auditMaxRangeDays caps how far back one list call may reach (spec §5).
 const auditMaxRangeDays = 93
 
-// RegisterAuditRoutes mounts the audit-trail read endpoints (spec §5).
+// RegisterAuditRoutes mounts the audit-trail read endpoints (spec §5). Every
+// route records one access_log row for itself (spec §4.4).
 func RegisterAuditRoutes(rg *gin.RouterGroup) {
-	rg.GET("/audit/access-logs", ListAccessLogsHandler)
-	rg.GET("/audit/change-logs", ListChangeLogsHandler)
+	rg.GET("/audit/access-logs", AccessLog("audit", "list_access", ""), ListAccessLogsHandler)
+	rg.GET("/audit/change-logs", AccessLog("audit", "list_change", ""), ListChangeLogsHandler)
+	rg.GET("/audit/patients", AccessLog("audit", "search_patient", ""), SearchAuditPatientsHandler)
+	rg.GET("/audit/users", AccessLog("audit", "search_user", ""), SearchAuditUsersHandler)
 }
 
 // ListAccessLogsHandler godoc
@@ -33,8 +37,10 @@ func RegisterAuditRoutes(rg *gin.RouterGroup) {
 // @Param from query string false "Range start, RFC3339 (default: to − 7 days)"
 // @Param to query string false "Range end, RFC3339 (default: now)"
 // @Param actor_id query string false "Filter by actor UUID"
+// @Param person_id query string false "Filter by patient UUID"
 // @Param resource query string false "Filter by resource name (e.g. person)"
 // @Param resource_id query string false "Filter by resource UUID"
+// @Param action query string false "Filter by action name (e.g. view)"
 // @Param limit query int false "Page size (default 50, max 200)"
 // @Param offset query int false "Page offset"
 // @Success 200 {object} apiResponse
@@ -57,6 +63,14 @@ func ListAccessLogsHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
+	personID, ok := auditUUIDFilter(c, "person_id")
+	if !ok {
+		return
+	}
+	if personID.Valid {
+		// The audit list call itself is logged against the filtered patient.
+		setAccessLogPersonID(c, personID)
+	}
 	limit, offset := auditLimitOffset(c)
 	q := sqlcgen.New(TxFromContext(c))
 	// CompanyID is an explicit filter — RLS alone is bypassed by owner roles.
@@ -67,6 +81,8 @@ func ListAccessLogsHandler(c *gin.Context) {
 		ActorID:    actorID,
 		Resource:   optText(c.Query("resource")),
 		ResourceID: resourceID,
+		PersonID:   personID,
+		Action:     optText(c.Query("action")),
 		RowOffset:  offset,
 		RowLimit:   limit,
 	})
@@ -83,8 +99,12 @@ func ListAccessLogsHandler(c *gin.Context) {
 			"platform_admin_id": uuidOrNil(r.PlatformAdminID),
 			"resource":          r.Resource,
 			"resource_id":       uuidOrNil(r.ResourceID),
+			"person_id":         uuidOrNil(r.PersonID),
 			"action":            r.Action,
 			"status_code":       r.StatusCode,
+			"actor_name":        textOrNil(r.ActorName),
+			"patient_name":      textOrNil(r.PatientName),
+			"patient_mrn":       textOrNil(r.PatientMrn),
 			"ip_address":        nil,
 			"created_at":        rfc3339OrNil(r.CreatedAt),
 		}
@@ -107,7 +127,9 @@ func ListAccessLogsHandler(c *gin.Context) {
 // @Param to query string false "Range end, RFC3339 (default: now)"
 // @Param table_name query string false "Filter by table name (e.g. core.person)"
 // @Param record_id query string false "Filter by record UUID"
+// @Param person_id query string false "Filter by patient UUID"
 // @Param changed_by query string false "Filter by changed_by user UUID"
+// @Param action query string false "Filter by action name (e.g. insert)"
 // @Param limit query int false "Page size (default 50, max 200)"
 // @Param offset query int false "Page offset"
 // @Success 200 {object} apiResponse
@@ -130,6 +152,14 @@ func ListChangeLogsHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
+	personID, ok := auditUUIDFilter(c, "person_id")
+	if !ok {
+		return
+	}
+	if personID.Valid {
+		// The audit list call itself is logged against the filtered patient.
+		setAccessLogPersonID(c, personID)
+	}
 	limit, offset := auditLimitOffset(c)
 	q := sqlcgen.New(TxFromContext(c))
 	// CompanyID is an explicit filter — RLS alone is bypassed by owner roles.
@@ -139,7 +169,9 @@ func ListChangeLogsHandler(c *gin.Context) {
 		ToTime:    pgtype.Timestamptz{Time: to, Valid: true},
 		TableName: optText(c.Query("table_name")),
 		RecordID:  recordID,
+		PersonID:  personID,
 		ChangedBy: changedBy,
+		Action:    optText(c.Query("action")),
 		RowOffset: offset,
 		RowLimit:  limit,
 	})
@@ -154,14 +186,110 @@ func ListChangeLogsHandler(c *gin.Context) {
 			"merchant_id":       uuidOrNil(r.MerchantID),
 			"table_name":        r.TableName,
 			"record_id":         uuidOrNil(r.RecordID),
+			"person_id":         uuidOrNil(r.PersonID),
 			"action":            r.Action,
 			"changed_fields":    r.ChangedFields,
 			"changed_by":        uuidOrNil(r.ChangedBy),
+			"changed_by_name":   textOrNil(r.ChangedByName),
+			"patient_name":      textOrNil(r.PatientName),
+			"patient_mrn":       textOrNil(r.PatientMrn),
 			"platform_admin_id": uuidOrNil(r.PlatformAdminID),
 			"changed_at":        rfc3339OrNil(r.ChangedAt),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"limit": limit, "offset": offset}})
+}
+
+// SearchAuditPatientsHandler godoc
+// @Summary Search patients for the audit-log person filter
+// @Description Finds patients of the caller's company by full-name substring
+// @Description or exact medical-record number. Soft-deleted patients stay
+// @Description searchable (flagged deleted) so old log rows stay readable.
+// @Description Max 20 rows. Wildcards in q are matched literally.
+// @Tags audit
+// @Produce json
+// @Security BearerAuth
+// @Param q query string true "Full-name substring or exact medical_record_no (2-100 characters)"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiResponse
+// @Failure 403 {object} apiResponse
+// @Router /audit/patients [get]
+func SearchAuditPatientsHandler(c *gin.Context) {
+	if !RequirePermission(c, PermAuditLogView) {
+		return
+	}
+	search, ok := auditSearchQuery(c)
+	if !ok {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	rows, err := q.SearchAuditPatients(c.Request.Context(), sqlcgen.SearchAuditPatientsParams{
+		CompanyID: AuthCompanyID(c),
+		Pattern:   escapeLike(search),
+		Q:         search,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search patients"})
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		var birthDate any
+		if r.BirthDate.Valid {
+			birthDate = r.BirthDate.Time.Format("2006-01-02")
+		}
+		data = append(data, gin.H{
+			"id":                uuidOrNil(r.ID),
+			"full_name":         r.FullName,
+			"medical_record_no": textOrNil(r.MedicalRecordNo),
+			"birth_date":        birthDate,
+			"deleted":           r.Deleted,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data})
+}
+
+// SearchAuditUsersHandler godoc
+// @Summary Search users for the audit-log actor filter
+// @Description Finds users of the caller's company by username or person
+// @Description full-name substring, including soft-deleted ones (flagged
+// @Description deleted). Max 20 rows. Wildcards in q are matched literally.
+// @Tags audit
+// @Produce json
+// @Security BearerAuth
+// @Param q query string true "Username or full-name substring (2-100 characters)"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiResponse
+// @Failure 403 {object} apiResponse
+// @Router /audit/users [get]
+func SearchAuditUsersHandler(c *gin.Context) {
+	if !RequirePermission(c, PermAuditLogView) {
+		return
+	}
+	search, ok := auditSearchQuery(c)
+	if !ok {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	rows, err := q.SearchAuditUsers(c.Request.Context(), sqlcgen.SearchAuditUsersParams{
+		CompanyID: AuthCompanyID(c),
+		Pattern:   escapeLike(search),
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search users"})
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		data = append(data, gin.H{
+			"id":        uuidOrNil(r.ID),
+			"username":  r.Username,
+			"full_name": textOrNil(r.FullName),
+			"active":    r.IsActive,
+			"deleted":   r.Deleted,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data})
 }
 
 // auditRange parses the from/to RFC3339 window: to defaults to now, from to
@@ -205,6 +333,17 @@ func auditUUIDFilter(c *gin.Context, name string) (pgtype.UUID, bool) {
 		return pgtype.UUID{}, false
 	}
 	return id, true
+}
+
+// auditSearchQuery reads and validates the shared q search param: trimmed,
+// 2-100 runes, otherwise a 400.
+func auditSearchQuery(c *gin.Context) (string, bool) {
+	q := strings.TrimSpace(c.Query("q"))
+	if n := len([]rune(q)); n < 2 || n > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "q must be 2-100 characters"})
+		return "", false
+	}
+	return q, true
 }
 
 // auditLimitOffset parses limit/offset: limit defaults to 50 and clamps to 200,

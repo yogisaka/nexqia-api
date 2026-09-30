@@ -282,6 +282,12 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Filter by patient UUID",
+                        "name": "person_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Filter by resource name (e.g. person)",
                         "name": "resource",
                         "in": "query"
@@ -290,6 +296,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Filter by resource UUID",
                         "name": "resource_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by action name (e.g. view)",
+                        "name": "action",
                         "in": "query"
                     },
                     {
@@ -369,8 +381,20 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "Filter by patient UUID",
+                        "name": "person_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "Filter by changed_by user UUID",
                         "name": "changed_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by action name (e.g. insert)",
+                        "name": "action",
                         "in": "query"
                     },
                     {
@@ -384,6 +408,98 @@ const docTemplate = `{
                         "description": "Page offset",
                         "name": "offset",
                         "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/audit/patients": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Finds patients of the caller's company by full-name substring\nor exact medical-record number. Soft-deleted patients stay\nsearchable (flagged deleted) so old log rows stay readable.\nMax 20 rows. Wildcards in q are matched literally.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "audit"
+                ],
+                "summary": "Search patients for the audit-log person filter",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Full-name substring or exact medical_record_no (2-100 characters)",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/audit/users": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Finds users of the caller's company by username or person\nfull-name substring, including soft-deleted ones (flagged\ndeleted). Max 20 rows. Wildcards in q are matched literally.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "audit"
+                ],
+                "summary": "Search users for the audit-log actor filter",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Username or full-name substring (2-100 characters)",
+                        "name": "q",
+                        "in": "query",
+                        "required": true
                     }
                 ],
                 "responses": {

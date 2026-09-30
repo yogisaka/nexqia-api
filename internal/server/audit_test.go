@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -59,7 +60,12 @@ func TestAuditAPI_RequiresPermission(t *testing.T) {
 		t.Fatalf("generate restricted token: %v", err)
 	}
 
-	for _, path := range []string{"/api/v1/audit/access-logs", "/api/v1/audit/change-logs"} {
+	for _, path := range []string{
+		"/api/v1/audit/access-logs",
+		"/api/v1/audit/change-logs",
+		"/api/v1/audit/patients?q=ab",
+		"/api/v1/audit/users?q=ab",
+	} {
 		rec := accountRequest(router, http.MethodGet, path, restrictedToken, companyID, merchantID, nil)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("GET %s without audit.log.view expected 403, got %d: %s", path, rec.Code, rec.Body.String())
@@ -208,5 +214,246 @@ func TestAuditAPI_ChangeLogFilterByRecord(t *testing.T) {
 	}
 	if updates != 1 {
 		t.Fatalf("expected exactly 1 update row for the person, got %d", updates)
+	}
+}
+
+// TestAuditAPI_FilterByPerson — two patients are viewed, then the person_id
+// filter returns only that patient's rows with patient_name and patient_mrn
+// resolved (spec §4.1).
+func TestAuditAPI_FilterByPerson(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "audit.apipers", "081234570241")
+
+	createPersonViaAPI(t, router, token, companyID, merchantID, "Audit API Person Alpha", "male")
+	personA, mrnA := latestPerson(t, ctx, pool, companyID, "Audit API Person Alpha")
+	createPersonViaAPI(t, router, token, companyID, merchantID, "Audit API Person Beta", "female")
+	personB, _ := latestPerson(t, ctx, pool, companyID, "Audit API Person Beta")
+	accountRequest(router, http.MethodGet, "/api/v1/persons/"+personA, token, companyID, merchantID, nil)
+	accountRequest(router, http.MethodGet, "/api/v1/persons/"+personB, token, companyID, merchantID, nil)
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/access-logs?person_id="+personA, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list access logs expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp auditAPIList
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode access-logs response: %v", err)
+	}
+	if len(resp.Data) == 0 {
+		t.Fatalf("expected at least 1 row for the filtered patient")
+	}
+	sawView := false
+	for _, row := range resp.Data {
+		if row["person_id"] != personA {
+			t.Fatalf("expected only person %s rows, got person_id %v", personA, row["person_id"])
+		}
+		if row["resource"] == "person" && row["action"] == "view" {
+			sawView = true
+			if row["patient_name"] != "Audit API Person Alpha" {
+				t.Fatalf("expected patient_name resolved, got %v", row["patient_name"])
+			}
+			if row["patient_mrn"] != mrnA {
+				t.Fatalf("expected patient_mrn %s, got %v", mrnA, row["patient_mrn"])
+			}
+		}
+	}
+	if !sawView {
+		t.Fatalf("person/view row missing from the filtered response")
+	}
+}
+
+// TestAuditAPI_NamesIncludeDeleted — after the patient is soft-deleted, the
+// logged rows still resolve patient_name/patient_mrn and /audit/patients keeps
+// returning the patient flagged deleted (spec §4.3).
+func TestAuditAPI_NamesIncludeDeleted(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, ownerID, token, _ := seedAccountOwner(t, ctx, pool, router, "audit.apidel", "081234570251")
+
+	createPersonViaAPI(t, router, token, companyID, merchantID, "Audit API Gone Person", "male")
+	personID, mrn := latestPerson(t, ctx, pool, companyID, "Audit API Gone Person")
+	accountRequest(router, http.MethodGet, "/api/v1/persons/"+personID, token, companyID, merchantID, nil)
+	if _, err := pool.Exec(ctx, "UPDATE core.person SET deleted_at = now(), deleted_by = $2 WHERE id = $1", personID, ownerID); err != nil {
+		t.Fatalf("soft delete person: %v", err)
+	}
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/access-logs?person_id="+personID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list access logs expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp auditAPIList
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode access-logs response: %v", err)
+	}
+	sawView := false
+	for _, row := range resp.Data {
+		if row["resource"] == "person" && row["action"] == "view" {
+			sawView = true
+			if row["patient_name"] != "Audit API Gone Person" {
+				t.Fatalf("deleted patient name lost from the log, got %v", row["patient_name"])
+			}
+			if row["patient_mrn"] != mrn {
+				t.Fatalf("deleted patient mrn lost from the log, got %v", row["patient_mrn"])
+			}
+		}
+	}
+	if !sawView {
+		t.Fatalf("person/view row missing from the response")
+	}
+
+	rec = accountRequest(router, http.MethodGet, "/api/v1/audit/patients?q="+url.QueryEscape("Audit API Gone Person"), token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search patients expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var searchResp auditAPIList
+	if err := json.Unmarshal(rec.Body.Bytes(), &searchResp); err != nil {
+		t.Fatalf("decode patients response: %v", err)
+	}
+	if len(searchResp.Data) != 1 {
+		t.Fatalf("expected exactly 1 patient hit, got %d: %s", len(searchResp.Data), rec.Body.String())
+	}
+	hit := searchResp.Data[0]
+	if hit["id"] != personID || hit["deleted"] != true {
+		t.Fatalf("expected the soft-deleted patient flagged deleted, got %v", hit)
+	}
+	if hit["medical_record_no"] != mrn {
+		t.Fatalf("expected medical_record_no %s, got %v", mrn, hit["medical_record_no"])
+	}
+}
+
+// TestAuditAPI_SearchEscapesWildcards — two patients exist; a q of literal
+// "%%" matches none (wildcards are escaped) and a 1-character q is a 400.
+func TestAuditAPI_SearchEscapesWildcards(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "audit.apiesc", "081234570261")
+
+	createPersonViaAPI(t, router, token, companyID, merchantID, "Audit API Wild Person", "male")
+	createPersonViaAPI(t, router, token, companyID, merchantID, "Audit API Wilder Person", "female")
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/patients?q=%25%25", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search patients expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp auditAPIList
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode patients response: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("wildcards must match literally, got %d hits for %%", len(resp.Data))
+	}
+
+	rec = accountRequest(router, http.MethodGet, "/api/v1/audit/patients?q=x", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("1-character q expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAuditAPI_SearchOwnCompanyOnly — patients and users of another company
+// never appear in the search results (spec §4.3).
+func TestAuditAPI_SearchOwnCompanyOnly(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	otherCompanyID, otherMerchantID, _, otherToken, _ := seedAccountOwner(t, ctx, pool, router, "audit.apico", "081234570271")
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "audit.apimy", "081234570272")
+
+	createPersonViaAPI(t, router, otherToken, otherCompanyID, otherMerchantID, "Audit API Isolated Person", "male")
+	createPersonViaAPI(t, router, token, companyID, merchantID, "Audit API Isolated Person", "female")
+	ownPersonID, _ := latestPerson(t, ctx, pool, companyID, "Audit API Isolated Person")
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/patients?q="+url.QueryEscape("Audit API Isolated Person"), token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search patients expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var patients auditAPIList
+	if err := json.Unmarshal(rec.Body.Bytes(), &patients); err != nil {
+		t.Fatalf("decode patients response: %v", err)
+	}
+	if len(patients.Data) != 1 || patients.Data[0]["id"] != ownPersonID {
+		t.Fatalf("expected only the own-company patient, got %s", rec.Body.String())
+	}
+
+	rec = accountRequest(router, http.MethodGet, "/api/v1/audit/users?q=audit.api", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search users expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var users auditAPIList
+	if err := json.Unmarshal(rec.Body.Bytes(), &users); err != nil {
+		t.Fatalf("decode users response: %v", err)
+	}
+	for _, row := range users.Data {
+		if row["username"] == "audit.apico" {
+			t.Fatalf("another company's user leaked into the search results")
+		}
+	}
+	sawMine := false
+	for _, row := range users.Data {
+		if row["username"] == "audit.apimy" {
+			sawMine = true
+		}
+	}
+	if !sawMine {
+		t.Fatalf("own user missing from the search results: %s", rec.Body.String())
+	}
+}
+
+// TestAuditAPI_AuditCallsAreLogged — audit list and search calls record their
+// own access_log rows, and the query string never lands in any column
+// (spec §4.4; probe pattern from access_log_test.go).
+func TestAuditAPI_AuditCallsAreLogged(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "audit.apilog", "081234570281")
+
+	createPersonViaAPI(t, router, token, companyID, merchantID, "Audit API Logged Person", "male")
+	personID, _ := latestPerson(t, ctx, pool, companyID, "Audit API Logged Person")
+	accountRequest(router, http.MethodGet, "/api/v1/persons/"+personID, token, companyID, merchantID, nil)
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/access-logs?person_id="+personID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list access logs expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var listRows int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.access_log WHERE company_id = $1 AND resource = 'audit' AND action = 'list_access' AND person_id = $2", companyID, personID).Scan(&listRows); err != nil {
+		t.Fatalf("count list_access rows: %v", err)
+	}
+	if listRows != 1 {
+		t.Fatalf("expected exactly 1 audit/list_access row with person_id, got %d", listRows)
+	}
+
+	rec = accountRequest(router, http.MethodGet, "/api/v1/audit/patients?q=xx", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search patients expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var searchRows int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.access_log WHERE company_id = $1 AND resource = 'audit' AND action = 'search_patient'", companyID).Scan(&searchRows); err != nil {
+		t.Fatalf("count search_patient rows: %v", err)
+	}
+	if searchRows != 1 {
+		t.Fatalf("expected exactly 1 audit/search_patient row, got %d", searchRows)
+	}
+
+	var leaked int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.access_log WHERE company_id = $1 AND row_to_json(access_log)::text ILIKE '%xx%'", companyID).Scan(&leaked); err != nil {
+		t.Fatalf("leak probe: %v", err)
+	}
+	if leaked != 0 {
+		t.Fatalf("search term leaked into core.access_log: %d row(s) contain it", leaked)
 	}
 }
