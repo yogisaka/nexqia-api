@@ -536,6 +536,50 @@ type CoreSupplier struct {
 	RowVersion        int32
 }
 
+type CoreTemplate struct {
+	ID          pgtype.UUID
+	Kind        string
+	Code        string
+	Name        string
+	Description pgtype.Text
+	Scope       string
+	CompanyID   pgtype.UUID
+	MerchantID  pgtype.UUID
+	OwnerUserID pgtype.UUID
+	Usage       string
+	Version     int32
+	IsActive    bool
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	RowVersion  int32
+}
+
+type CoreTemplateApplication struct {
+	ID              pgtype.UUID
+	CompanyID       pgtype.UUID
+	TemplateID      pgtype.UUID
+	TemplateVersion int32
+	AppliedBy       pgtype.UUID
+	PlatformAdminID pgtype.UUID
+	AppliedAt       pgtype.Timestamptz
+	RolesCreated    []string
+	RolesSkipped    []string
+}
+
+type CoreTemplateRole struct {
+	ID                    pgtype.UUID
+	TemplateID            pgtype.UUID
+	Name                  string
+	Description           pgtype.Text
+	RequiresPhysicianData bool
+	SortOrder             int32
+}
+
+type CoreTemplateRolePermission struct {
+	TemplateRoleID pgtype.UUID
+	PermissionID   pgtype.UUID
+}
+
 type CoreUserCompanyRole struct {
 	ID        pgtype.UUID
 	UserID    pgtype.UUID
