@@ -12,19 +12,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/yogisaka/nexqia-api/internal/config"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
 
 // auditMaxRangeDays caps how far back one list call may reach (spec §5).
 const auditMaxRangeDays = 93
 
-// RegisterAuditRoutes mounts the audit-trail read endpoints (spec §5). Every
-// route records one access_log row for itself (spec §4.4).
-func RegisterAuditRoutes(rg *gin.RouterGroup) {
+// RegisterAuditRoutes mounts the audit-trail read endpoints (spec §5) and the
+// CSV exports (spec §4.5). Every route records one access_log row for itself
+// (spec §4.4).
+func RegisterAuditRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	rg.GET("/audit/access-logs", AccessLog("audit", "list_access", ""), ListAccessLogsHandler)
 	rg.GET("/audit/change-logs", AccessLog("audit", "list_change", ""), ListChangeLogsHandler)
 	rg.GET("/audit/patients", AccessLog("audit", "search_patient", ""), SearchAuditPatientsHandler)
 	rg.GET("/audit/users", AccessLog("audit", "search_user", ""), SearchAuditUsersHandler)
+	rg.GET("/audit/access-logs/export", AccessLog("audit", "export_access", ""), ExportAccessLogsHandler(cfg))
+	rg.GET("/audit/change-logs/export", AccessLog("audit", "export_change", ""), ExportChangeLogsHandler(cfg))
 }
 
 // ListAccessLogsHandler godoc
@@ -51,25 +55,9 @@ func ListAccessLogsHandler(c *gin.Context) {
 	if !RequirePermission(c, PermAuditLogView) {
 		return
 	}
-	from, to, ok := auditRange(c)
+	from, to, actorID, resourceID, personID, ok := parseAccessLogFilters(c)
 	if !ok {
 		return
-	}
-	actorID, ok := auditUUIDFilter(c, "actor_id")
-	if !ok {
-		return
-	}
-	resourceID, ok := auditUUIDFilter(c, "resource_id")
-	if !ok {
-		return
-	}
-	personID, ok := auditUUIDFilter(c, "person_id")
-	if !ok {
-		return
-	}
-	if personID.Valid {
-		// The audit list call itself is logged against the filtered patient.
-		setAccessLogPersonID(c, personID)
 	}
 	limit, offset := auditLimitOffset(c)
 	q := sqlcgen.New(TxFromContext(c))
@@ -140,25 +128,9 @@ func ListChangeLogsHandler(c *gin.Context) {
 	if !RequirePermission(c, PermAuditLogView) {
 		return
 	}
-	from, to, ok := auditRange(c)
+	from, to, recordID, changedBy, personID, ok := parseChangeLogFilters(c)
 	if !ok {
 		return
-	}
-	recordID, ok := auditUUIDFilter(c, "record_id")
-	if !ok {
-		return
-	}
-	changedBy, ok := auditUUIDFilter(c, "changed_by")
-	if !ok {
-		return
-	}
-	personID, ok := auditUUIDFilter(c, "person_id")
-	if !ok {
-		return
-	}
-	if personID.Valid {
-		// The audit list call itself is logged against the filtered patient.
-		setAccessLogPersonID(c, personID)
 	}
 	limit, offset := auditLimitOffset(c)
 	q := sqlcgen.New(TxFromContext(c))
@@ -333,6 +305,57 @@ func auditUUIDFilter(c *gin.Context, name string) (pgtype.UUID, bool) {
 		return pgtype.UUID{}, false
 	}
 	return id, true
+}
+
+// parseAccessLogFilters parses the query filters shared verbatim by the
+// access-log list and its CSV export: the from/to window plus the actor,
+// resource, resource-id and person UUID filters. A filtered patient is also
+// recorded on the access_log row of the call itself. ok=false means a 400 was
+// already written.
+func parseAccessLogFilters(c *gin.Context) (from, to time.Time, actorID, resourceID, personID pgtype.UUID, ok bool) {
+	from, to, ok = auditRange(c)
+	if !ok {
+		return
+	}
+	if actorID, ok = auditUUIDFilter(c, "actor_id"); !ok {
+		return
+	}
+	if resourceID, ok = auditUUIDFilter(c, "resource_id"); !ok {
+		return
+	}
+	if personID, ok = auditUUIDFilter(c, "person_id"); !ok {
+		return
+	}
+	if personID.Valid {
+		// The audit list call itself is logged against the filtered patient.
+		setAccessLogPersonID(c, personID)
+	}
+	return from, to, actorID, resourceID, personID, true
+}
+
+// parseChangeLogFilters parses the query filters shared verbatim by the
+// change-log list and its CSV export: the from/to window plus the table,
+// record, changed-by and person UUID filters. ok=false means a 400 was
+// already written.
+func parseChangeLogFilters(c *gin.Context) (from, to time.Time, recordID, changedBy, personID pgtype.UUID, ok bool) {
+	from, to, ok = auditRange(c)
+	if !ok {
+		return
+	}
+	if recordID, ok = auditUUIDFilter(c, "record_id"); !ok {
+		return
+	}
+	if changedBy, ok = auditUUIDFilter(c, "changed_by"); !ok {
+		return
+	}
+	if personID, ok = auditUUIDFilter(c, "person_id"); !ok {
+		return
+	}
+	if personID.Valid {
+		// The audit list call itself is logged against the filtered patient.
+		setAccessLogPersonID(c, personID)
+	}
+	return from, to, recordID, changedBy, personID, true
 }
 
 // auditSearchQuery reads and validates the shared q search param: trimmed,

@@ -30,6 +30,10 @@ import (
 const testJWTSecret = "test-secret"
 
 func testConfig() config.Config {
+	jakarta, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		panic(err)
+	}
 	return config.Config{
 		JWTSecret:                      testJWTSecret,
 		RateLimitLoginMaxAttempts:      5,
@@ -56,6 +60,8 @@ func testConfig() config.Config {
 		PlatformMFAGraceDays:           7,
 		TenantMFAGraceDays:             7,
 		TrustedProxies:                 []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},
+		AuditExportMaxRows:             5000,
+		AuditLocation:                  jakarta,
 	}
 }
 

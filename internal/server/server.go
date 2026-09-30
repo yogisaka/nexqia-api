@@ -118,7 +118,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	RegisterQueueRoutes(locked)
 	RegisterAdmissionRoutes(locked)
 	RegisterDisplayRoutes(locked)
-	RegisterAuditRoutes(locked)
+	RegisterAuditRoutes(locked, cfg)
 
 	platform := v1.Group("/platform", PlatformTxMiddleware(pool))
 	RegisterPlatformRoutes(platform, pool, limiter, cfg, hasher, enc)

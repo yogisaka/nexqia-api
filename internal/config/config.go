@@ -7,6 +7,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
+
+	// tzdata embeds the IANA zone database so AUDIT_TIMEZONE resolves even in
+	// containers without /usr/share/zoneinfo.
+	_ "time/tzdata"
 )
 
 type Config struct {
@@ -87,6 +92,16 @@ type Config struct {
 	// so X-Forwarded-For only ever arrives from those addresses. Env
 	// TRUSTED_PROXIES (comma-separated); the single value "none" trusts nobody.
 	TrustedProxies []string
+
+	// AuditExportMaxRows caps one audit CSV export (env AUDIT_EXPORT_MAX_ROWS);
+	// a filtered result wider than this is refused with 400 so a broad filter
+	// cannot stream the whole log table. See
+	// docs/design/specs/2026-09-29-audit-log-ui-design.md §4.5.
+	AuditExportMaxRows int
+
+	// AuditLocation is the timezone audit CSV timestamps render in (env
+	// AUDIT_TIMEZONE, IANA name — default Asia/Jakarta).
+	AuditLocation *time.Location
 }
 
 func Load() Config {
@@ -136,13 +151,29 @@ func Load() Config {
 		TenantMFAGraceDays:   getEnvInt("TENANT_MFA_GRACE_DAYS", 7),
 
 		TrustedProxies: getTrustedProxies(),
+
+		AuditExportMaxRows: getEnvInt("AUDIT_EXPORT_MAX_ROWS", 5000),
+		AuditLocation:      mustLoadLocation(getEnv("AUDIT_TIMEZONE", "Asia/Jakarta")),
 	}
 	// Fail fast at startup: an idle fence the API would have to half-enforce is
 	// worse than refusing to boot (spec 2026-09-29-merchant-security-settings §3).
 	if err := validateAppLockIdle(cfg.AppLockMinIdleMinutes, cfg.AppLockMaxIdleMinutes, cfg.AppLockDefaultIdleMinutes); err != nil {
 		panic(err)
 	}
+	if cfg.AuditExportMaxRows <= 0 {
+		panic(fmt.Sprintf("AUDIT_EXPORT_MAX_ROWS must be > 0, got %d", cfg.AuditExportMaxRows))
+	}
 	return cfg
+}
+
+// mustLoadLocation parses an IANA timezone name; a bad AUDIT_TIMEZONE refuses
+// to boot rather than exporting audit timestamps in the wrong zone.
+func mustLoadLocation(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		panic(fmt.Sprintf("AUDIT_TIMEZONE %q is not a valid IANA timezone: %v", name, err))
+	}
+	return loc
 }
 
 // validateAppLockIdle checks the idle-window fence: min must be at least 1 and

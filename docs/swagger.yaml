@@ -991,6 +991,63 @@ paths:
       summary: List access-log rows (who read which patient data)
       tags:
       - audit
+  /audit/access-logs/export:
+    get:
+      description: |-
+        Streams the same rows as GET /audit/access-logs (same filters,
+        newest first) as UTF-8 CSV with a BOM so Excel opens it
+        directly. Formula-like cells are neutralized with a leading
+        apostrophe. Capped at AUDIT_EXPORT_MAX_ROWS rows — a wider
+        result is refused with 400.
+      parameters:
+      - description: 'Range start, RFC3339 (default: to − 7 days)'
+        in: query
+        name: from
+        type: string
+      - description: 'Range end, RFC3339 (default: now)'
+        in: query
+        name: to
+        type: string
+      - description: Filter by actor UUID
+        in: query
+        name: actor_id
+        type: string
+      - description: Filter by patient UUID
+        in: query
+        name: person_id
+        type: string
+      - description: Filter by resource name (e.g. person)
+        in: query
+        name: resource
+        type: string
+      - description: Filter by resource UUID
+        in: query
+        name: resource_id
+        type: string
+      - description: Filter by action name (e.g. view)
+        in: query
+        name: action
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Export access-log rows as CSV
+      tags:
+      - audit
   /audit/change-logs:
     get:
       description: |-
@@ -1051,6 +1108,63 @@ paths:
       security:
       - BearerAuth: []
       summary: List change-log rows (who changed which patient-data fields)
+      tags:
+      - audit
+  /audit/change-logs/export:
+    get:
+      description: |-
+        Streams the same rows as GET /audit/change-logs (same filters,
+        newest first) as UTF-8 CSV with a BOM so Excel opens it
+        directly. Formula-like cells are neutralized with a leading
+        apostrophe. Capped at AUDIT_EXPORT_MAX_ROWS rows — a wider
+        result is refused with 400.
+      parameters:
+      - description: 'Range start, RFC3339 (default: to − 7 days)'
+        in: query
+        name: from
+        type: string
+      - description: 'Range end, RFC3339 (default: now)'
+        in: query
+        name: to
+        type: string
+      - description: Filter by table name (e.g. core.person)
+        in: query
+        name: table_name
+        type: string
+      - description: Filter by record UUID
+        in: query
+        name: record_id
+        type: string
+      - description: Filter by patient UUID
+        in: query
+        name: person_id
+        type: string
+      - description: Filter by changed_by user UUID
+        in: query
+        name: changed_by
+        type: string
+      - description: Filter by action name (e.g. insert)
+        in: query
+        name: action
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Export change-log rows as CSV
       tags:
       - audit
   /audit/patients:
