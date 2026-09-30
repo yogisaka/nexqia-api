@@ -30,6 +30,8 @@ func RegisterAuditRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	rg.GET("/audit/access-logs/export", AccessLog("audit", "export_access", ""), ExportAccessLogsHandler(cfg))
 	rg.GET("/audit/change-logs/export", AccessLog("audit", "export_change", ""), ExportChangeLogsHandler(cfg))
 	rg.GET("/audit/review/summary", AccessLog("audit", "review_summary", ""), AccessReviewSummaryHandler(cfg))
+	rg.POST("/audit/reviews", AccessLog("audit", "review_create", ""), CreateAccessReviewHandler(cfg))
+	rg.GET("/audit/reviews", AccessLog("audit", "review_list", ""), ListAccessReviewsHandler)
 }
 
 // ListAccessLogsHandler godoc

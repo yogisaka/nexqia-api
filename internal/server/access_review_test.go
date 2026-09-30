@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -532,5 +533,136 @@ func TestAccessReview_SummaryRequiresPermission(t *testing.T) {
 	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/review/summary", restrictedToken, companyID, merchantID, nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("GET /audit/review/summary without audit.log.view expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func postReview(router *gin.Engine, token, companyID, merchantID string, from, to time.Time, notes string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(map[string]string{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "notes": notes})
+	return accountRequest(router, http.MethodPost, "/api/v1/audit/reviews", token, companyID, merchantID, body)
+}
+
+// TestAccessReview_CreateComputesFlaggedUsers — one actor with >= threshold 403s
+// makes flagged_users = 1.
+func TestAccessReview_CreateComputesFlaggedUsers(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "accrev.create", "081234590171")
+	actorID := "6e6e6e6e-6e6e-6e6e-6e6e-6e6e6e6e6e11"
+	seedBareAuditUser(t, ctx, pool, companyID, "accrev.denied", actorID)
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ { // testConfig denied threshold = 5; 11:00 UTC = 18:00 WIB (in hours)
+		insertAccessLogRow(t, ctx, pool, companyID, merchantID, actorID, "person", "view", 403, time.Date(now.Year(), now.Month(), now.Day(), 11, 0, 0, 0, time.UTC).Add(-24*time.Hour), "")
+	}
+
+	rec := postReview(router, token, companyID, merchantID, now.Add(-72*time.Hour), now, "  quarterly ok  ")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Data["flagged_users"] != float64(1) {
+		t.Fatalf("flagged_users = %v, want 1", resp.Data["flagged_users"])
+	}
+	if resp.Data["notes"] != "quarterly ok" || resp.Data["reviewed_by"] != userID {
+		t.Fatalf("unexpected data: %v", resp.Data)
+	}
+}
+
+// TestAccessReview_CreateValidates — bad notes / ranges are 400 and store nothing.
+func TestAccessReview_CreateValidates(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "accrev.valid", "081234590181")
+	now := time.Now().UTC()
+	cases := []struct {
+		name     string
+		from, to time.Time
+		notes    string
+		want     string
+	}{
+		{"whitespace notes", now.Add(-48 * time.Hour), now, "   ", "notes must be 1-2000 characters"},
+		{"notes too long", now.Add(-48 * time.Hour), now, strings.Repeat("a", 2001), "notes must be 1-2000 characters"},
+		{"range too wide", now.Add(-94 * 24 * time.Hour), now, "ok", "invalid time range"},
+		{"to before from", now, now.Add(-48 * time.Hour), "ok", "invalid time range"},
+	}
+	for _, tc := range cases {
+		rec := postReview(router, token, companyID, merchantID, tc.from, tc.to, tc.notes)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("%s: expected 400 %q, got %d: %s", tc.name, tc.want, rec.Code, rec.Body.String())
+		}
+	}
+	rec := accountRequest(router, http.MethodPost, "/api/v1/audit/reviews", token, companyID, merchantID, []byte(`{"from":"x","to":"y","notes":"ok"}`))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid from timestamp") {
+		t.Fatalf("bad from: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.access_review WHERE company_id = $1::uuid", companyID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rows stored = %d (err %v), want 0", n, err)
+	}
+}
+
+// TestAccessReview_ListNewestFirst — newest review first, reviewer name filled.
+func TestAccessReview_ListNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "accrev.list", "081234590191")
+	now := time.Now().UTC()
+	for _, note := range []string{"first review", "second review"} {
+		if rec := postReview(router, token, companyID, merchantID, now.Add(-48*time.Hour), now, note); rec.Code != http.StatusCreated {
+			t.Fatalf("create %q: %d: %s", note, rec.Code, rec.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/reviews", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp summaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 2 || resp.Data[0]["notes"] != "second review" || resp.Data[1]["notes"] != "first review" {
+		t.Fatalf("unexpected order: %v", resp.Data)
+	}
+	if name, _ := resp.Data[0]["reviewed_by_name"].(string); name == "" {
+		t.Fatalf("reviewed_by_name empty: %v", resp.Data[0])
+	}
+	if resp.Meta["limit"] != float64(50) || resp.Meta["offset"] != float64(0) {
+		t.Fatalf("meta = %v", resp.Meta)
+	}
+}
+
+// TestAccessReview_IsLogged — POST /audit/reviews writes an audit access_log row.
+func TestAccessReview_IsLogged(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "accrev.logged", "081234590201")
+	now := time.Now().UTC()
+	if rec := postReview(router, token, companyID, merchantID, now.Add(-48*time.Hour), now, "logged"); rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d: %s", rec.Code, rec.Body.String())
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM core.access_log
+		WHERE company_id = $1::uuid AND resource = 'audit' AND action = 'review_create'`, companyID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("review_create access_log rows = %d, want 1", n)
 	}
 }

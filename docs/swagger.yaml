@@ -38,6 +38,15 @@ definitions:
     - current_password
     - new_password
     type: object
+  server.createAccessReviewRequest:
+    properties:
+      from:
+        type: string
+      notes:
+        type: string
+      to:
+        type: string
+    type: object
   server.createAdmissionRequest:
     properties:
       companion_name:
@@ -1238,6 +1247,68 @@ paths:
       security:
       - BearerAuth: []
       summary: Summarize per-user access with review flags
+      tags:
+      - audit
+  /audit/reviews:
+    get:
+      description: Returns the caller's company review records, newest first.
+      parameters:
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Rows to skip (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List recorded access reviews
+      tags:
+      - audit
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Stores an append-only review record for the period. flagged_users
+        is computed server-side from the same counts and flags as the
+        summary endpoint; the caller only supplies the period and notes.
+      parameters:
+      - description: Review period (RFC3339) and notes (1-2000 chars)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/server.createAccessReviewRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Record a signed-off access review
       tags:
       - audit
   /audit/users:

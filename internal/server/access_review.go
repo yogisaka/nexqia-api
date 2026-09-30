@@ -8,7 +8,9 @@ package server
 import (
 	"net/http"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -158,4 +160,141 @@ func AccessReviewSummaryHandler(cfg config.Config) gin.HandlerFunc {
 			},
 		})
 	}
+}
+
+type createAccessReviewRequest struct {
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Notes string `json:"notes"`
+}
+
+// CreateAccessReviewHandler godoc
+// @Summary Record a signed-off access review
+// @Description Stores an append-only review record for the period. flagged_users
+// @Description is computed server-side from the same counts and flags as the
+// @Description summary endpoint; the caller only supplies the period and notes.
+// @Tags audit
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body createAccessReviewRequest true "Review period (RFC3339) and notes (1-2000 chars)"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiResponse
+// @Failure 403 {object} apiResponse
+// @Router /audit/reviews [post]
+func CreateAccessReviewHandler(cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !RequirePermission(c, PermAuditLogView) {
+			return
+		}
+		var req createAccessReviewRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		from, err := time.Parse(time.RFC3339, req.From)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid from timestamp"})
+			return
+		}
+		to, err := time.Parse(time.RFC3339, req.To)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid to timestamp"})
+			return
+		}
+		if !to.After(from) || to.Sub(from) > auditMaxRangeDays*24*time.Hour {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid time range"})
+			return
+		}
+		notes := strings.TrimSpace(req.Notes)
+		if n := utf8.RuneCountInString(notes); n < 1 || n > 2000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "notes must be 1-2000 characters"})
+			return
+		}
+
+		q := sqlcgen.New(TxFromContext(c))
+		fromTS := pgtype.Timestamptz{Time: from, Valid: true}
+		toTS := pgtype.Timestamptz{Time: to, Valid: true}
+		counts, err := q.AccessReviewCounts(c.Request.Context(), sqlcgen.AccessReviewCountsParams{
+			CompanyID: AuthCompanyID(c),
+			FromTime:  fromTS,
+			ToTime:    toTS,
+			Tz:        cfg.AuditLocation.String(),
+			StartHour: int32(cfg.AuditWorkHourStart),
+			EndHour:   int32(cfg.AuditWorkHourEnd),
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		flagged := 0
+		rows, _ := ComputeReviewFlags(counts, cfg)
+		for _, r := range rows {
+			if len(r.Flags) > 0 {
+				flagged++
+			}
+		}
+		rec, err := q.CreateAccessReview(c.Request.Context(), sqlcgen.CreateAccessReviewParams{
+			CompanyID:    AuthCompanyID(c),
+			PeriodFrom:   fromTS,
+			PeriodTo:     toTS,
+			ReviewedBy:   AuthUserID(c),
+			FlaggedUsers: int32(flagged),
+			Notes:        notes,
+		})
+		if err != nil {
+			abortInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+			"id":            uuidOrNil(rec.ID),
+			"period_from":   rfc3339OrNil(rec.PeriodFrom),
+			"period_to":     rfc3339OrNil(rec.PeriodTo),
+			"reviewed_by":   uuidOrNil(rec.ReviewedBy),
+			"reviewed_at":   rfc3339OrNil(rec.ReviewedAt),
+			"flagged_users": rec.FlaggedUsers,
+			"notes":         rec.Notes,
+		}})
+	}
+}
+
+// ListAccessReviewsHandler godoc
+// @Summary List recorded access reviews
+// @Description Returns the caller's company review records, newest first.
+// @Tags audit
+// @Produce json
+// @Security BearerAuth
+// @Param limit query int false "Page size (default 50, max 200)"
+// @Param offset query int false "Rows to skip (default 0)"
+// @Success 200 {object} apiResponse
+// @Failure 403 {object} apiResponse
+// @Router /audit/reviews [get]
+func ListAccessReviewsHandler(c *gin.Context) {
+	if !RequirePermission(c, PermAuditLogView) {
+		return
+	}
+	limit, offset := auditLimitOffset(c)
+	rows, err := sqlcgen.New(TxFromContext(c)).ListAccessReviews(c.Request.Context(), sqlcgen.ListAccessReviewsParams{
+		CompanyID: AuthCompanyID(c),
+		RowLimit:  limit,
+		RowOffset: offset,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		data = append(data, gin.H{
+			"id":               uuidOrNil(r.ID),
+			"period_from":      rfc3339OrNil(r.PeriodFrom),
+			"period_to":        rfc3339OrNil(r.PeriodTo),
+			"reviewed_by":      uuidOrNil(r.ReviewedBy),
+			"reviewed_by_name": textOrNil(r.ReviewedByName),
+			"reviewed_at":      rfc3339OrNil(r.ReviewedAt),
+			"flagged_users":    r.FlaggedUsers,
+			"notes":            r.Notes,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"limit": limit, "offset": offset}})
 }
