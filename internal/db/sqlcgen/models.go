@@ -25,6 +25,17 @@ type CoreAccessLog struct {
 	PersonID        pgtype.UUID
 }
 
+type CoreAccessReview struct {
+	ID           pgtype.UUID
+	CompanyID    pgtype.UUID
+	PeriodFrom   pgtype.Timestamptz
+	PeriodTo     pgtype.Timestamptz
+	ReviewedBy   pgtype.UUID
+	ReviewedAt   pgtype.Timestamptz
+	FlaggedUsers int32
+	Notes        string
+}
+
 type CoreAppUser struct {
 	ID            pgtype.UUID
 	CompanyID     pgtype.UUID

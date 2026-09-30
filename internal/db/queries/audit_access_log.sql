@@ -63,3 +63,80 @@ WHERE u.company_id = @company_id
   AND (u.username ILIKE '%' || @pattern::text || '%' OR p.full_name ILIKE '%' || @pattern::text || '%')
 ORDER BY u.username
 LIMIT 20;
+
+-- name: AccessReviewCounts :many
+-- Per-actor activity counts for a review period (spec §6.1). Flags and the median are
+-- computed in Go from these counts. Access counts exclude resource='audit' except
+-- audit_actions. Local hour uses the configured audit time zone.
+WITH rel AS (
+    SELECT l.actor_id,
+           l.resource,
+           l.action,
+           l.status_code,
+           l.platform_admin_id,
+           l.created_at,
+           (p.id IS NOT NULL AND s.id IS NOT NULL AND (
+                p.id = s.id OR p.family_id = s.id OR p.id = s.family_id
+                OR (p.family_id IS NOT NULL AND p.family_id = s.family_id))) AS related
+    FROM core.access_log l
+    LEFT JOIN core.app_user u ON u.id = l.actor_id
+    LEFT JOIN core.person s ON s.id = u.person_id
+    LEFT JOIN core.person p ON p.id = l.person_id
+    WHERE l.company_id = sqlc.arg(company_id)
+      AND l.created_at >= sqlc.arg(from_time) AND l.created_at < sqlc.arg(to_time)
+), acc AS (
+    SELECT actor_id,
+           count(*) FILTER (WHERE resource <> 'audit' AND action = 'view')                   AS views,
+           count(*) FILTER (WHERE resource <> 'audit' AND action IN ('list', 'search'))      AS lists,
+           count(*) FILTER (WHERE resource <> 'audit' AND status_code = 403)                 AS denied,
+           count(*) FILTER (WHERE resource <> 'audit' AND (
+               extract(hour FROM created_at AT TIME ZONE sqlc.arg(tz)::text) < sqlc.arg(start_hour)::int
+               OR extract(hour FROM created_at AT TIME ZONE sqlc.arg(tz)::text) >= sqlc.arg(end_hour)::int)) AS after_hours,
+           count(*) FILTER (WHERE resource <> 'audit' AND related)                           AS self_family_access,
+           count(*) FILTER (WHERE resource <> 'audit' AND platform_admin_id IS NOT NULL)     AS platform_admin,
+           count(*) FILTER (WHERE resource = 'audit')                                        AS audit_actions
+    FROM rel GROUP BY actor_id
+), chg AS (
+    SELECT a.changed_by AS actor_id,
+           count(*) AS changes,
+           count(*) FILTER (WHERE p.id IS NOT NULL AND s.id IS NOT NULL AND (
+                p.id = s.id OR p.family_id = s.id OR p.id = s.family_id
+                OR (p.family_id IS NOT NULL AND p.family_id = s.family_id))) AS self_family_change
+    FROM core.audit_log a
+    LEFT JOIN core.app_user u ON u.id = a.changed_by
+    LEFT JOIN core.person s ON s.id = u.person_id
+    LEFT JOIN core.person p ON p.id = a.person_id
+    WHERE a.company_id = sqlc.arg(company_id)
+      AND a.changed_at >= sqlc.arg(from_time) AND a.changed_at < sqlc.arg(to_time)
+      AND a.changed_by IS NOT NULL
+    GROUP BY a.changed_by
+)
+SELECT COALESCE(acc.actor_id, chg.actor_id)::uuid                  AS actor_id,
+       n.full_name                                                  AS actor_name,
+       COALESCE(acc.views, 0)::bigint                               AS views,
+       COALESCE(acc.lists, 0)::bigint                               AS lists,
+       COALESCE(chg.changes, 0)::bigint                             AS changes,
+       COALESCE(acc.denied, 0)::bigint                              AS denied,
+       COALESCE(acc.after_hours, 0)::bigint                         AS after_hours,
+       (COALESCE(acc.self_family_access, 0) + COALESCE(chg.self_family_change, 0))::bigint AS self_family,
+       COALESCE(acc.platform_admin, 0)::bigint                      AS platform_admin,
+       COALESCE(acc.audit_actions, 0)::bigint                       AS audit_actions
+FROM acc
+FULL OUTER JOIN chg ON chg.actor_id = acc.actor_id
+LEFT JOIN core.app_user nu ON nu.id = COALESCE(acc.actor_id, chg.actor_id)
+LEFT JOIN core.person n ON n.id = nu.person_id;
+
+-- name: CreateAccessReview :one
+INSERT INTO core.access_review
+    (company_id, period_from, period_to, reviewed_by, flagged_users, notes)
+VALUES (@company_id, @period_from, @period_to, @reviewed_by, @flagged_users, @notes)
+RETURNING *;
+
+-- name: ListAccessReviews :many
+SELECT r.*, rp.full_name AS reviewed_by_name
+FROM core.access_review r
+LEFT JOIN core.app_user ru ON ru.id = r.reviewed_by
+LEFT JOIN core.person rp ON rp.id = ru.person_id
+WHERE r.company_id = @company_id  -- explicit, not only RLS (tests and owner roles bypass RLS)
+ORDER BY r.reviewed_at DESC
+LIMIT sqlc.arg(row_limit) OFFSET sqlc.arg(row_offset);
