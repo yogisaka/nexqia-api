@@ -62,6 +62,10 @@ func testConfig() config.Config {
 		TrustedProxies:                 []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},
 		AuditExportMaxRows:             5000,
 		AuditLocation:                  jakarta,
+		AuditWorkHourStart:             7,
+		AuditWorkHourEnd:               21,
+		AuditReviewDeniedThreshold:     5,
+		AuditReviewVolumeMultiplier:    3,
 	}
 }
 

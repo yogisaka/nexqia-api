@@ -640,6 +640,57 @@ const docTemplate = `{
                 }
             }
         },
+        "/audit/review/summary": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Aggregates access_log/audit_log activity per user for the\ncaller's company over the given window and computes review\nflags: after_hours (access outside the configured working\nhours), denied (\u003e= AUDIT_REVIEW_DENIED_THRESHOLD 403s),\nself_family (access involving the actor's own/family person),\nvolume (views above the configured multiplier × the period\nmedian) and platform_admin. Rows are ordered by flag count,\nthen views, then actor_id.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "audit"
+                ],
+                "summary": "Summarize per-user access with review flags",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Range start, RFC3339 (default: to − 7 days)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Range end, RFC3339 (default: now)",
+                        "name": "to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/audit/users": {
             "get": {
                 "security": [

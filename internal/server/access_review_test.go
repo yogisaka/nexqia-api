@@ -4,12 +4,19 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/yogisaka/nexqia-api/internal/auth"
+	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
@@ -144,5 +151,386 @@ func TestAccessReview_ChecksRejectBadRows(t *testing.T) {
 		VALUES ($1, $2, $3, $4, 0, '')`,
 		companyID, time.Now().Add(-24*time.Hour), time.Now(), userID); err == nil {
 		t.Fatalf("empty notes must be rejected")
+	}
+}
+
+// reviewUID builds a valid pgtype.UUID distinguishable by its last byte.
+func reviewUID(b byte) pgtype.UUID {
+	return pgtype.UUID{Bytes: [16]byte{0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b}, Valid: true}
+}
+
+// flagsContains reports whether the flag list holds want.
+func flagsContains(flags []string, want string) bool {
+	for _, f := range flags {
+		if f == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAccessReview_ComputeFlags — pure flag/median/sort logic (spec §6.2):
+// each flag fires exactly at its threshold and stays silent one below it, the
+// median is the mean of the two middle views for an even set, volume never
+// fires for a single user, an empty input yields median 0 without panicking,
+// and rows sort by flag count desc, then views desc, then actor_id asc.
+func TestAccessReview_ComputeFlags(t *testing.T) {
+	cfg := testConfig()
+
+	cases := []struct {
+		name       string
+		rows       []sqlcgen.AccessReviewCountsRow
+		wantFlags  map[byte][]string
+		wantMedian float64
+	}{
+		{
+			name: "after_hours boundary",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(1), AfterHours: 1},
+				{ActorID: reviewUID(2), AfterHours: 0},
+			},
+			wantFlags:  map[byte][]string{1: {"after_hours"}, 2: {}},
+			wantMedian: 0,
+		},
+		{
+			name: "denied at threshold and one below",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(1), Denied: 5},
+				{ActorID: reviewUID(2), Denied: 4},
+			},
+			wantFlags:  map[byte][]string{1: {"denied"}, 2: {}},
+			wantMedian: 0,
+		},
+		{
+			name: "self_family boundary",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(1), SelfFamily: 1},
+				{ActorID: reviewUID(2), SelfFamily: 0},
+			},
+			wantFlags:  map[byte][]string{1: {"self_family"}, 2: {}},
+			wantMedian: 0,
+		},
+		{
+			name: "platform_admin boundary",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(1), PlatformAdmin: 1},
+				{ActorID: reviewUID(2), PlatformAdmin: 0},
+			},
+			wantFlags:  map[byte][]string{1: {"platform_admin"}, 2: {}},
+			wantMedian: 0,
+		},
+		{
+			name: "volume odd median fires only above multiplier x median",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(1), Views: 10},
+				{ActorID: reviewUID(2), Views: 40},
+				{ActorID: reviewUID(3), Views: 121}, // median 40, 3*40 = 120 < 121
+			},
+			wantFlags:  map[byte][]string{1: {}, 2: {}, 3: {"volume"}},
+			wantMedian: 40,
+		},
+		{
+			name: "volume even median no flag",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(1), Views: 10},
+				{ActorID: reviewUID(2), Views: 40}, // median 25, 3*25 = 75 > 40
+			},
+			wantFlags:  map[byte][]string{1: {}, 2: {}},
+			wantMedian: 25,
+		},
+		{
+			name: "volume never fires for a single user",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(1), Views: 1000}, // median = own views
+			},
+			wantFlags:  map[byte][]string{1: {}},
+			wantMedian: 1000,
+		},
+		{
+			name:       "empty input",
+			rows:       nil,
+			wantFlags:  map[byte][]string{},
+			wantMedian: 0,
+		},
+		{
+			name: "flag order within a row",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(1), Views: 3001, Denied: 5, AfterHours: 1, SelfFamily: 1, PlatformAdmin: 1},
+				{ActorID: reviewUID(2), Views: 1},
+				{ActorID: reviewUID(3), Views: 1},
+			},
+			wantFlags: map[byte][]string{
+				1: {"after_hours", "denied", "self_family", "volume", "platform_admin"},
+				2: {},
+				3: {},
+			},
+			wantMedian: 1,
+		},
+		{
+			name: "ordering flags desc, views desc, actor asc",
+			rows: []sqlcgen.AccessReviewCountsRow{
+				{ActorID: reviewUID(4), Views: 5, SelfFamily: 1},
+				{ActorID: reviewUID(2), Views: 20, SelfFamily: 1},
+				{ActorID: reviewUID(3), Views: 5, AfterHours: 1, Denied: 5},
+				{ActorID: reviewUID(1), Views: 20, SelfFamily: 1},
+			},
+			wantFlags: map[byte][]string{
+				1: {"self_family"},
+				2: {"self_family"},
+				3: {"after_hours", "denied"},
+				4: {"self_family"},
+			},
+			wantMedian: 12.5,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, median := server.ComputeReviewFlags(tc.rows, cfg)
+			if median != tc.wantMedian {
+				t.Fatalf("median = %v, want %v", median, tc.wantMedian)
+			}
+			if len(out) != len(tc.rows) {
+				t.Fatalf("got %d rows, want %d", len(out), len(tc.rows))
+			}
+			for _, r := range out {
+				b := r.ActorID.Bytes[15]
+				want := tc.wantFlags[b]
+				if len(r.Flags) != len(want) {
+					t.Fatalf("actor %d flags = %v, want %v", b, r.Flags, want)
+				}
+				for i := range want {
+					if r.Flags[i] != want[i] {
+						t.Fatalf("actor %d flags = %v, want %v", b, r.Flags, want)
+					}
+				}
+			}
+			// Explicit expected order for the ordering case.
+			if tc.name == "ordering flags desc, views desc, actor asc" {
+				wantOrder := []byte{3, 1, 2, 4}
+				for i, r := range out {
+					if r.ActorID.Bytes[15] != wantOrder[i] {
+						t.Fatalf("row %d = actor %d, want %d", i, r.ActorID.Bytes[15], wantOrder[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// insertAccessLogRow inserts one core.access_log row through the owner pool
+// (bypasses RLS); personID "" leaves person_id NULL.
+func insertAccessLogRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool, companyID, merchantID, actorID, resource, action string, status int16, createdAt time.Time, personID string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `INSERT INTO core.access_log
+		(company_id, merchant_id, actor_id, resource, action, status_code, created_at, person_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::uuid)`,
+		companyID, merchantID, actorID, resource, action, status, createdAt, personID); err != nil {
+		t.Fatalf("insert access_log row: %v", err)
+	}
+}
+
+// seedBareAuditUser inserts an app_user directly (no role/permission) so its
+// access_log rows are the only noise in the review summary.
+func seedBareAuditUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, companyID, username, id string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `INSERT INTO core.app_user (id, company_id, username, password_hash, is_active)
+		VALUES ($1::uuid, $2::uuid, $3, 'not-a-real-hash', true)`, id, companyID, username); err != nil {
+		t.Fatalf("seed bare user: %v", err)
+	}
+}
+
+type summaryResponse struct {
+	Data []map[string]any `json:"data"`
+	Meta map[string]any   `json:"meta"`
+}
+
+// summaryRequest calls GET /audit/review/summary with the standard headers and
+// decodes the {"data": [...], "meta": {...}} envelope.
+func summaryRequest(t *testing.T, router *gin.Engine, token, companyID, merchantID, query string) summaryResponse {
+	t.Helper()
+	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/review/summary"+query, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("review summary expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp summaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode review summary: %v", err)
+	}
+	return resp
+}
+
+// summaryRowByID returns the row whose actor_id equals want.
+func summaryRowByID(t *testing.T, resp summaryResponse, want string) map[string]any {
+	t.Helper()
+	for _, row := range resp.Data {
+		if row["actor_id"] == want {
+			return row
+		}
+	}
+	t.Fatalf("actor %s missing from summary response", want)
+	return nil
+}
+
+// TestAccessReview_SummaryAfterHoursBoundary — access_log rows at 06:59 and
+// 21:00 WIB count as after-hours, 07:00 and 20:59 do not (spec §6.2).
+func TestAccessReview_SummaryAfterHoursBoundary(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "accrev.hour", "081234590131")
+	actorID := "6e6e6e6e-6e6e-6e6e-6e6e-6e6e6e6e6e01"
+	seedBareAuditUser(t, ctx, pool, companyID, "accrev.night", actorID)
+
+	// Local WIB hours: 06:59 = 23:59 UTC (previous day), 07:00 = 00:00 UTC,
+	// 20:59 = 13:59 UTC, 21:00 = 14:00 UTC — all for the same WIB day.
+	utcMidnight := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), time.Now().UTC().Day(), 0, 0, 0, 0, time.UTC)
+	for _, at := range []time.Duration{-time.Minute, 0, 13*time.Hour + 59*time.Minute, 14 * time.Hour} {
+		insertAccessLogRow(t, ctx, pool, companyID, merchantID, actorID, "person", "view", 200, utcMidnight.Add(at), "")
+	}
+
+	from := url.QueryEscape(utcMidnight.Add(-2 * time.Hour).Format(time.RFC3339))
+	to := url.QueryEscape(utcMidnight.Add(15 * time.Hour).Format(time.RFC3339))
+	resp := summaryRequest(t, router, token, companyID, merchantID, "?from="+from+"&to="+to)
+	row := summaryRowByID(t, resp, actorID)
+	if row["after_hours"] != float64(2) {
+		t.Fatalf("after_hours = %v, want 2", row["after_hours"])
+	}
+	if !flagsContains(anyToStrings(row["flags"]), "after_hours") {
+		t.Fatalf("flags = %v, want after_hours", row["flags"])
+	}
+}
+
+// anyToStrings decodes a JSON flag array ([]any) back to []string.
+func anyToStrings(v any) []string {
+	raw, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestAccessReview_SummarySelfFamily — viewing self (P1 = S), a family member
+// (P2.family_id = S), the family head (P3 with S.family_id = P3) and a sibling
+// member (P4.family_id = S.family_id) all count, an unrelated patient (P5)
+// does not → self_family = 4 (spec §6.1 related predicate).
+func TestAccessReview_SummarySelfFamily(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "accrev.fam", "081234590141")
+
+	var selfID string
+	if err := pool.QueryRow(ctx, "SELECT person_id::text FROM core.app_user WHERE id = $1::uuid", userID).Scan(&selfID); err != nil {
+		t.Fatalf("resolve owner person: %v", err)
+	}
+	insertPerson := func(name string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO core.person (company_id, full_name, gender)
+			VALUES ($1::uuid, $2, 'male') RETURNING id::text`, companyID, name).Scan(&id); err != nil {
+			t.Fatalf("insert person %s: %v", name, err)
+		}
+		return id
+	}
+	p2 := insertPerson("Accrev Family P2")
+	p3 := insertPerson("Accrev Family P3")
+	p4 := insertPerson("Accrev Family P4")
+	p5 := insertPerson("Accrev Family P5")
+	if _, err := pool.Exec(ctx, "UPDATE core.person SET family_id = $2::uuid WHERE id = $1::uuid", p2, selfID); err != nil {
+		t.Fatalf("link P2: %v", err)
+	}
+	// P3 is the family head: S.family_id = P3.
+	if _, err := pool.Exec(ctx, "UPDATE core.person SET family_id = $2::uuid WHERE id = $1::uuid", selfID, p3); err != nil {
+		t.Fatalf("link S: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE core.person SET family_id = $2::uuid WHERE id = $1::uuid", p4, p3); err != nil {
+		t.Fatalf("link P4: %v", err)
+	}
+
+	for _, personID := range []string{selfID, p2, p3, p4, p5} {
+		insertAccessLogRow(t, ctx, pool, companyID, merchantID, userID, "person", "view", 200, time.Now().UTC(), personID)
+	}
+
+	resp := summaryRequest(t, router, token, companyID, merchantID, "")
+	row := summaryRowByID(t, resp, userID)
+	if row["self_family"] != float64(4) {
+		t.Fatalf("self_family = %v, want 4", row["self_family"])
+	}
+	flags := anyToStrings(row["flags"])
+	if !flagsContains(flags, "self_family") {
+		t.Fatalf("flags = %v, want self_family", flags)
+	}
+	if flagsContains(flags, "denied") || flagsContains(flags, "volume") || flagsContains(flags, "platform_admin") {
+		t.Fatalf("unexpected flags: %v", flags)
+	}
+}
+
+// TestAccessReview_SummaryExcludesAuditRows — access_log rows with
+// resource='audit' feed only audit_actions and never views/flags (spec §6.1).
+func TestAccessReview_SummaryExcludesAuditRows(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "accrev.excl", "081234590151")
+
+	if _, err := pool.Exec(ctx, `INSERT INTO core.person (company_id, full_name, gender)
+		VALUES ($1::uuid, 'Accrev Excl Person', 'male') RETURNING id::text`, companyID); err != nil {
+		t.Fatalf("insert person: %v", err)
+	}
+	var personID string
+	if err := pool.QueryRow(ctx, "SELECT id::text FROM core.person WHERE company_id = $1::uuid AND full_name = 'Accrev Excl Person'", companyID).Scan(&personID); err != nil {
+		t.Fatalf("resolve person: %v", err)
+	}
+	insertAccessLogRow(t, ctx, pool, companyID, merchantID, userID, "person", "view", 200, time.Now().UTC(), personID)
+	insertAccessLogRow(t, ctx, pool, companyID, merchantID, userID, "person", "view", 200, time.Now().UTC(), personID)
+	insertAccessLogRow(t, ctx, pool, companyID, merchantID, userID, "audit", "list_access", 200, time.Now().UTC(), "")
+
+	resp := summaryRequest(t, router, token, companyID, merchantID, "")
+	row := summaryRowByID(t, resp, userID)
+	if row["views"] != float64(2) {
+		t.Fatalf("views = %v, want 2 (audit rows must not count)", row["views"])
+	}
+	// The seeded audit row; the summary call's own audit row is written by
+	// the AccessLog middleware after the handler runs, so the query never
+	// sees it.
+	if row["audit_actions"] != float64(1) {
+		t.Fatalf("audit_actions = %v, want 1", row["audit_actions"])
+	}
+	if row["denied"] != float64(0) || row["lists"] != float64(0) {
+		t.Fatalf("unexpected counts: %v", row)
+	}
+}
+
+// TestAccessReview_SummaryRequiresPermission — a user whose role lacks
+// audit.log.view gets 403 on the review summary.
+func TestAccessReview_SummaryRequiresPermission(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, _, _ := seedAccountOwner(t, ctx, pool, router, "accrev.view", "081234590161")
+	restrictedUserID := seedRestrictedAuditUser(t, ctx, pool, companyID, merchantID, "accrev.noview")
+	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "accrev.noview", "accrev-noview-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate restricted token: %v", err)
+	}
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/audit/review/summary", restrictedToken, companyID, merchantID, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET /audit/review/summary without audit.log.view expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

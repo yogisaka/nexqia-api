@@ -102,6 +102,22 @@ type Config struct {
 	// AuditLocation is the timezone audit CSV timestamps render in (env
 	// AUDIT_TIMEZONE, IANA name — default Asia/Jakarta).
 	AuditLocation *time.Location
+
+	// AuditWorkHourStart/AuditWorkHourEnd (env AUDIT_WORK_HOUR_START/END) —
+	// working-hours fence feeding the after_hours review flag: access rows
+	// before start or at/after end (local hour in AuditLocation) count as
+	// after-hours. See docs/design/specs/2026-09-29-access-review.md §6.
+	AuditWorkHourStart int
+	AuditWorkHourEnd   int
+
+	// AuditReviewDeniedThreshold (env AUDIT_REVIEW_DENIED_THRESHOLD) — the
+	// number of 403s at which a user gets the denied review flag.
+	AuditReviewDeniedThreshold int
+
+	// AuditReviewVolumeMultiplier (env AUDIT_REVIEW_VOLUME_MULTIPLIER) — a
+	// user is volume-flagged when their views exceed this multiplier × the
+	// period's median views (only meaningful when the median > 0).
+	AuditReviewVolumeMultiplier float64
 }
 
 func Load() Config {
@@ -154,6 +170,11 @@ func Load() Config {
 
 		AuditExportMaxRows: getEnvInt("AUDIT_EXPORT_MAX_ROWS", 5000),
 		AuditLocation:      mustLoadLocation(getEnv("AUDIT_TIMEZONE", "Asia/Jakarta")),
+
+		AuditWorkHourStart:          getEnvInt("AUDIT_WORK_HOUR_START", 7),
+		AuditWorkHourEnd:            getEnvInt("AUDIT_WORK_HOUR_END", 21),
+		AuditReviewDeniedThreshold:  getEnvInt("AUDIT_REVIEW_DENIED_THRESHOLD", 5),
+		AuditReviewVolumeMultiplier: getEnvFloat64("AUDIT_REVIEW_VOLUME_MULTIPLIER", 3),
 	}
 	// Fail fast at startup: an idle fence the API would have to half-enforce is
 	// worse than refusing to boot (spec 2026-09-29-merchant-security-settings §3).
@@ -163,7 +184,26 @@ func Load() Config {
 	if cfg.AuditExportMaxRows <= 0 {
 		panic(fmt.Sprintf("AUDIT_EXPORT_MAX_ROWS must be > 0, got %d", cfg.AuditExportMaxRows))
 	}
+	if err := validateAuditReview(cfg.AuditWorkHourStart, cfg.AuditWorkHourEnd, cfg.AuditReviewDeniedThreshold, cfg.AuditReviewVolumeMultiplier); err != nil {
+		panic(err)
+	}
 	return cfg
+}
+
+// validateAuditReview checks the access-review flag tunables (spec
+// 2026-09-29-access-review §6): 0 <= start < end <= 24 working hours, a denied
+// threshold of at least 1 and a strictly positive volume multiplier.
+func validateAuditReview(start, end, threshold int, multiplier float64) error {
+	if start < 0 || start >= end || end > 24 {
+		return fmt.Errorf("AUDIT_WORK_HOUR_START/AUDIT_WORK_HOUR_END invalid: need 0 <= start < end <= 24, got %d..%d", start, end)
+	}
+	if threshold < 1 {
+		return fmt.Errorf("AUDIT_REVIEW_DENIED_THRESHOLD must be >= 1, got %d", threshold)
+	}
+	if multiplier <= 0 {
+		return fmt.Errorf("AUDIT_REVIEW_VOLUME_MULTIPLIER must be > 0, got %v", multiplier)
+	}
+	return nil
 }
 
 // mustLoadLocation parses an IANA timezone name; a bad AUDIT_TIMEZONE refuses
@@ -231,6 +271,20 @@ func getEnvInt(key string, fallback int) int {
 		panic(fmt.Sprintf("environment variable %s must be an integer, got %q", key, v))
 	}
 	return n
+}
+
+// getEnvFloat64 parses a float env var; a non-numeric value refuses to boot
+// (same fail-fast contract as getEnvInt).
+func getEnvFloat64(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		panic(fmt.Sprintf("environment variable %s must be a number, got %q", key, v))
+	}
+	return f
 }
 
 // getTrustedProxies parses TRUSTED_PROXIES: comma-separated IP/CIDR, items
