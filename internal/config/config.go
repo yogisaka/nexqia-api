@@ -118,6 +118,33 @@ type Config struct {
 	// user is volume-flagged when their views exceed this multiplier × the
 	// period's median views (only meaningful when the median > 0).
 	AuditReviewVolumeMultiplier float64
+
+	// MailDriver (env MAIL_DRIVER) — "smtp" sends through SMTPHost, "log" only
+	// logs a masked line per email and marks it sent (dev/test). See
+	// 2026-10-01-email-outbox-design §3.3.
+	MailDriver string
+
+	// SMTPHost/SMTPPort/SMTPUsername/SMTPPassword/SMTPFrom/SMTPFromName — the
+	// SMTP relay (STARTTLS + PLAIN auth). Gmail: smtp.gmail.com:587 with an App
+	// Password; SMTPFrom must be that account or a verified alias. Required
+	// when MailDriver is "smtp".
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
+	SMTPFromName string
+
+	// AppBaseURL (env APP_BASE_URL) — frontend origin used for links in emails.
+	AppBaseURL string
+
+	// MailPollIntervalSeconds/MailBatchSize/MailMaxAttempts/MailOutboxRetentionDays —
+	// outbox worker tunables: poll period, rows claimed per poll, send attempts
+	// before a row is given up as failed, and days sent/failed rows are kept.
+	MailPollIntervalSeconds int
+	MailBatchSize           int
+	MailMaxAttempts         int
+	MailOutboxRetentionDays int
 }
 
 func Load() Config {
@@ -175,6 +202,20 @@ func Load() Config {
 		AuditWorkHourEnd:            getEnvInt("AUDIT_WORK_HOUR_END", 21),
 		AuditReviewDeniedThreshold:  getEnvInt("AUDIT_REVIEW_DENIED_THRESHOLD", 5),
 		AuditReviewVolumeMultiplier: getEnvFloat64("AUDIT_REVIEW_VOLUME_MULTIPLIER", 3),
+
+		MailDriver:   getEnv("MAIL_DRIVER", "log"),
+		SMTPHost:     os.Getenv("SMTP_HOST"),
+		SMTPPort:     getEnvInt("SMTP_PORT", 587),
+		SMTPUsername: os.Getenv("SMTP_USERNAME"),
+		SMTPPassword: os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:     os.Getenv("SMTP_FROM"),
+		SMTPFromName: getEnv("SMTP_FROM_NAME", "NEXQIA"),
+		AppBaseURL:   getEnv("APP_BASE_URL", "http://localhost:5173"),
+
+		MailPollIntervalSeconds: getEnvInt("MAIL_POLL_INTERVAL_SECONDS", 10),
+		MailBatchSize:           getEnvInt("MAIL_BATCH_SIZE", 20),
+		MailMaxAttempts:         getEnvInt("MAIL_MAX_ATTEMPTS", 5),
+		MailOutboxRetentionDays: getEnvInt("MAIL_OUTBOX_RETENTION_DAYS", 30),
 	}
 	// Fail fast at startup: an idle fence the API would have to half-enforce is
 	// worse than refusing to boot (spec 2026-09-29-merchant-security-settings §3).
@@ -187,7 +228,52 @@ func Load() Config {
 	if err := validateAuditReview(cfg.AuditWorkHourStart, cfg.AuditWorkHourEnd, cfg.AuditReviewDeniedThreshold, cfg.AuditReviewVolumeMultiplier); err != nil {
 		panic(err)
 	}
+	if err := validateMail(cfg); err != nil {
+		panic(err)
+	}
 	return cfg
+}
+
+// validateMail checks the email settings (spec 2026-10-01-email-outbox §3.3):
+// a known driver, every SMTP_* the smtp driver needs, and positive worker
+// tunables — a misconfigured relay refuses to boot instead of failing silently
+// on the first send.
+func validateMail(cfg Config) error {
+	switch cfg.MailDriver {
+	case "log":
+	case "smtp":
+		var missing []string
+		for _, f := range []struct{ name, value string }{
+			{"SMTP_HOST", cfg.SMTPHost},
+			{"SMTP_USERNAME", cfg.SMTPUsername},
+			{"SMTP_PASSWORD", cfg.SMTPPassword},
+			{"SMTP_FROM", cfg.SMTPFrom},
+		} {
+			if strings.TrimSpace(f.value) == "" {
+				missing = append(missing, f.name)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("MAIL_DRIVER=smtp requires %s", strings.Join(missing, ", "))
+		}
+	default:
+		return fmt.Errorf("MAIL_DRIVER must be smtp or log, got %q", cfg.MailDriver)
+	}
+	for _, f := range []struct {
+		name  string
+		value int
+	}{
+		{"SMTP_PORT", cfg.SMTPPort},
+		{"MAIL_POLL_INTERVAL_SECONDS", cfg.MailPollIntervalSeconds},
+		{"MAIL_BATCH_SIZE", cfg.MailBatchSize},
+		{"MAIL_MAX_ATTEMPTS", cfg.MailMaxAttempts},
+		{"MAIL_OUTBOX_RETENTION_DAYS", cfg.MailOutboxRetentionDays},
+	} {
+		if f.value <= 0 {
+			return fmt.Errorf("%s must be > 0, got %d", f.name, f.value)
+		}
+	}
+	return nil
 }
 
 // validateAuditReview checks the access-review flag tunables (spec

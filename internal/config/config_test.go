@@ -248,3 +248,55 @@ func TestGetEnvInt_OverridesDefaultAndPanicsOnInvalid(t *testing.T) {
 	}()
 	getEnvInt("RATE_LIMIT_API_BURST", 20)
 }
+
+func TestValidateMail(t *testing.T) {
+	valid := Config{
+		MailDriver: "smtp", SMTPHost: "smtp.gmail.com", SMTPPort: 587, SMTPUsername: "a@gmail.com",
+		SMTPPassword: "app-password", SMTPFrom: "a@gmail.com",
+		MailPollIntervalSeconds: 10, MailBatchSize: 20, MailMaxAttempts: 5, MailOutboxRetentionDays: 30,
+	}
+	logOnly := valid
+	logOnly.MailDriver, logOnly.SMTPHost, logOnly.SMTPUsername, logOnly.SMTPPassword, logOnly.SMTPFrom = "log", "", "", "", ""
+
+	tests := []struct {
+		name    string
+		mutate  func(c *Config)
+		base    Config
+		wantErr []string
+	}{
+		{name: "smtp complete", base: valid, mutate: func(c *Config) {}},
+		{name: "log needs no smtp env", base: logOnly, mutate: func(c *Config) {}},
+		{name: "unknown driver", base: valid, mutate: func(c *Config) { c.MailDriver = "sendgrid" }, wantErr: []string{"MAIL_DRIVER"}},
+		{name: "empty driver", base: valid, mutate: func(c *Config) { c.MailDriver = "" }, wantErr: []string{"MAIL_DRIVER"}},
+		{name: "smtp missing host and password", base: valid, mutate: func(c *Config) { c.SMTPHost, c.SMTPPassword = "", " " },
+			wantErr: []string{"SMTP_HOST", "SMTP_PASSWORD"}},
+		{name: "smtp missing username and from", base: valid, mutate: func(c *Config) { c.SMTPUsername, c.SMTPFrom = "", "" },
+			wantErr: []string{"SMTP_USERNAME", "SMTP_FROM"}},
+		{name: "zero port", base: valid, mutate: func(c *Config) { c.SMTPPort = 0 }, wantErr: []string{"SMTP_PORT"}},
+		{name: "zero poll interval", base: logOnly, mutate: func(c *Config) { c.MailPollIntervalSeconds = 0 }, wantErr: []string{"MAIL_POLL_INTERVAL_SECONDS"}},
+		{name: "negative batch", base: logOnly, mutate: func(c *Config) { c.MailBatchSize = -1 }, wantErr: []string{"MAIL_BATCH_SIZE"}},
+		{name: "zero attempts", base: logOnly, mutate: func(c *Config) { c.MailMaxAttempts = 0 }, wantErr: []string{"MAIL_MAX_ATTEMPTS"}},
+		{name: "zero retention", base: logOnly, mutate: func(c *Config) { c.MailOutboxRetentionDays = 0 }, wantErr: []string{"MAIL_OUTBOX_RETENTION_DAYS"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.base
+			tt.mutate(&c)
+			err := validateMail(c)
+			if len(tt.wantErr) == 0 {
+				if err != nil {
+					t.Fatalf("expected valid, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error naming %v, got nil", tt.wantErr)
+			}
+			for _, w := range tt.wantErr {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q must name %s", err, w)
+				}
+			}
+		})
+	}
+}
