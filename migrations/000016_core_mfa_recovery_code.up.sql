@@ -1,5 +1,5 @@
 -- migrations/000016_core_mfa_recovery_code.up.sql
--- TOTP recovery/backup codes, see docs/design/specs/2026-09-15-totp-2fa-design.md §7.
+-- TOTP recovery/backup codes, see 2026-09-15-totp-2fa-design.md §7.
 -- core.app_user.mfa_secret already exists (000004_core_rbac) — no new column needed there.
 
 CREATE TABLE core.mfa_recovery_code (

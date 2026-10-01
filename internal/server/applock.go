@@ -1,5 +1,5 @@
 // internal/server/applock.go
-// PIN-unlock enforcement — see docs/design/specs/2026-09-15-pin-unlock-design.md §6.
+// PIN-unlock enforcement — see 2026-09-15-pin-unlock-design.md §6.
 package server
 
 import (
@@ -70,7 +70,7 @@ func AppLockMiddleware(redisClient *redis.Client, cfg config.Config) gin.Handler
 		if AuthImpersonatedBy(c) != "" {
 			// Impersonation sessions skip idle-lock entirely — the admin has
 			// no way to unlock with the target user's own PIN. See
-			// docs/design/specs/2026-09-24-platform-admin-impersonate-design.md §4.
+			// 2026-09-24-platform-admin-impersonate-design.md §4.
 			c.Next()
 			return
 		}

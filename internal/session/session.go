@@ -1,5 +1,5 @@
 // internal/session/session.go
-// Session/refresh-token model — see docs/design/specs/2026-09-15-session-refresh-token-design.md.
+// Session/refresh-token model — see 2026-09-15-session-refresh-token-design.md.
 package session
 
 import (
@@ -222,7 +222,7 @@ func MerchantIsAssigned(ctx context.Context, tx pgx.Tx, userID, merchantID pgtyp
 
 // RevokeAllExceptCurrent revokes every active refresh-token row for userID except
 // the one identified by currentRawToken (if any) — used by the MFA-disable flow
-// (docs/design/specs/2026-09-15-totp-2fa-design.md §8) to cut off other
+// (2026-09-15-totp-2fa-design.md §8) to cut off other
 // devices/sessions as a defense-in-depth measure without logging the caller out
 // of the request they're currently making. An empty currentRawToken (no refresh
 // cookie on this request) revokes every active session.

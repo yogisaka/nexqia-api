@@ -1,5 +1,5 @@
 // internal/server/access_log.go
-// Access log for patient-data reads, see docs/design/specs/2026-09-29-audit-trail-design.md §4.
+// Access log for patient-data reads, see 2026-09-29-audit-trail-design.md §4.
 package server
 
 import (

@@ -1,5 +1,5 @@
 // NEXQIA Platform Admin — foundation (0d-1). Genuinely separate auth/access
-// system from tenant staff, see docs/design/specs/2026-09-24-platform-admin-foundation-design.md.
+// system from tenant staff, see 2026-09-24-platform-admin-foundation-design.md.
 package server
 
 import (
@@ -496,7 +496,7 @@ func (r createPlatformCompanyRequest) validate() string {
 // CreatePlatformCompanyHandler godoc
 // @Summary Create a company and bootstrap its Owner — platform-admin-initiated
 // @Description No session is issued for the new Owner — they log in themselves
-// @Description afterward via the normal /auth/login. See docs/design/specs/
+// @Description afterward via the normal /auth/login. See
 // @Description 2026-09-24-platform-admin-create-company-design.md.
 // @Tags platform
 // @Accept json
@@ -679,7 +679,7 @@ const impersonationTokenTTL = time.Hour
 // @Summary Get a short-lived tenant access token for a specific user
 // @Description No refresh token is issued — the access token expires after
 // @Description 1 hour with no way to renew; call this endpoint again for a
-// @Description fresh, separately-audited session. See docs/design/specs/
+// @Description fresh, separately-audited session. See
 // @Description 2026-09-24-platform-admin-impersonate-design.md.
 // @Tags platform
 // @Accept json

@@ -1,6 +1,6 @@
 // internal/server/audit_export.go
 // CSV export of the audit trail (core.access_log, core.audit_log), see
-// docs/design/specs/2026-09-29-audit-log-ui-design.md §4.5.
+// 2026-09-29-audit-log-ui-design.md §4.5.
 package server
 
 import (

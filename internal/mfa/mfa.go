@@ -1,5 +1,5 @@
 // internal/mfa/mfa.go
-// TOTP 2FA — see docs/design/specs/2026-09-15-totp-2fa-design.md.
+// TOTP 2FA — see 2026-09-15-totp-2fa-design.md.
 package mfa
 
 import (
@@ -109,7 +109,7 @@ func GenerateSecret(issuer, accountName string) (secret string, otpauthURI strin
 
 // QRDataURI renders an otpauth:// provisioning URI (from GenerateSecret) as a
 // 200x200 PNG data URI for the QR <img> shown by TotpEnrollPanel (spec §3 "QR
-// code", see docs/design/plans/2026-09-25-mfa-grace-enforcement.md).
+// code", see 2026-09-25-mfa-grace-enforcement.md).
 func QRDataURI(otpauthURI string) (string, error) {
 	key, err := otp.NewKeyFromURL(otpauthURI)
 	if err != nil {

@@ -1789,7 +1789,7 @@ paths:
       description: |-
         Public, unauthenticated. Creates a company, an Owner person/app_user,
         a bootstrap "Owner" role with every permission except the platform-wide
-        core.company.manage, and auto-logs in. See docs/design/specs/
+        core.company.manage, and auto-logs in. See
         2026-09-23-saas-registration-owner-bootstrap-design.md.
       parameters:
       - description: Registration data
@@ -3552,7 +3552,7 @@ paths:
       - application/json
       description: |-
         No session is issued for the new Owner — they log in themselves
-        afterward via the normal /auth/login. See docs/design/specs/
+        afterward via the normal /auth/login. See
         2026-09-24-platform-admin-create-company-design.md.
       parameters:
       - description: New company + Owner data
@@ -3672,7 +3672,7 @@ paths:
       description: |-
         No refresh token is issued — the access token expires after
         1 hour with no way to renew; call this endpoint again for a
-        fresh, separately-audited session. See docs/design/specs/
+        fresh, separately-audited session. See
         2026-09-24-platform-admin-impersonate-design.md.
       parameters:
       - description: Target user + reason

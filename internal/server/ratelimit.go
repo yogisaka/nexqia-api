@@ -14,7 +14,7 @@ import (
 // RateLimitAPIMiddleware enforces a per-user_id token bucket on every protected
 // route. Must run after AuthMiddleware (needs AuthUserID). Fails closed: if Redis
 // is unreachable, the request is rejected with 503, not allowed through — see
-// docs/design/specs/2026-09-15-ratelimit-hardening-design.md §6.
+// 2026-09-15-ratelimit-hardening-design.md §6.
 func RateLimitAPIMiddleware(limiter *ratelimit.Limiter, cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := "api:user:" + AuthUserID(c).String()

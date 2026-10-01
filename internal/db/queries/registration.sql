@@ -1,5 +1,5 @@
 -- internal/db/queries/registration.sql
--- New queries for POST /auth/register (see docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §6).
+-- New queries for POST /auth/register (see 2026-09-23-saas-registration-owner-bootstrap-design.md §6).
 
 -- name: CreateCompanyWithID :one
 -- Explicit id (not DB DEFAULT) — company_isolation RLS has no WITH CHECK, so

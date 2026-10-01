@@ -1,6 +1,6 @@
 // internal/server/account.go
 // Self-service account management — profile (GET/PATCH /auth/me) and password
-// change (POST /auth/password), see docs/design/specs/
+// change (POST /auth/password), see
 // 2026-09-25-account-menu-design.md §3. All routes run on the `locked` group
 // (TenantMiddleware + AuthMiddleware + AppLockMiddleware), same as MFA routes.
 package server

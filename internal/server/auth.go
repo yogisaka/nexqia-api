@@ -180,7 +180,7 @@ func RequirePermissionForMerchant(c *gin.Context, code string, merchantID pgtype
 // RequireCompanyLevelPermission checks the caller holds ANY of `codes` — via a
 // company-wide core.user_company_role grant, OR a core.user_merchant_role grant
 // at ANY merchant of their company (regression path for existing merchant-scoped
-// role holders, e.g. seeded Admin — see docs/design/specs/
+// role holders, e.g. seeded Admin — see
 // 2026-09-23-saas-registration-owner-bootstrap-design.md §3 poin 4).
 // Use this instead of RequirePermission for routes registered under the
 // companyOnlyAuthed group (no X-Merchant-ID header, no app.current_merchant_id).
@@ -418,7 +418,7 @@ type loginRequest struct {
 // password comparison, and — once the active merchant is resolved — issues a JWT
 // access token plus an HttpOnly refresh-token cookie (spec §3a, §6).
 // On successful login with a legacy bcrypt hash, transparently rehashes to Argon2id
-// (see docs/design/specs/2026-09-15-ratelimit-hardening-design.md §11).
+// (see 2026-09-15-ratelimit-hardening-design.md §11).
 // LoginHandler godoc
 // @Summary Log in
 // @Description Rate-limited by username/IP. Returns totp_required if the account has TOTP enabled and no/invalid code was given, or requires_merchant_selection if the user belongs to more than one merchant.
@@ -885,7 +885,7 @@ func (r registerRequest) validate() string {
 // @Summary Self-register a new company and its Owner account
 // @Description Public, unauthenticated. Creates a company, an Owner person/app_user,
 // @Description a bootstrap "Owner" role with every permission except the platform-wide
-// @Description core.company.manage, and auto-logs in. See docs/design/specs/
+// @Description core.company.manage, and auto-logs in. See
 // @Description 2026-09-23-saas-registration-owner-bootstrap-design.md.
 // @Tags auth
 // @Accept json
@@ -959,7 +959,7 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 
 		// Gender sengaja gak diisi (zero-value pgtype.Text{} = NULL) — form
 		// registrasi Owner gak ngumpulin data ini (spec §2), core.person.gender
-		// nullable sejak migration 000038. Lihat docs/design/plans/
+		// nullable sejak migration 000038. Lihat
 		// 2026-09-24-fix-0a-0b-0c-review-findings.md Task 3.
 		person, err := q.CreatePerson(ctx, sqlcgen.CreatePersonParams{
 			CompanyID: companyID,

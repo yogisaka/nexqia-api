@@ -1,6 +1,6 @@
 -- internal/db/queries/audit_access_log.sql
 -- core.audit_log, core.access_log (docs/07-core-ddl.md §10 "Audit log & Access log";
--- K1 audit trail: docs/design/specs/2026-09-29-audit-trail-design.md).
+-- K1 audit trail: 2026-09-29-audit-trail-design.md).
 -- audit_log rows are written ONLY by the core.trg_audit_row() trigger (migration 000046).
 -- Insert (access_log) + list only — rows are never updated or deleted by the app.
 

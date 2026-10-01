@@ -1,6 +1,6 @@
 -- internal/db/queries/person_family.sql
 -- core.person_family — family member master (migration 000028,
--- docs/design/specs/2026-09-18-fo-pendaftaran-full-design.md §4.2).
+-- 2026-09-18-fo-pendaftaran-full-design.md §4.2).
 -- Company-scoped: semua query filter deleted_at IS NULL.
 
 -- name: ListPersonFamiliesByPerson :many

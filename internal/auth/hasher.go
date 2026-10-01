@@ -15,7 +15,7 @@ var ErrHashQueueTimeout = errors.New("password hashing queue timed out")
 // instance's own CPU/memory from many simultaneous hash requests (e.g. a flood
 // of login attempts across many different accounts/IPs, each individually under
 // its own rate limit). The bound is intentionally per-instance, not shared via
-// Redis — see docs/design/specs/2026-09-15-ratelimit-hardening-design.md §9-§10.
+// Redis — see 2026-09-15-ratelimit-hardening-design.md §9-§10.
 type PasswordHasher struct {
 	sem          chan struct{}
 	queueTimeout time.Duration

@@ -1,7 +1,7 @@
 -- nexqia-api/migrations/000047_child_table_tenant_rls.up.sql
 -- T6 (docs/20-security-compliance-gap-audit.md): tenant columns + RLS on four child
 -- tables that relied on app-side joins for isolation. See
--- docs/design/specs/2026-09-29-child-rls-token-storage-design.md §1.
+-- 2026-09-29-child-rls-token-storage-design.md §1.
 -- The columns are ALWAYS filled from the parent row by a BEFORE trigger (runs as the
 -- caller, so the parent read goes through the parent's RLS): attaching a child to a
 -- parent the session cannot see yields NULL and NOT NULL rejects the write.

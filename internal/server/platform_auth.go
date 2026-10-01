@@ -28,7 +28,7 @@ const (
 	// distinct from the tenant refresh_token cookie (/api/v1/auth), even though
 	// the path alone would already prevent the browser from ever sending the
 	// wrong cookie to the wrong endpoint — avoids any confusion debugging via
-	// devtools. See docs/design/specs/2026-09-24-platform-admin-foundation-design.md §4.
+	// devtools. See 2026-09-24-platform-admin-foundation-design.md §4.
 	platformRefreshCookiePath = "/api/v1/platform"
 )
 

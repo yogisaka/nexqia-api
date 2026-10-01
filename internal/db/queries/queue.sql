@@ -1,7 +1,7 @@
 -- internal/db/queries/queue.sql
 -- operations.queue + operations.queue_status_history (docs/08-operations-ddl.md §1).
 -- One generic table for all stages (queue_type discriminator) — see
--- docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §4.
+-- 2026-09-16-v1-operations-antrian-jadwal-design.md §4.
 
 -- name: CreateQueue :one
 INSERT INTO operations.queue (company_id, merchant_id, queue_type, department_id, person_id, admission_id, queue_number, created_by)

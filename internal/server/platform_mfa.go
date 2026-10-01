@@ -1,6 +1,6 @@
 // internal/server/platform_mfa.go
 // Platform admin TOTP MFA — grace period, enrollment, setup/confirm, reset.
-// See docs/design/specs/2026-09-25-mfa-grace-enforcement-design.md.
+// See 2026-09-25-mfa-grace-enforcement-design.md.
 package server
 
 import (

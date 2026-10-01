@@ -13,7 +13,7 @@ import (
 
 // RegisterDisplayRoutes wires read-only queue/schedule board endpoints
 // (docs/breakdown/screen.md, no real-time push in v1 — see
-// docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §9).
+// 2026-09-16-v1-operations-antrian-jadwal-design.md §9).
 func RegisterDisplayRoutes(rg *gin.RouterGroup) {
 	rg.GET("/display/queue", DisplayQueueHandler)
 	rg.GET("/display/schedule", DisplayScheduleHandler)

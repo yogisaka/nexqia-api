@@ -1,5 +1,5 @@
 // internal/server/mfa.go
-// TOTP 2FA enrollment/disable — see docs/design/specs/2026-09-15-totp-2fa-design.md.
+// TOTP 2FA enrollment/disable — see 2026-09-15-totp-2fa-design.md.
 package server
 
 import (

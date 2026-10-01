@@ -20,7 +20,7 @@ var errUnexpectedScriptResult = errors.New("ratelimit: unexpected script result 
 
 // Limiter runs the atomic token-bucket/sliding-window Lua scripts against Redis
 // via EVALSHA (redis.Script.Run handles the SCRIPT LOAD/EVALSHA/NOSCRIPT-fallback
-// dance internally — see docs/design/specs/2026-09-15-ratelimit-hardening-design.md §4).
+// dance internally — see 2026-09-15-ratelimit-hardening-design.md §4).
 type Limiter struct {
 	client        *redis.Client
 	tokenBucket   *redis.Script

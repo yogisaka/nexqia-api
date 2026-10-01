@@ -14,7 +14,7 @@ import (
 // PermPhysicianManage guards core.physician CRUD (docs/07-core-ddl.md §5).
 // Prerequisite for the operations pillar — physician_schedule/admission/queue
 // all FK to core.physician, see
-// docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §2.
+// 2026-09-16-v1-operations-antrian-jadwal-design.md §2.
 const PermPhysicianManage = "core.physician.manage"
 
 func RegisterPhysicianRoutes(rg *gin.RouterGroup) {
@@ -57,7 +57,7 @@ func CreatePhysicianHandler(c *gin.Context) {
 	// Check permission against the body's merchant_id, not X-Merchant-ID —
 	// they can differ, and creating under a merchant the caller only declared
 	// in a header (without holding the permission there) is a cross-tenant
-	// IDOR. See docs/design/plans/2026-09-16-v1-operations-antrian-jadwal-plan.md.
+	// IDOR. See 2026-09-16-v1-operations-antrian-jadwal-plan.md.
 	if !RequirePermissionForMerchant(c, PermPhysicianManage, merchantID) {
 		return
 	}

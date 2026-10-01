@@ -1487,7 +1487,7 @@ const docTemplate = `{
         },
         "/auth/register": {
             "post": {
-                "description": "Public, unauthenticated. Creates a company, an Owner person/app_user,\na bootstrap \"Owner\" role with every permission except the platform-wide\ncore.company.manage, and auto-logs in. See docs/design/specs/\n2026-09-23-saas-registration-owner-bootstrap-design.md.",
+                "description": "Public, unauthenticated. Creates a company, an Owner person/app_user,\na bootstrap \"Owner\" role with every permission except the platform-wide\ncore.company.manage, and auto-logs in. See \n2026-09-23-saas-registration-owner-bootstrap-design.md.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4299,7 +4299,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "No session is issued for the new Owner — they log in themselves\nafterward via the normal /auth/login. See docs/design/specs/\n2026-09-24-platform-admin-create-company-design.md.",
+                "description": "No session is issued for the new Owner — they log in themselves\nafterward via the normal /auth/login. See \n2026-09-24-platform-admin-create-company-design.md.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4485,7 +4485,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "No refresh token is issued — the access token expires after\n1 hour with no way to renew; call this endpoint again for a\nfresh, separately-audited session. See docs/design/specs/\n2026-09-24-platform-admin-impersonate-design.md.",
+                "description": "No refresh token is issued — the access token expires after\n1 hour with no way to renew; call this endpoint again for a\nfresh, separately-audited session. See \n2026-09-24-platform-admin-impersonate-design.md.",
                 "consumes": [
                     "application/json"
                 ],

@@ -1,7 +1,7 @@
 -- Korektif buat migration 000036: nyisipin core.permission baru (id
 -- ...0025/...0026) buat code yang UDAH ADA di seed/001_core_seed.sql (id
 -- ...0015/...0016). Idempoten by design — aman dijalanin baik di environment
--- yang punya duplikat maupun yang enggak. Lihat docs/design/plans/
+-- yang punya duplikat maupun yang enggak. Lihat 
 -- 2026-09-24-fix-0a-0b-0c-review-findings.md Task 2 buat analisa lengkap.
 DO $$
 DECLARE

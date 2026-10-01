@@ -15,7 +15,7 @@ import (
 // RegisterCompanyLookupRoute wires the one deliberately public, un-tenant-scoped
 // route in the API — the login screen doesn't know X-Company-ID yet, so it can't
 // go through CompanyOnlyMiddleware/TenantMiddleware. See
-// docs/design/specs/2026-09-16-his-auth-wiring-design.md §3.
+// 2026-09-16-his-auth-wiring-design.md §3.
 func RegisterCompanyLookupRoute(rg *gin.RouterGroup, pool *pgxpool.Pool) {
 	rg.GET("/companies/lookup", CompanyLookupHandler(pool))
 }

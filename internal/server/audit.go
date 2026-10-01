@@ -1,6 +1,6 @@
 // internal/server/audit.go
 // Read API for the audit trail (core.access_log, core.audit_log), see
-// docs/design/specs/2026-09-29-audit-trail-design.md §5.
+// 2026-09-29-audit-trail-design.md §5.
 package server
 
 import (

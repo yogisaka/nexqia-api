@@ -72,7 +72,7 @@ func InsertWithUniqueCode[T any](ctx context.Context, tx pgx.Tx, gen func() (str
 // company create/list was removed: creation is platform-admin scope
 // (sub-project 0d) and never worked under RLS. Everything
 // company-scoped-to-self or merchant-scoped lives in RegisterCompanyLevelRoutes
-// instead (docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §3).
+// instead (2026-09-23-saas-registration-owner-bootstrap-design.md §3).
 func RegisterTenancyRoutes(rg *gin.RouterGroup) {}
 
 // RegisterCompanyLevelRoutes wires company-self-management + merchant CRUD —
@@ -310,7 +310,7 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 		// be used here, it's registered behind TenantMiddleware which
 		// hard-requires an X-Merchant-ID header the caller doesn't have yet
 		// (they may have zero merchants, e.g. right after registration). See
-		// docs/design/specs/2026-09-24-merchant-management-ui-design.md §3.5.
+		// 2026-09-24-merchant-management-ui-design.md §3.5.
 		rawToken, err := c.Cookie(refreshCookieName)
 		if err != nil || rawToken == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing refresh token"})

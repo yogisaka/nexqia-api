@@ -3,7 +3,7 @@
 // Every step is idempotent (ON CONFLICT DO NOTHING/DO UPDATE) — safe to re-run
 // in any environment, including production, where this MUST be run once after
 // migrate-up (unlike `make seed`, which is demo-only and typically skipped in
-// production). See docs/design/specs/2026-09-24-platform-admin-foundation-design.md §7.
+// production). See 2026-09-24-platform-admin-foundation-design.md §7.
 //
 // Reads PLATFORM_ADMIN_BOOTSTRAP_USERNAME/_EMAIL/_PASSWORD from .env (flag -env,
 // default ".env") — never hardcoded, never logged.

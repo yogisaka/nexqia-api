@@ -4,7 +4,7 @@
 -- deliberately plain uuid with NO cross-schema FK to core.app_user/core.company
 -- (no precedent for cross-schema FK anywhere in this codebase; this row must
 -- also survive as a permanent audit record even if the target user/company is
--- later deleted). See docs/design/specs/2026-09-24-platform-admin-impersonate-design.md §5.
+-- later deleted). See 2026-09-24-platform-admin-impersonate-design.md §5.
 CREATE TABLE platform.impersonation_session (
     id                uuid PRIMARY KEY DEFAULT uuid_generate_v7(),
     admin_user_id     uuid NOT NULL REFERENCES platform.admin_user(id),

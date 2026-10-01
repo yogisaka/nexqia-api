@@ -16,7 +16,7 @@ import (
 // PermVisitManage guards operations.admission + operations.queue — the FO/nurse/
 // doctor daily-use surface, kept as one permission since both move together as
 // "the kunjungan" in v1's flow. See
-// docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §6.
+// 2026-09-16-v1-operations-antrian-jadwal-design.md §6.
 const PermVisitManage = "operations.visit.manage"
 
 // queueStagePipeline is the fixed v1 Poli Umum stage order. Sub-project #4/#5

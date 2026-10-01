@@ -26,7 +26,7 @@ type CreateCompanyWithIDParams struct {
 }
 
 // internal/db/queries/registration.sql
-// New queries for POST /auth/register (see docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §6).
+// New queries for POST /auth/register (see 2026-09-23-saas-registration-owner-bootstrap-design.md §6).
 // Explicit id (not DB DEFAULT) — company_isolation RLS has no WITH CHECK, so
 // USING doubles as the insert check: the new row's id must already equal
 // app.current_company_id, which must be set to a value we chose BEFORE this

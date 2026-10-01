@@ -2,7 +2,7 @@
 -- Verbatim transcript of docs/08-operations-ddl.md §2 "Admission" — core columns
 -- only, satellite tables (admission_guarantor/admission_bed_history/admission_dpjp/
 -- medical_record_tracking) deferred, see
--- docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §2.
+-- 2026-09-16-v1-operations-antrian-jadwal-design.md §2.
 
 CREATE TABLE operations.admission (
     id              uuid PRIMARY KEY DEFAULT uuid_generate_v7(),

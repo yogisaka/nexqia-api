@@ -1,5 +1,5 @@
 -- internal/db/queries/session.sql
--- core.refresh_token (docs/design/specs/2026-09-15-session-refresh-token-design.md)
+-- core.refresh_token (2026-09-15-session-refresh-token-design.md)
 
 -- name: GetCompanyMaxConcurrentSessions :one
 SELECT max_concurrent_sessions FROM core.company WHERE id = $1;

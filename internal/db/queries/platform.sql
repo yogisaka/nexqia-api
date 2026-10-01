@@ -1,7 +1,7 @@
 -- internal/db/queries/platform.sql
 -- platform.admin_user, platform.role, platform.permission, platform.role_permission,
 -- platform.admin_user_role, platform.admin_refresh_token
--- (docs/design/specs/2026-09-24-platform-admin-foundation-design.md §3)
+-- (2026-09-24-platform-admin-foundation-design.md §3)
 
 -- name: CreatePlatformAdminUser :one
 INSERT INTO platform.admin_user (username, email, full_name, password_hash, created_by, updated_by)

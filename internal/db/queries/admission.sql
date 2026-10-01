@@ -1,6 +1,6 @@
 -- internal/db/queries/admission.sql
 -- operations.admission, core columns only — see
--- docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §2/§3.
+-- 2026-09-16-v1-operations-antrian-jadwal-design.md §2/§3.
 
 -- name: CreateAdmission :one
 -- Param order: $1 company_id, $2 merchant_id, $3 visit_no, $4 person_id,

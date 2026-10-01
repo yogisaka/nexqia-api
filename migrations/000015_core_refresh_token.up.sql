@@ -1,5 +1,5 @@
 -- migrations/000015_core_refresh_token.up.sql
--- Session/refresh-token model, see docs/design/specs/2026-09-15-session-refresh-token-design.md.
+-- Session/refresh-token model, see 2026-09-15-session-refresh-token-design.md.
 
 ALTER TABLE core.company
     ADD COLUMN max_concurrent_sessions int NOT NULL DEFAULT 1;

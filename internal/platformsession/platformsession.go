@@ -2,7 +2,7 @@
 // internal/session (that package is hardcoded to core.refresh_token, which has
 // NOT NULL company_id/merchant_id + RLS + a tenant-consistency trigger, none of
 // which apply here). Same algorithm, separate table. See
-// docs/design/specs/2026-09-24-platform-admin-foundation-design.md §4.
+// 2026-09-24-platform-admin-foundation-design.md §4.
 package platformsession
 
 import (

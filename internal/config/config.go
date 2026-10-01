@@ -47,7 +47,7 @@ type Config struct {
 
 	// MFASecretEncryptionKey is base64-encoded, decodes to 32 raw bytes (AES-256-GCM
 	// key for core.app_user.mfa_secret) — deliberately a dedicated key, separate from
-	// any future field-encryption key. See docs/design/specs/2026-09-15-totp-2fa-design.md §6.
+	// any future field-encryption key. See 2026-09-15-totp-2fa-design.md §6.
 	MFASecretEncryptionKey string
 
 	// NIKEncryptionKey is the pgcrypto pgp_sym_encrypt/pgp_sym_decrypt symmetric key
@@ -63,7 +63,7 @@ type Config struct {
 	NIKSearchKey string
 
 	// AppLockDefaultIdleMinutes/AppLockMaxPinAttempts/AppLockAttemptWindowMinutes —
-	// PIN-unlock tunables, see docs/design/specs/2026-09-15-pin-unlock-design.md §10.
+	// PIN-unlock tunables, see 2026-09-15-pin-unlock-design.md §10.
 	// AppLockDefaultIdleMinutes is only a fallback: a merchant's own idle_minutes
 	// (core.feature_flag "auth.pin_lock" flag_value) always wins when set.
 	AppLockDefaultIdleMinutes   int
@@ -74,13 +74,13 @@ type Config struct {
 	// APP_LOCK_MIN_IDLE_MINUTES/APP_LOCK_MAX_IDLE_MINUTES) both a merchant's
 	// idle_minutes (PUT /settings/security) and AppLockDefaultIdleMinutes must
 	// fall inside; validated fail-fast in Load(), see
-	// docs/design/specs/2026-09-29-merchant-security-settings-design.md §3.
+	// 2026-09-29-merchant-security-settings-design.md §3.
 	AppLockMinIdleMinutes int
 	AppLockMaxIdleMinutes int
 
 	// PlatformMFAGraceDays/TenantMFAGraceDays — grace period (days) after a user
 	// becomes MFA-mandatory before login is hard-blocked, see
-	// docs/design/specs/2026-09-25-mfa-grace-enforcement-design.md §6.
+	// 2026-09-25-mfa-grace-enforcement-design.md §6.
 	PlatformMFAGraceDays int
 	TenantMFAGraceDays   int
 
@@ -96,7 +96,7 @@ type Config struct {
 	// AuditExportMaxRows caps one audit CSV export (env AUDIT_EXPORT_MAX_ROWS);
 	// a filtered result wider than this is refused with 400 so a broad filter
 	// cannot stream the whole log table. See
-	// docs/design/specs/2026-09-29-audit-log-ui-design.md §4.5.
+	// 2026-09-29-audit-log-ui-design.md §4.5.
 	AuditExportMaxRows int
 
 	// AuditLocation is the timezone audit CSV timestamps render in (env
@@ -106,7 +106,7 @@ type Config struct {
 	// AuditWorkHourStart/AuditWorkHourEnd (env AUDIT_WORK_HOUR_START/END) —
 	// working-hours fence feeding the after_hours review flag: access rows
 	// before start or at/after end (local hour in AuditLocation) count as
-	// after-hours. See docs/design/specs/2026-09-29-access-review.md §6.
+	// after-hours. See 2026-09-29-access-review.md §6.
 	AuditWorkHourStart int
 	AuditWorkHourEnd   int
 

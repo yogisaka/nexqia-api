@@ -1,5 +1,5 @@
 -- internal/db/queries/mfa.sql
--- core.mfa_recovery_code (docs/design/specs/2026-09-15-totp-2fa-design.md §7)
+-- core.mfa_recovery_code (2026-09-15-totp-2fa-design.md §7)
 
 -- name: CreateMFARecoveryCode :exec
 INSERT INTO core.mfa_recovery_code (user_id, company_id, code_hash)

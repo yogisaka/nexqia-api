@@ -4,7 +4,7 @@ CREATE SCHEMA IF NOT EXISTS platform;
 -- No RLS on any table below — this schema has exactly one population (NEXQIA's
 -- own operator team), not per-tenant data. Isolation is enforced in Go
 -- (RequirePlatformPermission), not Postgres session GUCs. See
--- docs/design/specs/2026-09-24-platform-admin-foundation-design.md §3.
+-- 2026-09-24-platform-admin-foundation-design.md §3.
 
 CREATE TABLE platform.admin_user (
     id             uuid PRIMARY KEY DEFAULT uuid_generate_v7(),

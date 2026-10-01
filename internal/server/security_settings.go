@@ -1,7 +1,7 @@
 // internal/server/security_settings.go
 // Merchant security settings — PIN-lock toggle + idle window and MFA-nudge
 // policy, with password re-confirmation and an immutable change history
-// (docs/design/specs/2026-09-29-merchant-security-settings-design.md §3–§5, §7, §8).
+// (2026-09-29-merchant-security-settings-design.md §3–§5, §7, §8).
 package server
 
 import (

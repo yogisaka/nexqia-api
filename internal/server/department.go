@@ -13,7 +13,7 @@ import (
 
 // PermDepartmentManage guards core.department (poli) CRUD. ward/bed are
 // explicitly out of v1 scope (ranap-only) and have no routes here — see
-// docs/design/specs/2026-09-15-v1-rajal-poliumum-scope-design.md.
+// 2026-09-15-v1-rajal-poliumum-scope-design.md.
 const PermDepartmentManage = "core.department.manage"
 
 // RegisterDepartmentRoutes wires core.department CRUD (docs/07-core-ddl.md §6

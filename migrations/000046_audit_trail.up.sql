@@ -1,5 +1,5 @@
 -- nexqia-api/migrations/000046_audit_trail.up.sql
--- K1 audit trail, see docs/design/specs/2026-09-29-audit-trail-design.md.
+-- K1 audit trail, see 2026-09-29-audit-trail-design.md.
 -- audit_log: WHO changed WHICH fields of WHICH patient-data row — never the values
 -- (no second copy of patient data). access_log: WHO read WHICH patient resource.
 

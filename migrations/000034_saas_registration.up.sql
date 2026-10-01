@@ -1,5 +1,5 @@
 -- Company self-registration + Owner bootstrap.
--- See docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md
+-- See 2026-09-23-saas-registration-owner-bootstrap-design.md
 
 -- §6 poin 13 / Temuan C: session.Issue needs to create a session for a user with
 -- NO merchant yet (Owner right after registration). session.Issue/auth.GenerateToken/

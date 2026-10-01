@@ -10,7 +10,7 @@ import (
 
 // Claims identifies the authenticated principal: which app_user, in which company,
 // with which merchant active for this session (see internal/session — chosen at
-// login or via /auth/switch-merchant, see docs/design/specs/2026-09-15-session-refresh-token-design.md §3a).
+// login or via /auth/switch-merchant, see 2026-09-15-session-refresh-token-design.md §3a).
 // MerchantID here is informational (session identity, shown in UI) — it is NOT the
 // source of authorization; server.RequirePermission independently checks X-Merchant-ID
 // against user_merchant_role on every request, unchanged by this field.
@@ -32,16 +32,16 @@ type Claims struct {
 	// Checked by AppLockMiddleware (internal/server/applock.go) to skip
 	// idle-lock enforcement, since an impersonating admin has no way to
 	// unlock with the target user's own PIN. See
-	// docs/design/specs/2026-09-24-platform-admin-impersonate-design.md §4.
+	// 2026-09-24-platform-admin-impersonate-design.md §4.
 	ImpersonatedBy string `json:"imp,omitempty"`
 	jwt.RegisteredClaims
 }
 
 // GenerateToken issues a short-lived access token. ttl comes from
-// config.Config.AccessTokenTTLMinutes — see docs/design/specs/2026-09-15-session-refresh-token-design.md.
+// config.Config.AccessTokenTTLMinutes — see 2026-09-15-session-refresh-token-design.md.
 // deviceID is the same value stored on core.refresh_token.device_id (stable across
 // refresh rotations) — embedded here so protected routes can identify a device
-// without a new header, see docs/design/specs/2026-09-15-pin-unlock-design.md §4.
+// without a new header, see 2026-09-15-pin-unlock-design.md §4.
 func GenerateToken(secret, userID, companyID, merchantID, username, deviceID string, ttl time.Duration) (string, error) {
 	claims := Claims{
 		UserID:     userID,
@@ -134,7 +134,7 @@ func ParseToken(secret, tokenString string) (*Claims, error) {
 // rejects anything else, and ParseToken (tenant) rejects this purpose too (its
 // own check is claims.Purpose != accessTokenPurpose) — the two token systems
 // can never be used interchangeably. See
-// docs/design/specs/2026-09-24-platform-admin-foundation-design.md §4.
+// 2026-09-24-platform-admin-foundation-design.md §4.
 const platformAdminAccessPurpose = "platform_admin_access"
 
 // PlatformAdminClaims identifies an authenticated platform.admin_user — no
@@ -190,7 +190,7 @@ func ParsePlatformAdminToken(secret, tokenString string) (*PlatformAdminClaims, 
 
 // MFAEnrollmentPurpose and PlatformMFAEnrollmentPurpose tag short-lived MFA
 // enrollment tokens (spec §3 "Enrollment token", see
-// docs/design/plans/2026-09-25-mfa-grace-enforcement.md): the tenant one
+// 2026-09-25-mfa-grace-enforcement.md): the tenant one
 // is issued by the login flow (issueLoginSession once the MFA grace period has
 // ended) and spent at POST /auth/mfa/enroll, the platform one by
 // POST /platform/login and spent at POST /platform/mfa/enroll.

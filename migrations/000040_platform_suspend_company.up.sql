@@ -3,7 +3,7 @@
 -- updated, false = the id didn't match anything) — NOT void. A void-returning
 -- UPDATE-with-no-match silently affects 0 rows with no error, which would make
 -- the Go handler return 200 OK for a nonexistent company id. See
--- docs/design/specs/2026-09-24-platform-admin-suspend-company-design.md §4.
+-- 2026-09-24-platform-admin-suspend-company-design.md §4.
 
 CREATE FUNCTION platform.suspend_company(p_company_id uuid, p_updated_by uuid)
 RETURNS boolean

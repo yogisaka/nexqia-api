@@ -60,7 +60,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	v1 := router.Group("/api/v1")
 
 	// Public, pre-tenant-context: resolves a company code before X-Company-ID is known
-	// (see docs/design/specs/2026-09-16-his-auth-wiring-design.md §3).
+	// (see 2026-09-16-his-auth-wiring-design.md §3).
 	RegisterCompanyLookupRoute(v1, pool)
 	v1.POST("/auth/register", RegisterHandler(pool, cfg, hasher, limiter))
 
@@ -80,7 +80,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 
 	// Merchant isn't known yet on these routes either (same reasoning as
 	// companyOnly above) — but these DO need auth, unlike login/refresh.
-	// See docs/design/specs/2026-09-23-saas-registration-owner-bootstrap-design.md §3.
+	// See 2026-09-23-saas-registration-owner-bootstrap-design.md §3.
 	companyOnlyAuthed := v1.Group("", CompanyOnlyMiddleware(pool), AuthMiddleware(cfg.JWTSecret), RateLimitAPIMiddleware(limiter, cfg))
 	RegisterCompanyLevelRoutes(companyOnlyAuthed, cfg)
 

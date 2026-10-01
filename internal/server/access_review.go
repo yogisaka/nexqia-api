@@ -1,6 +1,6 @@
 // internal/server/access_review.go
 // Per-user access summary with review flags (spec
-// docs/design/plans/2026-09-29-access-review.md, §6.1–§6.2, §7). The SQL
+// 2026-09-29-access-review.md, §6.1–§6.2, §7). The SQL
 // (sqlcgen.AccessReviewCounts) returns raw counts; the flags and the median
 // are computed here so they stay unit-testable.
 package server

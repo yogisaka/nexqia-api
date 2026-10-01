@@ -1,5 +1,5 @@
 // internal/server/pin.go
-// PIN enrollment/disable/verify — see docs/design/specs/2026-09-15-pin-unlock-design.md §5, §7.
+// PIN enrollment/disable/verify — see 2026-09-15-pin-unlock-design.md §5, §7.
 package server
 
 import (

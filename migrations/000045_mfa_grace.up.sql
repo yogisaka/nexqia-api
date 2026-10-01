@@ -1,6 +1,6 @@
 -- nexqia-api/migrations/000045_mfa_grace.up.sql
 -- MFA grace period (tenant + platform) and platform admin TOTP,
--- see docs/design/specs/2026-09-25-mfa-grace-enforcement-design.md.
+-- see 2026-09-25-mfa-grace-enforcement-design.md.
 
 ALTER TABLE core.app_user ADD COLUMN mfa_grace_until timestamptz;
 

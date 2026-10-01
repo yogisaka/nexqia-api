@@ -14,7 +14,7 @@ import (
 )
 
 // PermCounterManage guards operations.counter CRUD and the call-next operator
-// action — see docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §2.
+// action — see 2026-09-16-v1-operations-antrian-jadwal-design.md §2.
 const PermCounterManage = "operations.counter.manage"
 
 func RegisterCounterRoutes(rg *gin.RouterGroup) {
@@ -57,7 +57,7 @@ func CreateCounterHandler(c *gin.Context) {
 	// Check permission against the body's merchant_id, not X-Merchant-ID —
 	// they can differ, and creating under a merchant the caller only declared
 	// in a header (without holding the permission there) is a cross-tenant
-	// IDOR. See docs/design/plans/2026-09-16-v1-operations-antrian-jadwal-plan.md.
+	// IDOR. See 2026-09-16-v1-operations-antrian-jadwal-plan.md.
 	if !RequirePermissionForMerchant(c, PermCounterManage, merchantID) {
 		return
 	}
@@ -197,7 +197,7 @@ func UpdateCounterHandler(c *gin.Context) {
 
 // CallNextQueueHandler pulls the oldest 'waiting' queue row matching this
 // counter's queue_type/department scope, marks it 'called', and logs the
-// transition. See docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §4.
+// transition. See 2026-09-16-v1-operations-antrian-jadwal-design.md §4.
 // CallNextQueueHandler godoc
 // @Summary Call the next waiting queue entry at this counter
 // @Description Pulls the oldest 'waiting' queue row matching this counter's queue_type/department scope, marks it 'called', and logs the transition.

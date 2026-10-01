@@ -1,7 +1,7 @@
 -- migrations/000019_operations_schedule_counter_queue.up.sql
 -- Verbatim transcript of docs/08-operations-ddl.md §1 "Penjadwalan & Antrian",
 -- minus operations.appointment (deferred to v1.1, see
--- docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §2).
+-- 2026-09-16-v1-operations-antrian-jadwal-design.md §2).
 
 CREATE TABLE operations.physician_schedule (
     id            uuid PRIMARY KEY DEFAULT uuid_generate_v7(),

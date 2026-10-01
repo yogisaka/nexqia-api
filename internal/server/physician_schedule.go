@@ -16,7 +16,7 @@ import (
 
 // PermScheduleManage guards operations.physician_schedule CRUD — jadwal praktik
 // dokter, template mingguan berulang (day_of_week + effective_from/to), lihat
-// docs/design/specs/2026-09-16-v1-operations-antrian-jadwal-design.md §2.
+// 2026-09-16-v1-operations-antrian-jadwal-design.md §2.
 const PermScheduleManage = "operations.schedule.manage"
 
 func RegisterPhysicianScheduleRoutes(rg *gin.RouterGroup) {
@@ -120,7 +120,7 @@ func CreatePhysicianScheduleHandler(c *gin.Context) {
 	// Check permission against the body's merchant_id, not X-Merchant-ID —
 	// they can differ, and creating under a merchant the caller only declared
 	// in a header (without holding the permission there) is a cross-tenant
-	// IDOR. See docs/design/plans/2026-09-16-v1-operations-antrian-jadwal-plan.md.
+	// IDOR. See 2026-09-16-v1-operations-antrian-jadwal-plan.md.
 	if !RequirePermissionForMerchant(c, PermScheduleManage, merchantID) {
 		return
 	}

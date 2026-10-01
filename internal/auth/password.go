@@ -21,7 +21,7 @@ var ErrInvalidHashFormat = errors.New("invalid password hash format")
 
 // Argon2Params controls the cost of new Argon2id hashes. Values come from
 // config.Config (ARGON2_MEMORY_KIB/ARGON2_ITERATIONS/ARGON2_PARALLELISM) —
-// see docs/design/specs/2026-09-15-ratelimit-hardening-design.md §11.
+// see 2026-09-15-ratelimit-hardening-design.md §11.
 // Existing hashes embed the params they were created with, so changing these
 // only affects new/rehashed passwords, never breaks verifying old ones.
 type Argon2Params struct {

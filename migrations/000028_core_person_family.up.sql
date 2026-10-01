@@ -1,6 +1,6 @@
 -- migrations/000028_core_person_family.up.sql
 -- Verbatim transcript of
--- docs/design/specs/2026-09-18-fo-pendaftaran-full-design.md §4.1 + §4.2.
+-- 2026-09-18-fo-pendaftaran-full-design.md §4.1 + §4.2.
 -- Person concept-FK columns + core.person_family (family member master).
 
 -- §4.1 core.person — kolom baru (semua concept FK)
