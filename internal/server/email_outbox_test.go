@@ -3,7 +3,12 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +19,7 @@ import (
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 	"github.com/yogisaka/nexqia-api/internal/mail"
+	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
 // beginAsRuntime opens a transaction on the owner pool and switches it to
@@ -278,5 +284,276 @@ func TestEmailOutbox_DB_DeviceSeen(t *testing.T) {
 	}
 	if seen {
 		t.Fatalf("expected new-device not seen")
+	}
+}
+
+// --- Registration / login triggers and the worker (Task 3) ---
+
+func emailTestRouter(t *testing.T, ctx context.Context) (*pgxpool.Pool, http.Handler) {
+	t.Helper()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	cfg := testConfig()
+	cfg.AppBaseURL = "https://app.example.test"
+	return pool, server.NewRouter(pool, redisClient, cfg)
+}
+
+func outboxCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, kind string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.email_outbox WHERE kind = $1", kind).Scan(&n); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	return n
+}
+
+// registerForEmail registers an owner from deviceID, then logs that session out
+// so later logins don't run into the device limit. Returns company ID and code.
+func registerForEmail(t *testing.T, router http.Handler, username, email, phone, deviceID string) (companyID, companyCode string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(registerPayload(username, email, phone)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Device-Id", deviceID)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			CompanyID   string `json:"company_id"`
+			CompanyCode string `json:"company_code"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode register: %v", err)
+	}
+	logoutFrom(t, router, resp.Data.CompanyID, rec)
+	return resp.Data.CompanyID, resp.Data.CompanyCode
+}
+
+func logoutFrom(t *testing.T, router http.Handler, companyID string, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+	req.Header.Set("X-Company-ID", companyID)
+	for _, ck := range rec.Result().Cookies() {
+		if ck.Name == "refresh_token" {
+			req.AddCookie(ck)
+		}
+	}
+	out := httptest.NewRecorder()
+	router.ServeHTTP(out, req)
+	if out.Code != http.StatusOK {
+		t.Fatalf("logout expected 200, got %d: %s", out.Code, out.Body.String())
+	}
+}
+
+// loginFrom logs username in from deviceID, asserts 200 and logs out again.
+func loginFrom(t *testing.T, router http.Handler, companyID, username, deviceID string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"username": username, "password": "Passw0rd123!"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Company-ID", companyID)
+	req.Header.Set("X-Device-Id", deviceID)
+	req.Header.Set("User-Agent", "Firefox di Linux")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || resp.Data.Token == "" {
+		t.Fatalf("login must return a session token, got %s", rec.Body.String())
+	}
+	logoutFrom(t, router, companyID, rec)
+}
+
+func TestEmailOutbox_RegisterEnqueuesWelcome(t *testing.T) {
+	ctx := context.Background()
+	pool, router := emailTestRouter(t, ctx)
+
+	_, code := registerForEmail(t, router, "welcome.owner", "welcome.owner@example.com", "081234500201", "dev-reg")
+
+	var to, subject, text, html string
+	if err := pool.QueryRow(ctx,
+		"SELECT to_address, subject, body_text, body_html FROM core.email_outbox WHERE kind = 'welcome'",
+	).Scan(&to, &subject, &text, &html); err != nil {
+		t.Fatalf("expected exactly one welcome row: %v", err)
+	}
+	if outboxCount(t, ctx, pool, "welcome") != 1 {
+		t.Fatalf("expected exactly one welcome row")
+	}
+	if to != "welcome.owner@example.com" || subject != "Selamat datang di NEXQIA — kode perusahaan Anda" {
+		t.Fatalf("unexpected welcome row: to=%q subject=%q", to, subject)
+	}
+	for _, body := range []string{text, html} {
+		if !strings.Contains(body, code) || !strings.Contains(body, "https://app.example.test/login") || !strings.Contains(body, "welcome.owner") {
+			t.Fatalf("welcome body must carry company code %q, login URL and username: %q", code, body)
+		}
+	}
+	if strings.Contains(text, "Passw0rd123!") || strings.Contains(html, "Passw0rd123!") {
+		t.Fatalf("welcome email must never contain the password")
+	}
+	// The registration device is now known: no new-device alert from registering.
+	if n := outboxCount(t, ctx, pool, "new_device_login"); n != 0 {
+		t.Fatalf("registration must not queue a new-device alert, got %d", n)
+	}
+}
+
+func TestEmailOutbox_RegisterConflictNoEmail(t *testing.T) {
+	ctx := context.Background()
+	pool, router := emailTestRouter(t, ctx)
+	registerForEmail(t, router, "conflict.one", "conflict@example.com", "081234500202", "dev-1")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(registerPayload("conflict.two", "conflict@example.com", "081234500203")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Device-Id", "dev-2")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate email expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if n := outboxCount(t, ctx, pool, "welcome"); n != 1 {
+		t.Fatalf("rejected registration must not queue a welcome email, got %d rows", n)
+	}
+}
+
+func TestEmailOutbox_LoginSameDeviceNoAlert(t *testing.T) {
+	ctx := context.Background()
+	pool, router := emailTestRouter(t, ctx)
+	companyID, _ := registerForEmail(t, router, "same.device", "same.device@example.com", "081234500204", "dev-home")
+
+	loginFrom(t, router, companyID, "same.device", "dev-home")
+	if n := outboxCount(t, ctx, pool, "new_device_login"); n != 0 {
+		t.Fatalf("login from the registration device must not alert, got %d", n)
+	}
+}
+
+func TestEmailOutbox_LoginNewDeviceAlerts(t *testing.T) {
+	ctx := context.Background()
+	pool, router := emailTestRouter(t, ctx)
+	companyID, _ := registerForEmail(t, router, "new.device", "new.device@example.com", "081234500205", "dev-home")
+
+	loginFrom(t, router, companyID, "new.device", "dev-office")
+	if n := outboxCount(t, ctx, pool, "new_device_login"); n != 1 {
+		t.Fatalf("login from a new device expected 1 alert, got %d", n)
+	}
+	var to, text string
+	if err := pool.QueryRow(ctx, "SELECT to_address, body_text FROM core.email_outbox WHERE kind = 'new_device_login'").Scan(&to, &text); err != nil {
+		t.Fatalf("read alert: %v", err)
+	}
+	if to != "new.device@example.com" || !strings.Contains(text, "Firefox di Linux") ||
+		!strings.Contains(text, "https://app.example.test/account/security") || !strings.Contains(text, "WIB") {
+		t.Fatalf("unexpected alert: to=%q text=%q", to, text)
+	}
+
+	loginFrom(t, router, companyID, "new.device", "dev-office")
+	if n := outboxCount(t, ctx, pool, "new_device_login"); n != 1 {
+		t.Fatalf("second login from the same device must not alert again, got %d", n)
+	}
+}
+
+func TestEmailOutbox_LoginAlertFailureDoesNotBlockLogin(t *testing.T) {
+	ctx := context.Background()
+	pool, router := emailTestRouter(t, ctx)
+	companyID, _ := registerForEmail(t, router, "broken.mail", "broken.mail@example.com", "081234500206", "dev-home")
+	// ' ' passes the Go non-empty check but violates CHECK (btrim(to_address) <> ''),
+	// so the enqueue fails inside the login transaction.
+	if _, err := pool.Exec(ctx, "UPDATE core.app_user SET email = ' ' WHERE username = 'broken.mail'"); err != nil {
+		t.Fatalf("blank email: %v", err)
+	}
+
+	loginFrom(t, router, companyID, "broken.mail", "dev-office")
+	if n := outboxCount(t, ctx, pool, "new_device_login"); n != 0 {
+		t.Fatalf("failed alert must leave no row, got %d", n)
+	}
+	// The login transaction committed despite the failed enqueue: the session exists.
+	var sessions int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.refresh_token WHERE device_id = 'dev-office'").Scan(&sessions); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if sessions != 1 {
+		t.Fatalf("login session must be committed, got %d refresh tokens", sessions)
+	}
+}
+
+func TestEmailOutbox_UserWithoutEmailNoAlert(t *testing.T) {
+	ctx := context.Background()
+	pool, router := emailTestRouter(t, ctx)
+	companyID, _ := registerForEmail(t, router, "no.mail", "no.mail@example.com", "081234500207", "dev-home")
+	if _, err := pool.Exec(ctx, "UPDATE core.app_user SET email = NULL WHERE username = 'no.mail'"); err != nil {
+		t.Fatalf("clear email: %v", err)
+	}
+
+	loginFrom(t, router, companyID, "no.mail", "dev-office")
+	if n := outboxCount(t, ctx, pool, "new_device_login"); n != 0 {
+		t.Fatalf("user without email must not get an alert row, got %d", n)
+	}
+}
+
+type recordingSender struct {
+	err  error
+	sent []mail.Message
+}
+
+func (s *recordingSender) Send(_ context.Context, m mail.Message) error {
+	s.sent = append(s.sent, m)
+	return s.err
+}
+
+func TestEmailOutbox_WorkerDelivers(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	id := enqueueTestEmail(t, ctx, sqlcgen.New(pool), "andi@example.com")
+	cfg := testConfig()
+	cfg.MailBatchSize, cfg.MailMaxAttempts = 20, 5
+
+	sender := &recordingSender{}
+	n, err := mail.RunOnce(ctx, pool, sender, cfg)
+	if err != nil || n != 1 {
+		t.Fatalf("RunOnce = %d, %v", n, err)
+	}
+	if len(sender.sent) != 1 || sender.sent[0].To != "andi@example.com" || sender.sent[0].HTML != "<p>html</p>" {
+		t.Fatalf("unexpected sends: %+v", sender.sent)
+	}
+	if status, _, _, _ := outboxRow(t, ctx, pool, id); status != "sent" {
+		t.Fatalf("expected sent, got %s", status)
+	}
+}
+
+func TestEmailOutbox_WorkerRetriesThenGivesUp(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	id := enqueueTestEmail(t, ctx, sqlcgen.New(pool), "andi@example.com")
+	cfg := testConfig()
+	cfg.MailBatchSize, cfg.MailMaxAttempts = 20, 2
+	sender := &recordingSender{err: errors.New("smtp dial: connection refused")}
+
+	before := time.Now()
+	if _, err := mail.RunOnce(ctx, pool, sender, cfg); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	status, attempts, next, lastErr := outboxRow(t, ctx, pool, id)
+	if status != "pending" || attempts != 1 || lastErr == nil || *lastErr != "smtp dial: connection refused" {
+		t.Fatalf("after first failure expected pending/1/error, got %s/%d/%v", status, attempts, lastErr)
+	}
+	if d := next.Sub(before); d < 2*time.Minute-5*time.Second || d > 2*time.Minute+5*time.Second {
+		t.Fatalf("first retry expected ~2 minutes ahead, got %v", d)
+	}
+
+	// Make it due again and fail the last allowed attempt.
+	if _, err := pool.Exec(ctx, "UPDATE core.email_outbox SET next_attempt_at = now() WHERE id = $1", id); err != nil {
+		t.Fatalf("make due: %v", err)
+	}
+	if _, err := mail.RunOnce(ctx, pool, sender, cfg); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if status, attempts, _, _ := outboxRow(t, ctx, pool, id); status != "failed" || attempts != 2 {
+		t.Fatalf("after MailMaxAttempts expected failed/2, got %s/%d", status, attempts)
 	}
 }

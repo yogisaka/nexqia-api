@@ -4,6 +4,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/config"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
+	"github.com/yogisaka/nexqia-api/internal/mail"
 	"github.com/yogisaka/nexqia-api/internal/mfa"
 	"github.com/yogisaka/nexqia-api/internal/ratelimit"
 	"github.com/yogisaka/nexqia-api/internal/session"
@@ -357,6 +359,8 @@ func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, re
 	if !checkDeviceLimit(c, q, user.ID, user.CompanyID) {
 		return
 	}
+	// Checked before session.Issue records this device in core.refresh_token.
+	deviceSeen := loginDeviceSeen(c, user.ID, deviceID)
 	issued, err := session.Issue(c.Request.Context(), q, sessionConfig(cfg), session.IssueParams{
 		UserID: user.ID, CompanyID: user.CompanyID, MerchantID: merchantID,
 		Username: user.Username, DeviceID: deviceID, DeviceLabel: deviceLabel, IP: ip,
@@ -364,6 +368,10 @@ func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, re
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue session"})
 		return
+	}
+	// Only after the session exists: a login that fails later must not alert.
+	if !deviceSeen && user.Email.Valid && user.Email.String != "" {
+		enqueueNewDeviceAlert(c, cfg, user, deviceLabel, ip)
 	}
 	setRefreshCookie(c, cfg, issued.RefreshToken, issued.RefreshExpiresAt)
 	data := gin.H{
@@ -404,6 +412,63 @@ func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, re
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+// loginDeviceSeen reports whether the user ever had a session on deviceID
+// (core.user_device_seen, any status). It runs in a savepoint: a failed check
+// must neither block the login nor abort the request transaction, so on error
+// the device is treated as seen (no alert).
+func loginDeviceSeen(c *gin.Context, userID pgtype.UUID, deviceID string) bool {
+	ctx := c.Request.Context()
+	sp, err := TxFromContext(c).Begin(ctx)
+	if err != nil {
+		slog.Warn("new-device check skipped", "user_id", userID.String(), "error", err)
+		return true
+	}
+	seen, err := sqlcgen.New(sp).UserDeviceSeen(ctx, sqlcgen.UserDeviceSeenParams{UserID: userID, DeviceID: deviceID})
+	if err != nil {
+		_ = sp.Rollback(ctx)
+		slog.Warn("new-device check failed", "user_id", userID.String(), "error", err)
+		return true
+	}
+	if err := sp.Commit(ctx); err != nil {
+		slog.Warn("new-device check release failed", "user_id", userID.String(), "error", err)
+	}
+	return seen
+}
+
+// enqueueNewDeviceAlert queues the new-device login email (spec
+// 2026-10-01-email-outbox §3.5) in a savepoint of the login transaction: an
+// alert that cannot be queued is rolled back alone and the login still succeeds.
+func enqueueNewDeviceAlert(c *gin.Context, cfg config.Config, user sqlcgen.CoreAppUser, deviceLabel string, ip netip.Addr) {
+	ctx := c.Request.Context()
+	msg, err := mail.RenderNewDeviceLogin(mail.NewDeviceData{
+		Username:    user.Username,
+		When:        time.Now().In(cfg.AuditLocation).Format("02 Jan 2006 15:04 MST"),
+		Device:      deviceLabel,
+		IP:          ip.String(),
+		SecurityURL: cfg.AppBaseURL + "/account/security",
+	})
+	if err != nil {
+		slog.Warn("new-device alert not queued", "user_id", user.ID.String(), "error", err)
+		return
+	}
+	sp, err := TxFromContext(c).Begin(ctx)
+	if err != nil {
+		slog.Warn("new-device alert not queued", "user_id", user.ID.String(), "error", err)
+		return
+	}
+	if _, err := sqlcgen.New(sp).EnqueueEmail(ctx, sqlcgen.EnqueueEmailParams{
+		CompanyID: user.CompanyID, Kind: "new_device_login", ToAddress: user.Email.String,
+		Subject: msg.Subject, BodyText: msg.Text, BodyHtml: msg.HTML,
+	}); err != nil {
+		_ = sp.Rollback(ctx)
+		slog.Warn("new-device alert not queued", "user_id", user.ID.String(), "error", err)
+		return
+	}
+	if err := sp.Commit(ctx); err != nil {
+		slog.Warn("new-device alert savepoint release failed", "user_id", user.ID.String(), "error", err)
+	}
 }
 
 type loginRequest struct {
@@ -1035,6 +1100,25 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue session"})
+			return
+		}
+
+		// Welcome email (company code) is part of the registration contract: it is
+		// queued in this transaction, so a rolled-back registration sends nothing
+		// and a failure to queue fails the registration (spec 2026-10-01-email-outbox §3.5).
+		welcome, err := mail.RenderWelcome(mail.WelcomeData{
+			FullName: req.FullName, CompanyName: company.Name, CompanyCode: company.Code,
+			Username: user.Username, LoginURL: cfg.AppBaseURL + "/login",
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if _, err := q.EnqueueEmail(ctx, sqlcgen.EnqueueEmailParams{
+			CompanyID: companyID, Kind: "welcome", ToAddress: req.Email,
+			Subject: welcome.Subject, BodyText: welcome.Text, BodyHtml: welcome.HTML,
+		}); err != nil {
+			respondInternalError(c, err)
 			return
 		}
 
