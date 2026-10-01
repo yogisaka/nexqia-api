@@ -255,6 +255,8 @@ func ApplyRoleTemplateHandler(c *gin.Context) {
 		return
 	}
 
+	// From here on roles may already be written: every error must abort so the
+	// request transaction rolls back instead of committing a partial apply.
 	created := []createdRole{}
 	skipped := []skippedRole{}
 	for _, tr := range chosen {
@@ -273,7 +275,7 @@ func ApplyRoleTemplateHandler(c *gin.Context) {
 		}
 		sp, err := tx.Begin(ctx) // nested pgx.Tx = SAVEPOINT
 		if err != nil {
-			respondInternalError(c, err)
+			abortInternalError(c, err)
 			return
 		}
 		role, err := sqlcgen.New(sp).CreateRole(ctx, params)
@@ -283,18 +285,18 @@ func ApplyRoleTemplateHandler(c *gin.Context) {
 				skipped = append(skipped, skippedRole{Name: tr.Name, Reason: "exists"})
 				continue
 			}
-			respondInternalError(c, err)
+			abortInternalError(c, err)
 			return
 		}
 		for _, permissionID := range tr.PermissionIDs {
 			if err := sqlcgen.New(sp).AddRolePermission(ctx, sqlcgen.AddRolePermissionParams{RoleID: role.ID, PermissionID: permissionID}); err != nil {
 				_ = sp.Rollback(ctx)
-				respondInternalError(c, err)
+				abortInternalError(c, err)
 				return
 			}
 		}
 		if err := sp.Commit(ctx); err != nil { // RELEASE SAVEPOINT
-			respondInternalError(c, err)
+			abortInternalError(c, err)
 			return
 		}
 		created = append(created, createdRole{RoleID: role.ID.String(), Name: role.Name})
@@ -321,7 +323,7 @@ func ApplyRoleTemplateHandler(c *gin.Context) {
 		RolesCreated:    createdNames,
 		RolesSkipped:    skippedNames,
 	}); err != nil {
-		respondInternalError(c, err)
+		abortInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"created": created, "skipped": skipped}})
