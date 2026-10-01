@@ -146,6 +146,23 @@ type CoreDietType struct {
 	RowVersion     int32
 }
 
+type CoreEmailOutbox struct {
+	ID            pgtype.UUID
+	CompanyID     pgtype.UUID
+	Kind          string
+	ToAddress     string
+	Subject       string
+	BodyText      string
+	BodyHtml      string
+	Status        string
+	Attempts      int32
+	NextAttemptAt pgtype.Timestamptz
+	LockedUntil   pgtype.Timestamptz
+	LastError     pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+	SentAt        pgtype.Timestamptz
+}
+
 type CoreFeatureFlag struct {
 	ID         pgtype.UUID
 	MerchantID pgtype.UUID
