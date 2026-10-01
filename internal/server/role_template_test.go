@@ -15,9 +15,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
+	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
@@ -538,5 +540,91 @@ func TestRoleTemplate_RequiresPermission(t *testing.T) {
 	}
 	if rec := applyRoleTemplateAPI(t, router, restrictedToken, companyID, merchantID, pratama.ID, map[string]any{"role_ids": templateRoleIDs(pratama)}); rec.Code != http.StatusForbidden {
 		t.Fatalf("apply without permission expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRoleTemplate_RuntimeReadsAndRecords — the production role (app_runtime,
+// which the API tests' owner pool bypasses) can run the GET query over the
+// child tables and record an application for its own company only.
+func TestRoleTemplate_RuntimeReadsAndRecords(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyA, _, userA, _, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.rt.a", "081234570911")
+	companyB, _, _, _, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.rt.b", "081234570912")
+
+	tx := runtimeTx(t, ctx, pool, companyA)
+	q := sqlcgen.New(tx)
+	rows, err := q.ListRoleTemplateRoles(ctx)
+	if err != nil {
+		t.Fatalf("ListRoleTemplateRoles as app_runtime: %v", err)
+	}
+	if len(rows) != 18+20+22 {
+		t.Fatalf("expected 60 template role/permission rows as app_runtime, got %d", len(rows))
+	}
+	tpl, err := q.GetRoleTemplate(ctx, rows[0].TemplateID)
+	if err != nil {
+		t.Fatalf("GetRoleTemplate as app_runtime: %v", err)
+	}
+
+	var companyAID, userAID, companyBID pgtype.UUID
+	for _, p := range []struct {
+		dst *pgtype.UUID
+		src string
+	}{{&companyAID, companyA}, {&userAID, userA}, {&companyBID, companyB}} {
+		if err := p.dst.Scan(p.src); err != nil {
+			t.Fatalf("parse uuid %s: %v", p.src, err)
+		}
+	}
+	record := func(company pgtype.UUID) error {
+		return q.CreateTemplateApplication(ctx, sqlcgen.CreateTemplateApplicationParams{
+			CompanyID:       company,
+			TemplateID:      tpl.ID,
+			TemplateVersion: tpl.Version,
+			AppliedBy:       userAID,
+			RolesCreated:    []string{},
+			RolesSkipped:    []string{},
+		})
+	}
+	if err := record(companyAID); err != nil {
+		t.Fatalf("record own company application as app_runtime: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SAVEPOINT sp"); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	var pgErr *pgconn.PgError
+	if err := record(companyBID); !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		t.Fatalf("recording another company's application: expected RLS violation (42501), got %v", err)
+	}
+}
+
+// TestRoleTemplate_ApplyUnderImpersonationRecordsAdmin — applying through an
+// impersonation session is allowed and records the platform admin.
+func TestRoleTemplate_ApplyUnderImpersonationRecordsAdmin(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "roletpl.imp", "081234570913")
+	pratama := listRoleTemplatesAPI(t, router, token, companyID, merchantID)["klinik_pratama"]
+
+	adminID := "0190f1a2-1111-7000-8000-000000000001"
+	impToken, err := auth.GenerateImpersonationToken(testJWTSecret, userID, companyID, merchantID, "roletpl.imp", "roletpl-imp-device", adminID, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateImpersonationToken: %v", err)
+	}
+	resp := decodeApply(t, applyRoleTemplateAPI(t, router, impToken, companyID, merchantID, pratama.ID, map[string]any{"role_ids": templateRoleIDs(pratama)[:1]}))
+	if len(resp.Data.Created) != 1 {
+		t.Fatalf("expected 1 created role under impersonation, got %+v", resp.Data)
+	}
+	var recorded, appliedBy string
+	if err := pool.QueryRow(ctx, "SELECT platform_admin_id::text, applied_by::text FROM core.template_application WHERE company_id = $1", companyID).Scan(&recorded, &appliedBy); err != nil {
+		t.Fatalf("read template_application: %v", err)
+	}
+	if recorded != adminID || appliedBy != userID {
+		t.Fatalf("expected platform_admin_id %s + applied_by %s, got %s + %s", adminID, userID, recorded, appliedBy)
 	}
 }
