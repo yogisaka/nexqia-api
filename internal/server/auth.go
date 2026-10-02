@@ -29,6 +29,8 @@ import (
 const (
 	authUserIDContextKey         = "auth_user_id"
 	authCompanyIDContextKey      = "auth_company_id"
+	authMerchantIDContextKey     = "auth_merchant_id"
+	authRoleIDContextKey         = "auth_role_id"
 	authDeviceIDContextKey       = "auth_device_id"
 	authImpersonatedByContextKey = "auth_impersonated_by"
 
@@ -91,6 +93,17 @@ func AuthMiddleware(secret string) gin.HandlerFunc {
 		c.Set(authCompanyIDContextKey, companyID)
 		c.Set(authDeviceIDContextKey, claims.DeviceID)
 		c.Set(authImpersonatedByContextKey, claims.ImpersonatedBy)
+		// Active merchant + active role straight from the claims (no DB query —
+		// spec 2026-10-01-active-role-scope-design §3.4). Absent/empty claims
+		// simply leave the keys unset, which AuthMerchantID/AuthRoleID report as
+		// an invalid pgtype.UUID — permission helpers then fall back to the
+		// default role (legacy tokens without "rid", impersonation sessions).
+		if merchantID, ok := parseUUID(claims.MerchantID); ok {
+			c.Set(authMerchantIDContextKey, merchantID)
+		}
+		if roleID, ok := parseUUID(claims.RoleID); ok {
+			c.Set(authRoleIDContextKey, roleID)
+		}
 		// Audit trail (spec 2026-09-29-audit-trail §3): tell core.trg_audit_row() who is
 		// writing. Transaction-scoped; every group using AuthMiddleware opens the tx first.
 		if txVal, ok := c.Get(txContextKey); ok {
@@ -113,6 +126,27 @@ func AuthUserID(c *gin.Context) pgtype.UUID {
 // AuthCompanyID returns the authenticated caller's company id. Only valid on routes behind AuthMiddleware.
 func AuthCompanyID(c *gin.Context) pgtype.UUID {
 	return c.MustGet(authCompanyIDContextKey).(pgtype.UUID)
+}
+
+// AuthMerchantID returns the active merchant embedded in the access token
+// (claims "mid", spec 2026-10-01-active-role-scope-design §3.4). Invalid for
+// merchant-less sessions (fresh registration) and for impersonation tokens,
+// which carry no mid.
+func AuthMerchantID(c *gin.Context) pgtype.UUID {
+	if v, ok := c.Get(authMerchantIDContextKey); ok {
+		return v.(pgtype.UUID)
+	}
+	return pgtype.UUID{}
+}
+
+// AuthRoleID returns the active role embedded in the access token (claims
+// "rid"). Invalid when the token predates the active-role rollout or the
+// session runs without a role (no assignment at the merchant).
+func AuthRoleID(c *gin.Context) pgtype.UUID {
+	if v, ok := c.Get(authRoleIDContextKey); ok {
+		return v.(pgtype.UUID)
+	}
+	return pgtype.UUID{}
 }
 
 // AuthDeviceID returns the authenticated caller's device id (spec §4). Only valid
@@ -162,11 +196,31 @@ func RequirePermission(c *gin.Context, code string) bool {
 // RequirePermissionForMerchant checks the caller holds `code` at merchantID specifically —
 // use this for mutations on an existing resource so the permission check is scoped to the
 // resource being mutated, not whatever merchant the caller happened to declare in X-Merchant-ID.
-// On failure it writes the response and returns false — callers must `return` immediately.
+// The check runs against the session's ACTIVE ROLE (spec
+// 2026-10-01-active-role-scope-design §3.4): tokens without a "rid" claim
+// (legacy tokens, impersonation sessions) fall back to the user's default role
+// at merchantID — the role actually being exercised, never the union across
+// roles. On failure it writes the response and returns false — callers must
+// `return` immediately.
 func RequirePermissionForMerchant(c *gin.Context, code string, merchantID pgtype.UUID) bool {
 	q := sqlcgen.New(TxFromContext(c))
+	roleID := AuthRoleID(c)
+	if !roleID.Valid {
+		def, err := q.DefaultUserRole(c.Request.Context(), sqlcgen.DefaultUserRoleParams{
+			UserID: AuthUserID(c), MerchantID: merchantID,
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return false
+		}
+		if !def.Valid {
+			c.JSON(http.StatusForbidden, gin.H{"error": "missing permission: " + code})
+			return false
+		}
+		roleID = def
+	}
 	has, err := q.UserHasPermission(c.Request.Context(), sqlcgen.UserHasPermissionParams{
-		UserID: AuthUserID(c), MerchantID: merchantID, Code: code,
+		UserID: AuthUserID(c), MerchantID: merchantID, Code: code, RoleID: roleID,
 	})
 	if err != nil {
 		respondInternalError(c, err)
@@ -184,11 +238,43 @@ func RequirePermissionForMerchant(c *gin.Context, code string, merchantID pgtype
 // at ANY merchant of their company (regression path for existing merchant-scoped
 // role holders, e.g. seeded Admin — see
 // 2026-09-23-saas-registration-owner-bootstrap-design.md §3 poin 4).
+// When the session carries both an active merchant AND an active role (claims
+// "mid"+"rid", spec 2026-10-01-active-role-scope-design §3.4) the check is
+// scoped to that role instead: the role must still be assigned at the active
+// merchant and must itself hold one of `codes`. Sessions without both claims
+// (company-only, impersonation, legacy tokens) keep the legacy union check.
 // Use this instead of RequirePermission for routes registered under the
 // companyOnlyAuthed group (no X-Merchant-ID header, no app.current_merchant_id).
 // On failure it writes the response and returns false — callers must `return` immediately.
 func RequireCompanyLevelPermission(c *gin.Context, codes ...string) bool {
 	q := sqlcgen.New(TxFromContext(c))
+	roleID := AuthRoleID(c)
+	merchantID := AuthMerchantID(c)
+	if roleID.Valid && merchantID.Valid {
+		assigned, err := q.UserRoleAssigned(c.Request.Context(), sqlcgen.UserRoleAssignedParams{
+			UserID: AuthUserID(c), MerchantID: merchantID, RoleID: roleID,
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return false
+		}
+		if !assigned {
+			c.JSON(http.StatusForbidden, gin.H{"error": "missing permission"})
+			return false
+		}
+		has, err := q.RoleHasAnyPermission(c.Request.Context(), sqlcgen.RoleHasAnyPermissionParams{
+			RoleID: roleID, Codes: codes,
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return false
+		}
+		if !has {
+			c.JSON(http.StatusForbidden, gin.H{"error": "missing permission"})
+			return false
+		}
+		return true
+	}
 	has, err := q.UserHasCompanyLevelPermission(c.Request.Context(), sqlcgen.UserHasCompanyLevelPermissionParams{
 		UserID: AuthUserID(c), CompanyID: AuthCompanyID(c), Codes: codes,
 	})
@@ -380,6 +466,10 @@ func issueLoginSession(c *gin.Context, cfg config.Config, q *sqlcgen.Queries, re
 		"merchant_id": merchantID.String(),
 		"user_id":     user.ID.String(),
 		"username":    user.Username,
+		// Active role for this session — string UUID, or null when the user has
+		// no role assigned at the merchant (spec
+		// 2026-10-01-active-role-scope-design §3.2).
+		"active_role_id": uuidOrNil(issued.ActiveRoleID),
 	}
 	// Topbar identity (spec: current user needs a real name/photo, not the
 	// company name) — person_id is nullable (system/API-only accounts have none).
@@ -715,8 +805,9 @@ func RefreshHandler(cfg config.Config) gin.HandlerFunc {
 		}
 		setRefreshCookie(c, cfg, issued.RefreshToken, issued.RefreshExpiresAt)
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"token":      issued.AccessToken,
-			"expires_in": int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
+			"token":          issued.AccessToken,
+			"expires_in":     int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
+			"active_role_id": uuidOrNil(issued.ActiveRoleID),
 		}, "meta": gin.H{}})
 	}
 }
@@ -812,13 +903,14 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusForbidden, gin.H{"error": "mfa setup required", "code": "mfa_setup_required"})
 			return
 		}
-		token, err := session.SwitchMerchant(c.Request.Context(), q, sessionConfig(cfg), rawToken, userID, merchantID)
+		token, activeRoleID, err := session.SwitchMerchant(c.Request.Context(), q, sessionConfig(cfg), rawToken, userID, merchantID)
 		if err != nil {
 			switch {
 			case errors.Is(err, session.ErrNoSession), errors.Is(err, session.ErrSessionRevoked), errors.Is(err, session.ErrSessionMismatch):
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or revoked, please log in again"})
 			default:
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to switch merchant"})
+				// UpdateRefreshTokenMerchant already wrote — abort, don't plain-500.
+				abortInternalError(c, err)
 			}
 			return
 		}
@@ -827,6 +919,9 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			"expires_in":  int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
 			"merchant_id": merchantID.String(),
 			"user_id":     userID.String(),
+			// Switching merchants resets the active role to the default at the
+			// NEW merchant (session.SwitchMerchant, spec §3.3).
+			"active_role_id": uuidOrNil(activeRoleID),
 		}
 		// Mirrors issueLoginSession's pin_lock_idle_minutes (§ getPinLockFlagForMerchant) —
 		// without this the frontend kept whatever idle window the PREVIOUS merchant had,
@@ -836,6 +931,73 @@ func SwitchMerchantHandler(cfg config.Config) gin.HandlerFunc {
 				data["pin_lock_idle_minutes"] = pinLockIdleMinutes(cfg, pinFlag)
 			}
 		}
+		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+	}
+}
+
+type switchRoleRequest struct {
+	RoleID string `json:"role_id" binding:"required"`
+}
+
+// SwitchRoleHandler lets an already-logged-in user change their session's
+// active role (within the current merchant) without re-entering a password —
+// only the access token is reissued, the refresh token is not rotated (spec
+// 2026-10-01-active-role-scope-design §3.3). Runs behind AuthMiddleware; the
+// refresh-token cookie identifies the session whose active_role_id is updated,
+// so /auth/refresh keeps the chosen role.
+// SwitchRoleHandler godoc
+// @Summary Switch active role
+// @Description Reissues the access token bound to a different role assigned to the user at the active merchant, without re-authenticating.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body switchRoleRequest true "Target role_id"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 401 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
+// @Router /auth/switch-role [post]
+func SwitchRoleHandler(cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req switchRoleRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		roleID, ok := parseUUID(req.RoleID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role_id"})
+			return
+		}
+		rawToken, err := c.Cookie(refreshCookieName)
+		if err != nil || rawToken == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing refresh token"})
+			return
+		}
+		userID := AuthUserID(c)
+		token, err := session.SwitchRole(c.Request.Context(), sqlcgen.New(TxFromContext(c)), sessionConfig(cfg), rawToken, userID, roleID)
+		if err != nil {
+			switch {
+			case errors.Is(err, session.ErrNoSession), errors.Is(err, session.ErrSessionRevoked), errors.Is(err, session.ErrSessionMismatch):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or revoked, please log in again"})
+			case errors.Is(err, session.ErrRoleNotAssigned):
+				c.JSON(http.StatusForbidden, gin.H{"error": "role not assigned"})
+			default:
+				// UpdateRefreshTokenActiveRole may already have written — abort.
+				abortInternalError(c, err)
+			}
+			return
+		}
+		data := gin.H{
+			"token":      token,
+			"expires_in": int((time.Duration(cfg.AccessTokenTTLMinutes) * time.Minute).Seconds()),
+			"user_id":    userID.String(),
+		}
+		if merchantID := AuthMerchantID(c); merchantID.Valid {
+			data["merchant_id"] = merchantID.String()
+		}
+		data["active_role_id"] = roleID.String()
 		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 	}
 }

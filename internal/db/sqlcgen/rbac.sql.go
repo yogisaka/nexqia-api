@@ -976,7 +976,7 @@ SELECT EXISTS (
     JOIN core.role r ON r.id = umr.role_id AND r.deleted_at IS NULL
     JOIN core.role_permission rp ON rp.role_id = r.id
     JOIN core.permission p ON p.id = rp.permission_id
-    WHERE umr.user_id = $1 AND umr.merchant_id = $2 AND p.code = $3
+    WHERE umr.user_id = $1 AND umr.merchant_id = $2 AND p.code = $3 AND umr.role_id = $4
 ) AS has_permission
 `
 
@@ -984,10 +984,16 @@ type UserHasPermissionParams struct {
 	UserID     pgtype.UUID
 	MerchantID pgtype.UUID
 	Code       string
+	RoleID     pgtype.UUID
 }
 
 func (q *Queries) UserHasPermission(ctx context.Context, arg UserHasPermissionParams) (bool, error) {
-	row := q.db.QueryRow(ctx, userHasPermission, arg.UserID, arg.MerchantID, arg.Code)
+	row := q.db.QueryRow(ctx, userHasPermission,
+		arg.UserID,
+		arg.MerchantID,
+		arg.Code,
+		arg.RoleID,
+	)
 	var has_permission bool
 	err := row.Scan(&has_permission)
 	return has_permission, err

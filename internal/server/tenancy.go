@@ -316,7 +316,7 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing refresh token"})
 			return
 		}
-		newToken, err := session.SwitchMerchant(c.Request.Context(), q, sessionConfig(cfg), rawToken, AuthUserID(c), merchant.ID)
+		newToken, activeRoleID, err := session.SwitchMerchant(c.Request.Context(), q, sessionConfig(cfg), rawToken, AuthUserID(c), merchant.ID)
 		if err != nil {
 			// [2026-09-24] Real cause diketel di pesan ini — sempat cuma "failed to
 			// activate new merchant" generik pas bug ini dilaporin live, gak bisa
@@ -327,8 +327,9 @@ func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusCreated, gin.H{"data": gin.H{
-			"merchant": merchant,
-			"token":    newToken,
+			"merchant":       merchant,
+			"token":          newToken,
+			"active_role_id": uuidOrNil(activeRoleID),
 		}, "meta": gin.H{}})
 	}
 }

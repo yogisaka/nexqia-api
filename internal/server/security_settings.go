@@ -43,8 +43,24 @@ func canViewSecuritySettings(c *gin.Context) (canEdit bool, ok bool) {
 		return false, false
 	}
 	q := sqlcgen.New(TxFromContext(c))
+	// Both checks scope to the session's ACTIVE role, not the union across the
+	// caller's roles (spec 2026-10-01-active-role-scope-design §3.4). Tokens
+	// without a "rid" claim (registration auto-login issued before the merchant
+	// existed, legacy tokens) fall back to the caller's default role at the
+	// merchant — same fallback as RequirePermissionForMerchant.
+	roleID := AuthRoleID(c)
+	if !roleID.Valid {
+		def, err := q.DefaultUserRole(c.Request.Context(), sqlcgen.DefaultUserRoleParams{
+			UserID: AuthUserID(c), MerchantID: merchantID,
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return false, false
+		}
+		roleID = def // invalid ⇒ no assignment ⇒ both checks below fail → 403
+	}
 	manage, err := q.UserHasPermission(c.Request.Context(), sqlcgen.UserHasPermissionParams{
-		UserID: AuthUserID(c), MerchantID: merchantID, Code: PermMerchantManage,
+		UserID: AuthUserID(c), MerchantID: merchantID, Code: PermMerchantManage, RoleID: roleID,
 	})
 	if err != nil {
 		respondInternalError(c, err)
@@ -52,7 +68,7 @@ func canViewSecuritySettings(c *gin.Context) (canEdit bool, ok bool) {
 	}
 	if !manage {
 		has, err := q.UserHasPermission(c.Request.Context(), sqlcgen.UserHasPermissionParams{
-			UserID: AuthUserID(c), MerchantID: merchantID, Code: PermAuditLogView,
+			UserID: AuthUserID(c), MerchantID: merchantID, Code: PermAuditLogView, RoleID: roleID,
 		})
 		if err != nil {
 			respondInternalError(c, err)

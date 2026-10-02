@@ -639,7 +639,7 @@ func TestSecuritySettings_AuditViewerReadOnly(t *testing.T) {
 
 	companyID, merchantID, _, _, _ := seedAccountOwner(t, ctx, pool, router, "secset.view", "081234560051")
 	viewerID := seedMerchantStaff(t, ctx, pool, companyID, merchantID, "secset.viewer", "", "audit.log.view")
-	viewerToken, err := auth.GenerateToken(testJWTSecret, viewerID, companyID, merchantID, "secset.viewer", "secset-viewer-device", time.Hour)
+	viewerToken, err := auth.GenerateToken(testJWTSecret, viewerID, companyID, merchantID, "", "secset.viewer", "secset-viewer-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate viewer token: %v", err)
 	}
@@ -671,7 +671,7 @@ func TestSecuritySettings_AuditViewerReadOnly(t *testing.T) {
 
 	// Neither permission → the page itself is 403.
 	nobodyID := seedRestrictedAuditUser(t, ctx, pool, companyID, merchantID, "secset.noview")
-	nobodyToken, err := auth.GenerateToken(testJWTSecret, nobodyID, companyID, merchantID, "secset.noview", "secset-noview-device", time.Hour)
+	nobodyToken, err := auth.GenerateToken(testJWTSecret, nobodyID, companyID, merchantID, "", "secset.noview", "secset-noview-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate nobody token: %v", err)
 	}
@@ -708,7 +708,7 @@ func TestSecuritySettings_EnablingPinLockKeepsSaverUnlocked(t *testing.T) {
 	}
 
 	staffID := seedMerchantStaff(t, ctx, pool, companyID, merchantID, "secset.lock.staff", "654321")
-	staffToken, err := auth.GenerateToken(testJWTSecret, staffID, companyID, merchantID, "secset.lock.staff", "secset-lock-staff-device", time.Hour)
+	staffToken, err := auth.GenerateToken(testJWTSecret, staffID, companyID, merchantID, "", "secset.lock.staff", "secset-lock-staff-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate staff token: %v", err)
 	}

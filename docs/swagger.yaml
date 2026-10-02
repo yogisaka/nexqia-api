@@ -612,6 +612,13 @@ definitions:
     required:
     - merchant_id
     type: object
+  server.switchRoleRequest:
+    properties:
+      role_id:
+        type: string
+    required:
+    - role_id
+    type: object
   server.updateAdmissionRequest:
     properties:
       discharge_at:
@@ -1917,6 +1924,43 @@ paths:
       security:
       - BearerAuth: []
       summary: Switch active merchant
+      tags:
+      - auth
+  /auth/switch-role:
+    post:
+      consumes:
+      - application/json
+      description: Reissues the access token bound to a different role assigned to
+        the user at the active merchant, without re-authenticating.
+      parameters:
+      - description: Target role_id
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.switchRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Switch active role
       tags:
       - auth
   /companies/{id}:

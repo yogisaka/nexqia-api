@@ -39,6 +39,10 @@ var (
 	ErrSessionExpired = errors.New("session expired")
 	// ErrSessionMismatch means the presented refresh token belongs to a different user.
 	ErrSessionMismatch = errors.New("session does not belong to caller")
+	// ErrRoleNotAssigned means the role requested at POST /auth/switch-role is
+	// not assigned to the user at the session's active merchant (spec
+	// 2026-10-01-active-role-scope-design §3.3).
+	ErrRoleNotAssigned = errors.New("role not assigned")
 )
 
 // Issued is what a caller (login/refresh/select-merchant handlers) hands back to
@@ -179,10 +183,61 @@ func Refresh(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToken strin
 
 // SwitchMerchant changes the active merchant on the session identified by rawToken
 // (the refresh-token cookie) without rotating the refresh token itself — only the
-// access token is reissued. Caller (POST /auth/switch-merchant handler) must
-// validate newMerchantID against core.user_merchant_role before calling this
-// (spec §3a); this function only checks that the session belongs to userID.
-func SwitchMerchant(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToken string, userID, newMerchantID pgtype.UUID) (string, error) {
+// access token is reissued. The session's active role resets to the default role
+// at the NEW merchant (first assigned, non-deleted role by name — spec
+// 2026-10-01-active-role-scope-design §3.3): a role assignment from the old
+// merchant must never leak into the new one. Caller (POST /auth/switch-merchant
+// handler) must validate newMerchantID against core.user_merchant_role before
+// calling this (spec §3a); this function only checks that the session belongs to
+// userID. Returns the new access token and the resolved active role.
+func SwitchMerchant(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToken string, userID, newMerchantID pgtype.UUID) (string, pgtype.UUID, error) {
+	row, err := q.GetRefreshTokenByHash(ctx, hashToken(rawToken))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", pgtype.UUID{}, ErrNoSession
+	}
+	if err != nil {
+		return "", pgtype.UUID{}, err
+	}
+	if row.RevokedAt.Valid {
+		return "", pgtype.UUID{}, ErrSessionRevoked
+	}
+	if row.UserID != userID {
+		return "", pgtype.UUID{}, ErrSessionMismatch
+	}
+	if err := q.UpdateRefreshTokenMerchant(ctx, sqlcgen.UpdateRefreshTokenMerchantParams{
+		ID: row.ID, MerchantID: newMerchantID,
+	}); err != nil {
+		return "", pgtype.UUID{}, err
+	}
+	user, err := q.GetAppUserByID(ctx, userID)
+	if err != nil {
+		return "", pgtype.UUID{}, err
+	}
+	activeRoleID, err := q.DefaultUserRole(ctx, sqlcgen.DefaultUserRoleParams{
+		UserID: userID, MerchantID: newMerchantID,
+	})
+	if err != nil {
+		return "", pgtype.UUID{}, err
+	}
+	if err := q.UpdateRefreshTokenActiveRole(ctx, sqlcgen.UpdateRefreshTokenActiveRoleParams{
+		ID: row.ID, ActiveRoleID: activeRoleID,
+	}); err != nil {
+		return "", pgtype.UUID{}, err
+	}
+	token, err := auth.GenerateToken(cfg.JWTSecret, userID.String(), row.CompanyID.String(), newMerchantID.String(), activeRoleID.String(), user.Username, row.DeviceID, cfg.AccessTokenTTL)
+	if err != nil {
+		return "", pgtype.UUID{}, err
+	}
+	return token, activeRoleID, nil
+}
+
+// SwitchRole changes the active role (but not the merchant) on the session
+// identified by rawToken without rotating the refresh token — only the access
+// token is reissued (spec 2026-10-01-active-role-scope-design §3.3). The role
+// must already be assigned to userID at the session's current merchant
+// (ErrRoleNotAssigned otherwise); the refresh-token row's active_role_id is
+// updated so /auth/refresh keeps the chosen role.
+func SwitchRole(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToken string, userID, roleID pgtype.UUID) (string, error) {
 	row, err := q.GetRefreshTokenByHash(ctx, hashToken(rawToken))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNoSession
@@ -196,8 +251,17 @@ func SwitchMerchant(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToke
 	if row.UserID != userID {
 		return "", ErrSessionMismatch
 	}
-	if err := q.UpdateRefreshTokenMerchant(ctx, sqlcgen.UpdateRefreshTokenMerchantParams{
-		ID: row.ID, MerchantID: newMerchantID,
+	assigned, err := q.UserRoleAssigned(ctx, sqlcgen.UserRoleAssignedParams{
+		UserID: userID, MerchantID: row.MerchantID, RoleID: roleID,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !assigned {
+		return "", ErrRoleNotAssigned
+	}
+	if err := q.UpdateRefreshTokenActiveRole(ctx, sqlcgen.UpdateRefreshTokenActiveRoleParams{
+		ID: row.ID, ActiveRoleID: roleID,
 	}); err != nil {
 		return "", err
 	}
@@ -205,9 +269,7 @@ func SwitchMerchant(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToke
 	if err != nil {
 		return "", err
 	}
-	// roleID "" for now — role selection/switch is Task 2 of the active-role
-	// plan (spec 2026-10-01-active-role-scope-design); behavior unchanged here.
-	return auth.GenerateToken(cfg.JWTSecret, userID.String(), row.CompanyID.String(), newMerchantID.String(), "", user.Username, row.DeviceID, cfg.AccessTokenTTL)
+	return auth.GenerateToken(cfg.JWTSecret, userID.String(), row.CompanyID.String(), row.MerchantID.String(), roleID.String(), user.Username, row.DeviceID, cfg.AccessTokenTTL)
 }
 
 // MerchantOption is one entry of the merchant list shown at login when a user

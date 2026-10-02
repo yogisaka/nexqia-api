@@ -146,7 +146,7 @@ SELECT EXISTS (
     JOIN core.role r ON r.id = umr.role_id AND r.deleted_at IS NULL
     JOIN core.role_permission rp ON rp.role_id = r.id
     JOIN core.permission p ON p.id = rp.permission_id
-    WHERE umr.user_id = $1 AND umr.merchant_id = $2 AND p.code = $3
+    WHERE umr.user_id = $1 AND umr.merchant_id = $2 AND p.code = $3 AND umr.role_id = $4
 ) AS has_permission;
 
 -- name: ListPermissionCodesByUserMerchant :many

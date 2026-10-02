@@ -283,7 +283,7 @@ func TestAccount_PatchMe_FullNameWithoutPerson_400(t *testing.T) {
 	router := server.NewRouter(pool, redisClient, testConfig())
 
 	companyID, merchantID, userID := setupPinLockTestUser(t, ctx, pool, testHasher(), "", false, 5)
-	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestAccount_PinSet_SeedsApplockKeyAndReturnsIdleMinutes(t *testing.T) {
 	router := server.NewRouter(pool, redisClient, testConfig())
 
 	companyID, merchantID, userID := setupPinLockTestUser(t, ctx, pool, testHasher(), "", true, 7)
-	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}

@@ -54,7 +54,7 @@ func TestPhysicianSchedule_RejectsInvertedRanges(t *testing.T) {
 	mustExec("INSERT INTO core.physician (id, company_id, merchant_id, person_id) VALUES ($1, $2, $3, $4)", physicianID, companyID, merchantID, personID)
 	mustExec("INSERT INTO core.department (id, company_id, merchant_id, code, name) VALUES ($1, $2, $3, 'DSCHD01', 'Poli Schedule')", departmentID, companyID, merchantID)
 
-	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "sched.admin", "sched-device", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "", "sched.admin", "sched-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}

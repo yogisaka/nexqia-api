@@ -191,7 +191,7 @@ func TestTenantMiddleware_IsTransactionScopedAcrossRequests(t *testing.T) {
 	pool := newTestPostgresPool(t, ctx)
 	redisClient := newTestRedisClient(t, ctx)
 	router := server.NewRouter(pool, redisClient, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, "99999999-9999-9999-9999-999999999999", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, "99999999-9999-9999-9999-999999999999", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate test token: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestRateLimitAPIMiddleware_FailsClosedWhenRedisUnreachable(t *testing.T) {
 	defer unreachableRedis.Close()
 
 	router := server.NewRouter(pool, unreachableRedis, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, "99999999-9999-9999-9999-999999999999", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, "99999999-9999-9999-9999-999999999999", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate test token: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestAppLockMiddleware_FlagDisabled_PassesThroughWithoutLockCheck(t *testing
 	_, merchantID, userID := setupPinLockTestUser(t, ctx, pool, testHasher(), "123456", false, 5)
 
 	router := server.NewRouter(pool, redisClient, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestAppLockMiddleware_FlagEnabledNoUnlock_Returns423(t *testing.T) {
 	_, merchantID, userID := setupPinLockTestUser(t, ctx, pool, testHasher(), "123456", true, 5)
 
 	router := server.NewRouter(pool, redisClient, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestPinVerify_CorrectPin_UnlocksSubsequentRequests(t *testing.T) {
 	_, merchantID, userID := setupPinLockTestUser(t, ctx, pool, testHasher(), "123456", true, 5)
 
 	router := server.NewRouter(pool, redisClient, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestPinVerify_TooManyWrongAttempts_RevokesSessionAndReturns403(t *testing.T
 	_, merchantID, userID := setupPinLockTestUser(t, ctx, pool, testHasher(), "123456", true, 5)
 
 	router := server.NewRouter(pool, redisClient, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestRedisUnreachable_AppLockMiddleware_FailsClosedWith503(t *testing.T) {
 	unreachableRedis := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
 	defer unreachableRedis.Close()
 	router := server.NewRouter(pool, unreachableRedis, testConfig())
-	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "tester", "device-1", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", merchantID, "", "tester", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}

@@ -53,7 +53,7 @@ func TestClinicalConfig_OwnPermissionAndResponseShape(t *testing.T) {
 	mustExec("INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)", userID, merchantID, roleID)
 	mustExec("INSERT INTO terminology.code_system (system_uri, name, version, tags) VALUES ('urn:test:icd10', 'ICD-10-TEST', '1', '{diagnosis}'), ('urn:test:religion', 'RELIGION-TEST', '1', '{}')")
 
-	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "config.admin", "config-device", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "", "config.admin", "config-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}

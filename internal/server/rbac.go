@@ -1017,6 +1017,21 @@ func ListUserPermissionsHandler(c *gin.Context) {
 	if userID != AuthUserID(c) && !RequirePermission(c, PermUserManage) {
 		return
 	}
+	// Self-access with an active role + merchant in the token reports only the
+	// ACTIVE role's permission codes (spec 2026-10-01-active-role-scope-design
+	// §3.4) — the permission-driven frontend must match what the API actually
+	// enforces now. Everyone else (admin viewing another user, legacy tokens
+	// without mid/rid) still gets the union across all roles.
+	roleID := AuthRoleID(c)
+	if userID == AuthUserID(c) && merchantID == AuthMerchantID(c) && roleID.Valid {
+		codes, err := q.ListPermissionCodesByRole(c.Request.Context(), roleID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": codes, "meta": gin.H{}})
+		return
+	}
 	codes, err := q.ListPermissionCodesByUserMerchant(c.Request.Context(), sqlcgen.ListPermissionCodesByUserMerchantParams{
 		UserID: userID, MerchantID: merchantID,
 	})

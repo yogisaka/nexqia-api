@@ -354,7 +354,7 @@ func TestRequireCompanyLevelPermission_ExistingMerchantScopedRoleStillWorks(t *t
 		t.Fatalf("failed to seed user_merchant_role: %v", err)
 	}
 
-	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "regr.admin", "regr-device", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, userID, companyID, merchantID, "", "regr.admin", "regr-device", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate test token: %v", err)
 	}

@@ -203,7 +203,7 @@ func TestPlatformRoutes_RejectOrdinaryTenantToken(t *testing.T) {
 	// An ordinary tenant access token (auth.GenerateToken, purpose "access") —
 	// must NOT work against platform routes, regression against any future
 	// change that accidentally merges the two auth systems.
-	tenantToken, err := auth.GenerateToken(testJWTSecret, "80808080-8080-8080-8080-808080808080", "90909090-9090-9090-9090-909090909090", "a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0", "sometenantuser", "tenant-device", time.Hour)
+	tenantToken, err := auth.GenerateToken(testJWTSecret, "80808080-8080-8080-8080-808080808080", "90909090-9090-9090-9090-909090909090", "a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0", "", "sometenantuser", "tenant-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate tenant token: %v", err)
 	}

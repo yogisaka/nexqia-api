@@ -525,7 +525,7 @@ func TestAccessReview_SummaryRequiresPermission(t *testing.T) {
 
 	companyID, merchantID, _, _, _ := seedAccountOwner(t, ctx, pool, router, "accrev.view", "081234590161")
 	restrictedUserID := seedRestrictedAuditUser(t, ctx, pool, companyID, merchantID, "accrev.noview")
-	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "accrev.noview", "accrev-noview-device", time.Hour)
+	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "", "accrev.noview", "accrev-noview-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate restricted token: %v", err)
 	}

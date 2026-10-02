@@ -55,7 +55,7 @@ func TestAuditAPI_RequiresPermission(t *testing.T) {
 
 	companyID, merchantID, _, _, _ := seedAccountOwner(t, ctx, pool, router, "audit.apiview", "081234570201")
 	restrictedUserID := seedRestrictedAuditUser(t, ctx, pool, companyID, merchantID, "audit.noview")
-	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "audit.noview", "audit-noview-device", time.Hour)
+	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "", "audit.noview", "audit-noview-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate restricted token: %v", err)
 	}

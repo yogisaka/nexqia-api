@@ -150,7 +150,7 @@ func TestAccessLog_ForbiddenRecordedWithStatus(t *testing.T) {
 	if _, err := pool.Exec(ctx, "INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)", restrictedUserID, merchantID, roleID); err != nil {
 		t.Fatalf("seed user_merchant_role: %v", err)
 	}
-	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "audit.noaccess", "audit-noaccess-device", time.Hour)
+	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "", "audit.noaccess", "audit-noaccess-device", time.Hour)
 	if err != nil {
 		t.Fatalf("generate restricted token: %v", err)
 	}

@@ -67,7 +67,7 @@ func TestCreateAppUser_Conflict(t *testing.T) {
 		t.Fatalf("failed to seed person: %v", err)
 	}
 
-	token, err := auth.GenerateToken(testJWTSecret, adminID, companyID, merchantID, "conf.admin", "conf-device", time.Hour)
+	token, err := auth.GenerateToken(testJWTSecret, adminID, companyID, merchantID, "", "conf.admin", "conf-device", time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate test token: %v", err)
 	}
