@@ -2,6 +2,8 @@
 package auth
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 )
@@ -9,7 +11,7 @@ import (
 const testTokenSecret = "test-secret"
 
 func TestGenerateToken_RoundTrip(t *testing.T) {
-	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", "device-1", time.Hour)
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "", "alice", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -19,6 +21,47 @@ func TestGenerateToken_RoundTrip(t *testing.T) {
 	}
 	if claims.UserID != "user-1" || claims.CompanyID != "company-1" || claims.MerchantID != "merchant-1" || claims.Username != "alice" || claims.DeviceID != "device-1" {
 		t.Errorf("unexpected claims: %+v", claims)
+	}
+}
+
+func TestGenerateToken_RoleIDRoundTrip(t *testing.T) {
+	// rid carries the session's active role (spec 2026-10-01-active-role-scope-design §3.3).
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "role-1", "alice", "device-1", time.Hour)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	claims, err := ParseToken(testTokenSecret, token)
+	if err != nil {
+		t.Fatalf("unexpected error parsing: %v", err)
+	}
+	if claims.RoleID != "role-1" {
+		t.Errorf("expected RoleID role-1, got %q", claims.RoleID)
+	}
+}
+
+func TestGenerateToken_EmptyRoleIDOmitted(t *testing.T) {
+	// rid is omitempty: a role-less session ("") must not emit the claim at all.
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "", "alice", "device-1", time.Hour)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	claims, err := ParseToken(testTokenSecret, token)
+	if err != nil {
+		t.Fatalf("unexpected error parsing: %v", err)
+	}
+	if claims.RoleID != "" {
+		t.Errorf("expected empty RoleID, got %q", claims.RoleID)
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("unexpected token shape: %d segments", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("unexpected error decoding payload: %v", err)
+	}
+	if strings.Contains(string(payload), `"rid"`) {
+		t.Errorf("expected no rid claim in payload, got %s", payload)
 	}
 }
 
@@ -80,7 +123,7 @@ func TestParseToken_RejectsMFAEnrollmentToken(t *testing.T) {
 }
 
 func TestParseToken_RejectsExpired(t *testing.T) {
-	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", "device-1", -time.Minute)
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "", "alice", "device-1", -time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +133,7 @@ func TestParseToken_RejectsExpired(t *testing.T) {
 }
 
 func TestParseToken_RejectsWrongSecret(t *testing.T) {
-	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", "device-1", time.Hour)
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "", "alice", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,7 +159,7 @@ func TestMerchantSelectionToken_RoundTrip(t *testing.T) {
 func TestParseMerchantSelectionToken_RejectsNormalAccessToken(t *testing.T) {
 	// A regular access token has no "purpose" claim — ParseMerchantSelectionToken
 	// must reject it even though the signature is valid (see token.go's purpose check).
-	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "alice", "device-1", time.Hour)
+	token, err := GenerateToken(testTokenSecret, "user-1", "company-1", "merchant-1", "", "alice", "device-1", time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

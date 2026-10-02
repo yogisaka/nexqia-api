@@ -402,6 +402,34 @@ func (q *Queries) ListAppUsersByCompany(ctx context.Context, arg ListAppUsersByC
 	return items, nil
 }
 
+const listPermissionCodesByRole = `-- name: ListPermissionCodesByRole :many
+SELECT p.code
+FROM core.role_permission rp
+JOIN core.permission p ON p.id = rp.permission_id
+WHERE rp.role_id = $1
+ORDER BY p.code
+`
+
+func (q *Queries) ListPermissionCodesByRole(ctx context.Context, roleID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listPermissionCodesByRole, roleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return nil, err
+		}
+		items = append(items, code)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPermissionCodesByUserMerchant = `-- name: ListPermissionCodesByUserMerchant :many
 SELECT DISTINCT p.code
 FROM core.user_merchant_role umr
@@ -647,6 +675,27 @@ DELETE FROM core.user_merchant_role WHERE id = $1
 func (q *Queries) RemoveUserMerchantRole(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, removeUserMerchantRole, id)
 	return err
+}
+
+const roleHasAnyPermission = `-- name: RoleHasAnyPermission :one
+SELECT EXISTS (
+    SELECT 1 FROM core.role_permission rp
+    JOIN core.permission p ON p.id = rp.permission_id
+    WHERE rp.role_id = $1 AND p.code = ANY($2::text[])
+) AS has_permission
+`
+
+type RoleHasAnyPermissionParams struct {
+	RoleID pgtype.UUID
+	Codes  []string
+}
+
+// Company-level check scoped to the active role (spec 2026-10-01-active-role-scope-design §3.4).
+func (q *Queries) RoleHasAnyPermission(ctx context.Context, arg RoleHasAnyPermissionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, roleHasAnyPermission, arg.RoleID, arg.Codes)
+	var has_permission bool
+	err := row.Scan(&has_permission)
+	return has_permission, err
 }
 
 const setAppUserMFASecret = `-- name: SetAppUserMFASecret :exec

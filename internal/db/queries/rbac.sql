@@ -171,6 +171,21 @@ SET mfa_grace_until = now() + make_interval(days => sqlc.arg(grace_days)::int)
 WHERE id = sqlc.arg(id) AND mfa_grace_until IS NULL AND deleted_at IS NULL
 RETURNING mfa_grace_until;
 
+-- name: RoleHasAnyPermission :one
+-- Company-level check scoped to the active role (spec 2026-10-01-active-role-scope-design §3.4).
+SELECT EXISTS (
+    SELECT 1 FROM core.role_permission rp
+    JOIN core.permission p ON p.id = rp.permission_id
+    WHERE rp.role_id = @role_id AND p.code = ANY(@codes::text[])
+) AS has_permission;
+
+-- name: ListPermissionCodesByRole :many
+SELECT p.code
+FROM core.role_permission rp
+JOIN core.permission p ON p.id = rp.permission_id
+WHERE rp.role_id = @role_id
+ORDER BY p.code;
+
 -- name: UpdateOwnAppUserContact :one
 -- Self-service profile edit (spec 2026-09-25-account-menu §3). NULL clears a value.
 UPDATE core.app_user

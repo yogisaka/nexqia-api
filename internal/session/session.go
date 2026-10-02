@@ -48,6 +48,10 @@ type Issued struct {
 	AccessToken      string
 	RefreshToken     string
 	RefreshExpiresAt time.Time
+	// ActiveRoleID is the role stored on the refresh-token row and embedded
+	// as the "rid" claim in AccessToken (spec 2026-10-01-active-role-scope-design
+	// §3.1-§3.3) — invalid (NULL) when the user has no role at the merchant.
+	ActiveRoleID pgtype.UUID
 }
 
 func generateRawToken() (string, error) {
@@ -65,13 +69,14 @@ func hashToken(raw string) string {
 
 // IssueParams identifies the principal and device a new session is issued for.
 type IssueParams struct {
-	UserID      pgtype.UUID
-	CompanyID   pgtype.UUID
-	MerchantID  pgtype.UUID
-	Username    string
-	DeviceID    string
-	DeviceLabel string
-	IP          netip.Addr
+	UserID       pgtype.UUID
+	CompanyID    pgtype.UUID
+	MerchantID   pgtype.UUID
+	ActiveRoleID pgtype.UUID
+	Username     string
+	DeviceID     string
+	DeviceLabel  string
+	IP           netip.Addr
 }
 
 // Issue creates a new refresh-token row and access token — called by LoginHandler
@@ -83,24 +88,50 @@ func Issue(ctx context.Context, q *sqlcgen.Queries, cfg Config, p IssueParams) (
 		return Issued{}, err
 	}
 	expiresAt := time.Now().Add(cfg.AbsoluteTTL)
+	// Active role resolution (spec 2026-10-01-active-role-scope-design §3.2):
+	// the caller's candidate is kept only if it is still assigned at this
+	// merchant; otherwise fall back to the default (first assigned, non-deleted
+	// role by name). NULL default ⇒ session runs without a role (rid empty).
+	activeRoleID := p.ActiveRoleID
+	if activeRoleID.Valid {
+		assigned, err := q.UserRoleAssigned(ctx, sqlcgen.UserRoleAssignedParams{
+			UserID: p.UserID, MerchantID: p.MerchantID, RoleID: activeRoleID,
+		})
+		if err != nil {
+			return Issued{}, err
+		}
+		if !assigned {
+			activeRoleID.Valid = false
+		}
+	}
+	if !activeRoleID.Valid {
+		def, err := q.DefaultUserRole(ctx, sqlcgen.DefaultUserRoleParams{
+			UserID: p.UserID, MerchantID: p.MerchantID,
+		})
+		if err != nil {
+			return Issued{}, err
+		}
+		activeRoleID = def
+	}
 	row, err := q.CreateRefreshToken(ctx, sqlcgen.CreateRefreshTokenParams{
-		UserID:      p.UserID,
-		CompanyID:   p.CompanyID,
-		MerchantID:  p.MerchantID,
-		DeviceID:    p.DeviceID,
-		DeviceLabel: p.DeviceLabel,
-		TokenHash:   hashToken(raw),
-		ExpiresAt:   pgtype.Timestamptz{Time: expiresAt, Valid: true},
-		CreatedIp:   p.IP,
+		UserID:       p.UserID,
+		CompanyID:    p.CompanyID,
+		MerchantID:   p.MerchantID,
+		DeviceID:     p.DeviceID,
+		DeviceLabel:  p.DeviceLabel,
+		TokenHash:    hashToken(raw),
+		ExpiresAt:    pgtype.Timestamptz{Time: expiresAt, Valid: true},
+		CreatedIp:    p.IP,
+		ActiveRoleID: activeRoleID,
 	})
 	if err != nil {
 		return Issued{}, err
 	}
-	accessToken, err := auth.GenerateToken(cfg.JWTSecret, p.UserID.String(), p.CompanyID.String(), p.MerchantID.String(), p.Username, p.DeviceID, cfg.AccessTokenTTL)
+	accessToken, err := auth.GenerateToken(cfg.JWTSecret, p.UserID.String(), p.CompanyID.String(), p.MerchantID.String(), activeRoleID.String(), p.Username, p.DeviceID, cfg.AccessTokenTTL)
 	if err != nil {
 		return Issued{}, err
 	}
-	return Issued{AccessToken: accessToken, RefreshToken: raw, RefreshExpiresAt: row.ExpiresAt.Time}, nil
+	return Issued{AccessToken: accessToken, RefreshToken: raw, RefreshExpiresAt: row.ExpiresAt.Time, ActiveRoleID: activeRoleID}, nil
 }
 
 // Refresh validates the presented raw refresh token and, if valid, rotates it:
@@ -139,7 +170,10 @@ func Refresh(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToken strin
 	}
 	return Issue(ctx, q, cfg, IssueParams{
 		UserID: row.UserID, CompanyID: row.CompanyID, MerchantID: row.MerchantID,
-		Username: user.Username, DeviceID: row.DeviceID, DeviceLabel: row.DeviceLabel, IP: ip,
+		// Carry the stored active role across rotation; validation + default
+		// fallback happen inside Issue (spec §3.2).
+		ActiveRoleID: row.ActiveRoleID,
+		Username:     user.Username, DeviceID: row.DeviceID, DeviceLabel: row.DeviceLabel, IP: ip,
 	})
 }
 
@@ -171,7 +205,9 @@ func SwitchMerchant(ctx context.Context, q *sqlcgen.Queries, cfg Config, rawToke
 	if err != nil {
 		return "", err
 	}
-	return auth.GenerateToken(cfg.JWTSecret, userID.String(), row.CompanyID.String(), newMerchantID.String(), user.Username, row.DeviceID, cfg.AccessTokenTTL)
+	// roleID "" for now — role selection/switch is Task 2 of the active-role
+	// plan (spec 2026-10-01-active-role-scope-design); behavior unchanged here.
+	return auth.GenerateToken(cfg.JWTSecret, userID.String(), row.CompanyID.String(), newMerchantID.String(), "", user.Username, row.DeviceID, cfg.AccessTokenTTL)
 }
 
 // MerchantOption is one entry of the merchant list shown at login when a user

@@ -443,18 +443,19 @@ type CoreRateComponent struct {
 }
 
 type CoreRefreshToken struct {
-	ID          pgtype.UUID
-	UserID      pgtype.UUID
-	CompanyID   pgtype.UUID
-	MerchantID  pgtype.UUID
-	DeviceID    string
-	DeviceLabel string
-	TokenHash   string
-	IssuedAt    pgtype.Timestamptz
-	LastUsedAt  pgtype.Timestamptz
-	ExpiresAt   pgtype.Timestamptz
-	RevokedAt   pgtype.Timestamptz
-	CreatedIp   netip.Addr
+	ID           pgtype.UUID
+	UserID       pgtype.UUID
+	CompanyID    pgtype.UUID
+	MerchantID   pgtype.UUID
+	DeviceID     string
+	DeviceLabel  string
+	TokenHash    string
+	IssuedAt     pgtype.Timestamptz
+	LastUsedAt   pgtype.Timestamptz
+	ExpiresAt    pgtype.Timestamptz
+	RevokedAt    pgtype.Timestamptz
+	CreatedIp    netip.Addr
+	ActiveRoleID pgtype.UUID
 }
 
 type CoreRole struct {

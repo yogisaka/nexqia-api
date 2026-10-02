@@ -24,9 +24,14 @@ type Claims struct {
 	UserID     string `json:"uid"`
 	CompanyID  string `json:"cid"`
 	MerchantID string `json:"mid"`
-	Username   string `json:"username"`
-	DeviceID   string `json:"did"`
-	Purpose    string `json:"purpose"`
+	// RoleID is the active role at MerchantID for this session
+	// (spec 2026-10-01-active-role-scope-design §3.3) — empty when the user
+	// has no role assigned at the merchant. omitempty keeps tokens without a
+	// role byte-identical to the pre-active-role shape.
+	RoleID   string `json:"rid,omitempty"`
+	Username string `json:"username"`
+	DeviceID string `json:"did"`
+	Purpose  string `json:"purpose"`
 	// ImpersonatedBy is the platform.admin_user.id that requested this session
 	// via POST /platform/impersonate — empty for every ordinary tenant login.
 	// Checked by AppLockMiddleware (internal/server/applock.go) to skip
@@ -42,11 +47,14 @@ type Claims struct {
 // deviceID is the same value stored on core.refresh_token.device_id (stable across
 // refresh rotations) — embedded here so protected routes can identify a device
 // without a new header, see 2026-09-15-pin-unlock-design.md §4.
-func GenerateToken(secret, userID, companyID, merchantID, username, deviceID string, ttl time.Duration) (string, error) {
+// roleID is the session's active role at merchantID (spec
+// 2026-10-01-active-role-scope-design §3.3); "" when the user has no role there.
+func GenerateToken(secret, userID, companyID, merchantID, roleID, username, deviceID string, ttl time.Duration) (string, error) {
 	claims := Claims{
 		UserID:     userID,
 		CompanyID:  companyID,
 		MerchantID: merchantID,
+		RoleID:     roleID,
 		Username:   username,
 		DeviceID:   deviceID,
 		Purpose:    accessTokenPurpose,

@@ -16,9 +16,19 @@ ORDER BY last_used_at DESC;
 
 -- name: CreateRefreshToken :one
 INSERT INTO core.refresh_token
-    (user_id, company_id, merchant_id, device_id, device_label, token_hash, expires_at, created_ip)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    (user_id, company_id, merchant_id, device_id, device_label, token_hash, expires_at, created_ip, active_role_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
+
+-- name: UpdateRefreshTokenActiveRole :exec
+UPDATE core.refresh_token SET active_role_id = @active_role_id WHERE id = @id;
+
+-- name: DefaultUserRole :one
+-- Pola sqlc.arg(...)::type sama dengan UserHasCompanyLevelPermission (registration.sql).
+SELECT core.default_user_role(sqlc.arg(user_id)::uuid, sqlc.arg(merchant_id)::uuid)::uuid AS role_id;
+
+-- name: UserRoleAssigned :one
+SELECT core.user_role_assigned(sqlc.arg(user_id)::uuid, sqlc.arg(merchant_id)::uuid, sqlc.arg(role_id)::uuid) AS assigned;
 
 -- name: GetRefreshTokenByHash :one
 SELECT * FROM core.refresh_token WHERE token_hash = $1;
