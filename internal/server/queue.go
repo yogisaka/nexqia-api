@@ -3,12 +3,13 @@ package server
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
@@ -19,23 +20,8 @@ import (
 // 2026-09-16-v1-operations-antrian-jadwal-design.md §6.
 const PermVisitManage = "operations.visit.manage"
 
-// queueStagePipeline is the fixed v1 Poli Umum stage order. Sub-project #4/#5
-// append "kasir"/"farmasi" here when they're implemented — no migration needed,
-// operations.queue already supports arbitrary queue_type values. See spec §9.
-var queueStagePipeline = []string{"pendaftaran", "perawat", "dokter"}
-
-// nextQueueStage returns the stage after current, or ("", false) if current is
-// the last stage in the pipeline (or not in it).
-func nextQueueStage(current string) (string, bool) {
-	for i, s := range queueStagePipeline {
-		if s == current && i+1 < len(queueStagePipeline) {
-			return queueStagePipeline[i+1], true
-		}
-	}
-	return "", false
-}
-
 // queueValidTransitions is the linear queue status state machine — see spec §7.
+// "skipped" is only reachable through POST /queue/:id/skip (stage.skippable).
 var queueValidTransitions = map[string][]string{
 	"waiting":     {"called", "cancelled"},
 	"called":      {"in_progress", "cancelled"},
@@ -47,6 +33,9 @@ func RegisterQueueRoutes(rg *gin.RouterGroup) {
 	rg.GET("/queue/board", ListQueueBoardHandler)
 	rg.GET("/queue/:id", AccessLog("queue", "view", "id"), GetQueueHandler)
 	rg.PATCH("/queue/:id", UpdateQueueStatusHandler)
+	rg.POST("/queue/:id/skip", SkipQueueHandler)
+	rg.POST("/queue/:id/recall", RecallQueueHandler)
+	rg.POST("/queue/checkin", CheckInQueueHandler)
 }
 
 // ListQueueHandler godoc
@@ -118,26 +107,27 @@ func GetQueueHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": queue, "meta": gin.H{}})
 }
 
-type updateQueueStatusRequest struct {
-	Status string `json:"status" binding:"required"`
+type updateQueueRequest struct {
+	Status   string `json:"status"`
+	Priority *bool  `json:"priority"`
 }
 
 // UpdateQueueStatusHandler drives the queue state machine (spec §7). On a
-// transition into "done" it creates the next pipeline stage's queue row
-// (spec §4 point 4) — this handler does 3 writes in one request
-// (UpdateQueueStatus, CreateQueueStatusHistory, optionally CreateQueue for the
-// next stage); every write after the first calls c.Error(err) on failure so
+// transition into "done" it finishes the ticket and advances its journey to
+// the next flow stage (queue_engine.go) — this handler does several writes in
+// one request; every write after the first calls c.Error(err) on failure so
 // TenantMiddleware rolls back instead of committing a partial pipeline step
-// (see plan's Global Constraints).
+// (see plan's Global Constraints). A "priority" field without status just
+// re-queues the ticket ahead of same-stage waiters.
 // UpdateQueueStatusHandler godoc
-// @Summary Advance a queue entry's status
-// @Description Drives the queue state machine. On a transition into "done" it also creates the next pipeline stage's queue row — response includes both queue and next_stage_queue.
+// @Summary Advance a queue entry's status (or set priority)
+// @Description Drives the queue state machine. On a transition into "done" it finishes the ticket and advances its journey to the next flow stage (or awaits check-in / completes the journey) — response includes queue, next_stage_queue and journey. A "priority" field (no status) moves the ticket ahead in its stage.
 // @Tags queue
 // @Accept json
 // @Produce json
 // @Security BearerAuth
 // @Param id path string true "Queue UUID"
-// @Param request body updateQueueStatusRequest true "New status"
+// @Param request body updateQueueRequest true "New status and/or priority"
 // @Success 200 {object} apiResponse
 // @Failure 404 {object} apiErrorResponse
 // @Failure 409 {object} apiErrorResponse "invalid status transition"
@@ -162,73 +152,321 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 	if !RequirePermissionForMerchant(c, PermVisitManage, existing.MerchantID) {
 		return
 	}
-	var req updateQueueStatusRequest
+	var req updateQueueRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	allowed, ok := queueValidTransitions[existing.Status]
-	valid := false
-	if ok {
-		for _, s := range allowed {
-			if s == req.Status {
-				valid = true
-			}
-		}
-	}
-	if !valid {
-		c.JSON(http.StatusConflict, gin.H{"error": "invalid status transition from " + existing.Status + " to " + req.Status})
+	if req.Status == "" && req.Priority == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status or priority is required"})
 		return
 	}
-	updated, err := q.UpdateQueueStatus(ctx, sqlcgen.UpdateQueueStatusParams{
-		ID: id, Status: req.Status, CounterID: existing.CounterID, CalledAt: existing.CalledAt, UpdatedBy: AuthUserID(c),
-	})
+	if req.Priority != nil {
+		existing, err = q.UpdateQueuePriority(ctx, sqlcgen.UpdateQueuePriorityParams{
+			ID: id, Priority: *req.Priority, UpdatedBy: AuthUserID(c),
+		})
+		if err != nil {
+			c.Error(err)
+			respondInternalError(c, err)
+			return
+		}
+	}
+
+	res := stageAdvance{Ticket: &existing}
+	if req.Status != "" {
+		allowed, ok := queueValidTransitions[existing.Status]
+		valid := false
+		if ok {
+			for _, s := range allowed {
+				if s == req.Status {
+					valid = true
+				}
+			}
+		}
+		if !valid {
+			c.JSON(http.StatusConflict, gin.H{"error": "invalid status transition from " + existing.Status + " to " + req.Status})
+			return
+		}
+		switch req.Status {
+		case "done":
+			adv, err := advanceStageTicket(ctx, q, existing, req.Status, AuthUserID(c))
+			if err != nil {
+				c.Error(err)
+				respondInternalError(c, err)
+				return
+			}
+			res = adv
+		case "in_progress":
+			started, err := q.StartQueueTicket(ctx, sqlcgen.StartQueueTicketParams{ID: id, ServedBy: AuthUserID(c)})
+			if err != nil {
+				c.Error(err)
+				respondInternalError(c, err)
+				return
+			}
+			res.Ticket = &started
+		default:
+			updated, err := q.UpdateQueueStatus(ctx, sqlcgen.UpdateQueueStatusParams{
+				ID: id, Status: req.Status, CounterID: existing.CounterID, CalledAt: existing.CalledAt, UpdatedBy: AuthUserID(c),
+			})
+			if err != nil {
+				respondInternalError(c, err)
+				return
+			}
+			res.Ticket = &updated
+		}
+		if err := q.CreateQueueStatusHistory(ctx, sqlcgen.CreateQueueStatusHistoryParams{
+			QueueID: id, CounterID: existing.CounterID, FromStatus: optText(existing.Status), ToStatus: req.Status, ChangedBy: AuthUserID(c),
+		}); err != nil {
+			c.Error(err)
+			respondInternalError(c, err)
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"queue": res.Ticket, "next_stage_queue": res.Next, "journey": res.Journey,
+	}, "meta": gin.H{}})
+}
+
+// SkipQueueHandler marks a skippable stage's ticket as skipped (spec §4) and
+// advances the journey exactly like a "done" transition. Only flow tickets
+// (with journey_id and stage) whose stage allows skipping can be skipped.
+// SkipQueueHandler godoc
+// @Summary Skip a queue entry's stage
+// @Description Marks the ticket 'skipped' (finished_at set) and advances the journey to the next flow stage; only allowed when the ticket's stage has skippable=true.
+// @Tags queue
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Queue UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse "stage not skippable / invalid transition"
+// @Router /queue/{id}/skip [post]
+func SkipQueueHandler(c *gin.Context) {
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	ctx := c.Request.Context()
+	q := sqlcgen.New(TxFromContext(c))
+	existing, err := q.GetQueueByID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "queue not found"})
+		return
+	}
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
+	if !RequirePermissionForMerchant(c, PermVisitManage, existing.MerchantID) {
+		return
+	}
+	if !existing.JourneyID.Valid || !existing.StageID.Valid {
+		c.JSON(http.StatusConflict, gin.H{"error": "stage not skippable"})
+		return
+	}
+	stage, err := q.GetQueueStageByID(ctx, existing.StageID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !stage.Skippable {
+		c.JSON(http.StatusConflict, gin.H{"error": "stage not skippable"})
+		return
+	}
+	switch existing.Status {
+	case "waiting", "called", "in_progress":
+	default:
+		c.JSON(http.StatusConflict, gin.H{"error": "invalid status transition from " + existing.Status + " to skipped"})
+		return
+	}
+	res, err := advanceStageTicket(ctx, q, existing, "skipped", AuthUserID(c))
+	if err != nil {
+		c.Error(err)
+		respondInternalError(c, err)
+		return
+	}
 	if err := q.CreateQueueStatusHistory(ctx, sqlcgen.CreateQueueStatusHistoryParams{
-		QueueID: id, CounterID: existing.CounterID, FromStatus: optText(existing.Status), ToStatus: req.Status, ChangedBy: AuthUserID(c),
+		QueueID: id, CounterID: existing.CounterID, FromStatus: optText(existing.Status), ToStatus: "skipped", ChangedBy: AuthUserID(c),
 	}); err != nil {
 		c.Error(err)
 		respondInternalError(c, err)
 		return
 	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"queue": res.Ticket, "next_stage_queue": res.Next, "journey": res.Journey,
+	}, "meta": gin.H{}})
+}
 
-	var nextQueue *sqlcgen.OperationsQueue
-	if req.Status == "done" {
-		if nextType, has := nextQueueStage(existing.QueueType); has {
-			department, err := q.GetDepartmentByID(ctx, existing.DepartmentID)
-			if err != nil {
-				c.Error(err)
-				respondInternalError(c, err)
-				return
-			}
-			seq, err := q.CountTodayQueueByType(ctx, sqlcgen.CountTodayQueueByTypeParams{
-				MerchantID: existing.MerchantID, QueueType: nextType, DepartmentID: existing.DepartmentID,
-			})
-			if err != nil {
-				c.Error(err)
-				respondInternalError(c, err)
-				return
-			}
-			queueNumber := fmt.Sprintf("%s-%03d", department.Code, seq+1)
-			created, err := q.CreateQueue(ctx, sqlcgen.CreateQueueParams{
-				CompanyID: existing.CompanyID, MerchantID: existing.MerchantID, QueueType: nextType,
-				DepartmentID: existing.DepartmentID, PersonID: existing.PersonID, AdmissionID: existing.AdmissionID,
-				QueueNumber: queueNumber, CreatedBy: AuthUserID(c),
-			})
-			if err != nil {
-				c.Error(err)
-				respondInternalError(c, err)
-				return
-			}
-			nextQueue = &created
-		}
+// RecallQueueHandler re-announces the ticket as called (spec §4): the queue
+// row returns to 'called' keeping its counter, and the transition is logged
+// in queue_status_history with from=to='called' when already called.
+// RecallQueueHandler godoc
+// @Summary Recall a called/in-progress queue entry
+// @Description Sets the ticket back to 'called' (keeps its counter) and logs the transition in queue_status_history.
+// @Tags queue
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Queue UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse "cannot recall"
+// @Router /queue/{id}/recall [post]
+func RecallQueueHandler(c *gin.Context) {
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
 	}
+	ctx := c.Request.Context()
+	q := sqlcgen.New(TxFromContext(c))
+	existing, err := q.GetQueueByID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "queue not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermVisitManage, existing.MerchantID) {
+		return
+	}
+	if existing.Status != "called" && existing.Status != "in_progress" {
+		c.JSON(http.StatusConflict, gin.H{"error": "cannot recall from " + existing.Status})
+		return
+	}
+	updated, err := q.UpdateQueueStatus(ctx, sqlcgen.UpdateQueueStatusParams{
+		ID: id, Status: "called", CounterID: existing.CounterID,
+		CalledAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}, UpdatedBy: AuthUserID(c),
+	})
+	if err != nil {
+		c.Error(err)
+		respondInternalError(c, err)
+		return
+	}
+	if err := q.CreateQueueStatusHistory(ctx, sqlcgen.CreateQueueStatusHistoryParams{
+		QueueID: id, CounterID: existing.CounterID, FromStatus: optText(existing.Status), ToStatus: "called", ChangedBy: AuthUserID(c),
+	}); err != nil {
+		c.Error(err)
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": updated, "meta": gin.H{}})
+}
 
-	resp := gin.H{"data": gin.H{"queue": updated, "next_stage_queue": nextQueue}, "meta": gin.H{}}
-	c.JSON(http.StatusOK, resp)
+type checkInQueueRequest struct {
+	JourneyID   string `json:"journey_id"`
+	AdmissionID string `json:"admission_id"`
+	CounterID   string `json:"counter_id" binding:"required"`
+}
+
+// CheckInQueueHandler issues the ticket for a journey awaiting check-in
+// (spec §4): the journey must be 'awaiting_checkin' and the counter must
+// belong to the journey's current stage; otherwise 409 "nothing to check in".
+// CheckInQueueHandler godoc
+// @Summary Check a patient in at a stage (issues the stage ticket)
+// @Description For a journey in 'awaiting_checkin': validates that the counter belongs to the journey's current stage, creates the stage ticket and moves the journey back to 'in_progress'.
+// @Tags queue
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body checkInQueueRequest true "Journey (or admission) + counter"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse "nothing to check in"
+// @Router /queue/checkin [post]
+func CheckInQueueHandler(c *gin.Context) {
+	var req checkInQueueRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	counterID, ok := parseUUID(req.CounterID)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid counter_id"})
+		return
+	}
+	ctx := c.Request.Context()
+	q := sqlcgen.New(TxFromContext(c))
+
+	var journey sqlcgen.OperationsQueueJourney
+	switch {
+	case req.JourneyID != "":
+		jid, ok := parseUUID(req.JourneyID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid journey_id"})
+			return
+		}
+		j, err := q.GetQueueJourneyByID(ctx, jid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "journey not found"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		journey = j
+	case req.AdmissionID != "":
+		aid, ok := parseUUID(req.AdmissionID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid admission_id"})
+			return
+		}
+		j, err := q.GetQueueJourneyByAdmission(ctx, aid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "journey not found"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		journey = j
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "journey_id or admission_id is required"})
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermVisitManage, journey.MerchantID) {
+		return
+	}
+	counter, err := q.GetCounterByID(ctx, counterID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "counter not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if journey.Status != "awaiting_checkin" || !counter.StageID.Valid ||
+		!journey.CurrentStageID.Valid || counter.StageID != journey.CurrentStageID ||
+		counter.MerchantID != journey.MerchantID {
+		c.JSON(http.StatusConflict, gin.H{"error": "nothing to check in"})
+		return
+	}
+	stage, err := q.GetQueueStageByID(ctx, journey.CurrentStageID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	ticket, err := issueTicket(ctx, q, &journey, stage, pgtype.UUID{})
+	if err != nil {
+		c.Error(err)
+		respondInternalError(c, err)
+		return
+	}
+	updated, err := q.UpdateQueueJourneyStage(ctx, sqlcgen.UpdateQueueJourneyStageParams{
+		ID: journey.ID, CurrentStageID: stage.ID, Status: "in_progress", UpdatedBy: AuthUserID(c),
+	})
+	if err != nil {
+		c.Error(err)
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"queue": ticket, "journey": updated}, "meta": gin.H{}})
 }
 
 // ListQueueBoardHandler godoc

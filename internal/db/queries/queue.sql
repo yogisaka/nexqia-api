@@ -46,3 +46,29 @@ RETURNING *;
 -- name: CreateQueueStatusHistory :exec
 INSERT INTO operations.queue_status_history (queue_id, counter_id, from_status, to_status, changed_by)
 VALUES ($1, $2, $3, $4, $5);
+
+-- name: FinishQueueTicket :one
+UPDATE operations.queue
+SET status = $2, finished_at = now(), updated_by = $3
+WHERE id = $1
+RETURNING *;
+
+-- name: StartQueueTicket :one
+UPDATE operations.queue
+SET status = 'in_progress', started_at = now(), served_by = $2, updated_by = $2
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateQueuePriority :one
+UPDATE operations.queue
+SET priority = $2, updated_by = $3
+WHERE id = $1
+RETURNING *;
+
+-- name: CallNextFlowTicket :one
+SELECT * FROM operations.queue
+WHERE stage_id = $1 AND status = 'waiting'
+  AND (counter_id = $2::uuid OR counter_id IS NULL)
+ORDER BY priority DESC, checked_in_at, created_at
+LIMIT 1
+FOR UPDATE SKIP LOCKED;

@@ -136,6 +136,7 @@ type createAdmissionRequest struct {
 	CompanionName      string `json:"companion_name"`
 	ReferralOrigin     string `json:"referral_origin"`
 	ScheduleID         string `json:"schedule_id"`
+	FlowID             string `json:"flow_id"`
 }
 
 // CreateAdmissionHandler is FO check-in (spec §4 point 1): registers the
@@ -338,26 +339,59 @@ func CreateAdmissionHandler(c *gin.Context) {
 		}
 	}
 
-	queueSeq, err := q.CountTodayQueueByType(ctx, sqlcgen.CountTodayQueueByTypeParams{
-		MerchantID: merchantID, QueueType: "pendaftaran", DepartmentID: departmentID,
+	// Flow-driven first ticket (spec 2026-10-01-c §4): resolve the merchant's
+	// queue flow for this payer/department (auto-provisioning the built-in
+	// default flow when the merchant has none), create the journey, and issue
+	// the first stage's ticket. These writes come after the admission insert,
+	// so every failure must c.Error(err) to roll the whole request back.
+	payerType := ""
+	if primaryPayerID.Valid {
+		payerType, err = q.GetPayerType(ctx, primaryPayerID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			c.Error(err)
+			respondInternalError(c, err)
+			return
+		}
+	}
+	var explicitFlowID pgtype.UUID
+	if req.FlowID != "" {
+		fid, ok := parseUUID(req.FlowID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid flow_id"})
+			return
+		}
+		explicitFlowID = fid
+	}
+	flow, stages, err := resolveFlow(ctx, q, merchantID, departmentID, payerType, explicitFlowID)
+	if errors.Is(err, errFlowNotApplies) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if errors.Is(err, errNoQueueFlow) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		c.Error(err)
+		respondInternalError(c, err)
+		return
+	}
+	journey, err := q.CreateQueueJourney(ctx, sqlcgen.CreateQueueJourneyParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID, AdmissionID: admission.ID, PersonID: personID,
+		FlowID: flow.ID, CurrentStageID: stages[0].ID, Status: "in_progress", CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
 		c.Error(err)
 		respondInternalError(c, err)
 		return
 	}
-	queueNumber := fmt.Sprintf("%s-%03d", department.Code, queueSeq+1)
-	queue, err := q.CreateQueue(ctx, sqlcgen.CreateQueueParams{
-		CompanyID: AuthCompanyID(c), MerchantID: merchantID, QueueType: "pendaftaran", DepartmentID: departmentID,
-		PersonID: personID, AdmissionID: pgtype.UUID{Bytes: admission.ID.Bytes, Valid: true},
-		QueueNumber: queueNumber, CreatedBy: AuthUserID(c),
-	})
+	queue, err := issueTicket(ctx, q, &journey, stages[0], pgtype.UUID{})
 	if err != nil {
 		c.Error(err)
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"admission": admissionJSON(admission), "queue": queue}, "meta": gin.H{}})
+	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"admission": admissionJSON(admission), "queue": queue, "journey": journey}, "meta": gin.H{}})
 }
 
 // ListAdmissionsHandler godoc

@@ -228,6 +228,52 @@ func CallNextQueueHandler(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+	// Counter bound to a flow stage (spec 2026-10-01-c §4): the stage's
+	// served_by_permission governs who may call, and the candidate pool is the
+	// stage's waiting tickets addressed to this counter or unaddressed,
+	// priority first, then check-in/creation order, with SKIP LOCKED so two
+	// counters cannot pull the same ticket.
+	if counter.StageID.Valid {
+		stage, err := q.GetQueueStageByID(ctx, counter.StageID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if !RequirePermissionForMerchant(c, stage.ServedByPermission, counter.MerchantID) {
+			return
+		}
+		next, err := q.CallNextFlowTicket(ctx, sqlcgen.CallNextFlowTicketParams{
+			StageID: counter.StageID, Column2: pgtype.UUID{Bytes: counterID.Bytes, Valid: true},
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no waiting queue for this counter"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		calledAt := pgtype.Timestamptz{Time: time.Now(), Valid: true}
+		updated, err := q.UpdateQueueStatus(ctx, sqlcgen.UpdateQueueStatusParams{
+			ID: next.ID, Status: "called", CounterID: pgtype.UUID{Bytes: counterID.Bytes, Valid: true},
+			CalledAt: calledAt, UpdatedBy: AuthUserID(c),
+		})
+		if err != nil {
+			c.Error(err)
+			respondInternalError(c, err)
+			return
+		}
+		if err := q.CreateQueueStatusHistory(ctx, sqlcgen.CreateQueueStatusHistoryParams{
+			QueueID: next.ID, CounterID: pgtype.UUID{Bytes: counterID.Bytes, Valid: true},
+			FromStatus: optText(next.Status), ToStatus: "called", ChangedBy: AuthUserID(c),
+		}); err != nil {
+			c.Error(err)
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": updated, "meta": gin.H{}})
+		return
+	}
 	next, err := q.GetOldestWaitingQueue(ctx, sqlcgen.GetOldestWaitingQueueParams{
 		MerchantID: counter.MerchantID, QueueType: counter.QueueType, DepartmentID: counter.DepartmentID,
 	})
