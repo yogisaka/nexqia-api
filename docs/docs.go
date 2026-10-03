@@ -2634,6 +2634,258 @@ const docTemplate = `{
                 }
             }
         },
+        "/display-boards": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "display-board"
+                ],
+                "summary": "Create a display board",
+                "parameters": [
+                    {
+                        "description": "Board data (merchant_id required)",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.displayBoardInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/display-boards/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "display-board"
+                ],
+                "summary": "Soft-delete a display board",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Board UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "display-board"
+                ],
+                "summary": "Update a display board",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Board UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Board fields",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.displayBoardInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/display-boards/{id}/token": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the raw token ONCE; only its sha256 hex is stored.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "display-board"
+                ],
+                "summary": "Issue a device token for a display board",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Board UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "display-board"
+                ],
+                "summary": "Revoke a display board's device token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Board UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/display/boards/{id}/feed": {
+            "get": {
+                "description": "Token-authenticated (X-Display-Token), rate limited; no patient\nidentifiers — only masked labels. 401 \"invalid display token\"\non missing/wrong token or inactive board.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "display"
+                ],
+                "summary": "Device feed for a display board",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Company UUID",
+                        "name": "X-Company-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Board UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/display/queue": {
             "get": {
                 "security": [
@@ -3343,6 +3595,39 @@ const docTemplate = `{
                 }
             }
         },
+        "/merchants/{id}/display-boards": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "display-board"
+                ],
+                "summary": "List a merchant's display boards",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/merchants/{id}/locations": {
             "get": {
                 "security": [
@@ -3639,6 +3924,39 @@ const docTemplate = `{
                         "description": "Page offset",
                         "name": "offset",
                         "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/queue-flows": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue-flow"
+                ],
+                "summary": "List a merchant's queue flows with their stages",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -5922,6 +6240,266 @@ const docTemplate = `{
                 }
             }
         },
+        "/queue-flows": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue-flow"
+                ],
+                "summary": "Create a queue flow, optionally with its stages",
+                "parameters": [
+                    {
+                        "description": "Flow data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createQueueFlowRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/queue-flows/from-preset/{preset}": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue-flow"
+                ],
+                "summary": "Create a queue flow from a built-in preset",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Preset key (simple | outpatient_full)",
+                        "name": "preset",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Target merchant",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createQueueFlowFromPresetRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/queue-flows/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Refused with 409 while journeys of the flow are in_progress/awaiting_checkin.",
+                "tags": [
+                    "queue-flow"
+                ],
+                "summary": "Soft-delete a queue flow",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Flow UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue-flow"
+                ],
+                "summary": "Update a queue flow",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Flow UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Flow fields",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updateQueueFlowRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/queue-flows/{id}/stages": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Entries with id update existing stages, entries without id are\ninserted, existing stages missing from the list are deleted —\nall in one transaction. Deleting a stage still referenced by\nany ticket is refused with 409.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue-flow"
+                ],
+                "summary": "Replace the full stage list of a flow",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Flow UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Stage list",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.replaceStagesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/queue/board": {
             "get": {
                 "security": [
@@ -5992,6 +6570,57 @@ const docTemplate = `{
                 }
             }
         },
+        "/queue/checkin": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "For a journey in 'awaiting_checkin': validates that the counter belongs to the journey's current stage, creates the stage ticket and moves the journey back to 'in_progress'.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue"
+                ],
+                "summary": "Check a patient in at a stage (issues the stage ticket)",
+                "parameters": [
+                    {
+                        "description": "Journey (or admission) + counter",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.checkInQueueRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "nothing to check in",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/queue/{id}": {
             "get": {
                 "security": [
@@ -6036,7 +6665,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Drives the queue state machine. On a transition into \"done\" it also creates the next pipeline stage's queue row — response includes both queue and next_stage_queue.",
+                "description": "Drives the queue state machine. On a transition into \"done\" it finishes the ticket and advances its journey to the next flow stage (or awaits check-in / completes the journey) — response includes queue, next_stage_queue and journey. A \"priority\" field (no status) moves the ticket ahead in its stage.",
                 "consumes": [
                     "application/json"
                 ],
@@ -6046,7 +6675,7 @@ const docTemplate = `{
                 "tags": [
                     "queue"
                 ],
-                "summary": "Advance a queue entry's status",
+                "summary": "Advance a queue entry's status (or set priority)",
                 "parameters": [
                     {
                         "type": "string",
@@ -6056,12 +6685,12 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "New status",
+                        "description": "New status and/or priority",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/server.updateQueueStatusRequest"
+                            "$ref": "#/definitions/server.updateQueueRequest"
                         }
                     }
                 ],
@@ -6080,6 +6709,98 @@ const docTemplate = `{
                     },
                     "409": {
                         "description": "invalid status transition",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/queue/{id}/recall": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sets the ticket back to 'called' (keeps its counter) and logs the transition in queue_status_history.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue"
+                ],
+                "summary": "Recall a called/in-progress queue entry",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Queue UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "cannot recall",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/queue/{id}/skip": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Marks the ticket 'skipped' (finished_at set) and advances the journey to the next flow stage; only allowed when the ticket's stage has skippable=true.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue"
+                ],
+                "summary": "Skip a queue entry's stage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Queue UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "stage not skippable / invalid transition",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -7951,6 +8672,23 @@ const docTemplate = `{
                 }
             }
         },
+        "server.checkInQueueRequest": {
+            "type": "object",
+            "required": [
+                "counter_id"
+            ],
+            "properties": {
+                "admission_id": {
+                    "type": "string"
+                },
+                "counter_id": {
+                    "type": "string"
+                },
+                "journey_id": {
+                    "type": "string"
+                }
+            }
+        },
         "server.copyScheduleWeekRequest": {
             "type": "object",
             "required": [
@@ -7997,6 +8735,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "diagnosis_text": {
+                    "type": "string"
+                },
+                "flow_id": {
                     "type": "string"
                 },
                 "guarantor_name": {
@@ -8068,14 +8809,19 @@ const docTemplate = `{
             "type": "object",
             "required": [
                 "code",
-                "merchant_id",
-                "queue_type"
+                "merchant_id"
             ],
             "properties": {
+                "binding": {
+                    "type": "string"
+                },
                 "code": {
                     "type": "string"
                 },
                 "department_id": {
+                    "type": "string"
+                },
+                "location_id": {
                     "type": "string"
                 },
                 "merchant_id": {
@@ -8085,6 +8831,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "queue_type": {
+                    "type": "string"
+                },
+                "stage_id": {
                     "type": "string"
                 }
             }
@@ -8363,6 +9112,59 @@ const docTemplate = `{
                 }
             }
         },
+        "server.createQueueFlowFromPresetRequest": {
+            "type": "object",
+            "required": [
+                "merchant_id"
+            ],
+            "properties": {
+                "merchant_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.createQueueFlowRequest": {
+            "type": "object",
+            "required": [
+                "merchant_id",
+                "name"
+            ],
+            "properties": {
+                "department_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_default": {
+                    "type": "boolean"
+                },
+                "merchant_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "service_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "stages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.stageInput"
+                    }
+                }
+            }
+        },
         "server.createRateComponentRequest": {
             "type": "object",
             "required": [
@@ -8485,6 +9287,50 @@ const docTemplate = `{
             ],
             "properties": {
                 "code_system": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.displayBoardInput": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "counter_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "layout": {
+                    "type": "string"
+                },
+                "location_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "name_display": {
+                    "type": "string"
+                },
+                "poll_seconds": {
+                    "type": "integer"
+                },
+                "show_next_n": {
+                    "type": "integer"
+                },
+                "stage_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "voice": {
                     "type": "string"
                 }
             }
@@ -8874,6 +9720,21 @@ const docTemplate = `{
                 }
             }
         },
+        "server.replaceStagesRequest": {
+            "type": "object",
+            "required": [
+                "stages"
+            ],
+            "properties": {
+                "stages": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/server.stageInput"
+                    }
+                }
+            }
+        },
         "server.resolveLeaveAffectedRequest": {
             "type": "object",
             "required": [
@@ -8931,6 +9792,44 @@ const docTemplate = `{
                 },
                 "selection_token": {
                     "type": "string"
+                }
+            }
+        },
+        "server.stageInput": {
+            "type": "object",
+            "required": [
+                "served_by_permission"
+            ],
+            "properties": {
+                "bpjs_task_end": {
+                    "type": "integer"
+                },
+                "bpjs_task_start": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "number_prefix": {
+                    "type": "string"
+                },
+                "requires_checkin": {
+                    "type": "boolean"
+                },
+                "seq": {
+                    "type": "integer"
+                },
+                "served_by_permission": {
+                    "type": "string"
+                },
+                "skippable": {
+                    "type": "boolean"
                 }
             }
         },
@@ -9022,13 +9921,22 @@ const docTemplate = `{
                 "code"
             ],
             "properties": {
+                "binding": {
+                    "type": "string"
+                },
                 "code": {
                     "type": "string"
                 },
                 "is_active": {
                     "type": "boolean"
                 },
+                "location_id": {
+                    "type": "string"
+                },
                 "name": {
+                    "type": "string"
+                },
+                "stage_id": {
                     "type": "string"
                 }
             }
@@ -9214,12 +10122,26 @@ const docTemplate = `{
                 }
             }
         },
-        "server.updateQueueStatusRequest": {
+        "server.updateQueueFlowRequest": {
             "type": "object",
-            "required": [
-                "status"
-            ],
             "properties": {
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_default": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.updateQueueRequest": {
+            "type": "object",
+            "properties": {
+                "priority": {
+                    "type": "boolean"
+                },
                 "status": {
                     "type": "string"
                 }

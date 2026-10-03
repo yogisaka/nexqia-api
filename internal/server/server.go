@@ -120,6 +120,13 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	RegisterQueueRoutes(locked)
 	RegisterAdmissionRoutes(locked)
 	RegisterDisplayRoutes(locked)
+	RegisterQueueFlowRoutes(locked)
+	RegisterDisplayBoardRoutes(locked)
+	// Device display feed: tenant transaction + per-device rate limit, but NO
+	// AuthMiddleware — the board token is the credential (spec
+	// 2026-10-01-c-queue-flow-display §6). The device still sends
+	// X-Company-ID/X-Merchant-ID so RLS has a tenant context.
+	tenant.GET("/display/boards/:id/feed", RateLimitDisplayMiddleware(limiter, cfg), DisplayBoardFeedHandler)
 	RegisterAuditRoutes(locked, cfg)
 
 	platform := v1.Group("/platform", PlatformTxMiddleware(pool))

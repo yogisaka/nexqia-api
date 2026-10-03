@@ -21,6 +21,11 @@ INSERT INTO operations.queue_stage (company_id, merchant_id, flow_id, seq, name,
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
+-- name: CreateQueueStageFull :one
+INSERT INTO operations.queue_stage (company_id, merchant_id, flow_id, seq, name, kind, number_prefix, skippable, requires_checkin, bpjs_task_start, bpjs_task_end, served_by_permission)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING *;
+
 -- name: ListQueueStagesByFlow :many
 SELECT * FROM operations.queue_stage WHERE flow_id = $1 ORDER BY seq;
 
@@ -63,3 +68,62 @@ WHERE stage_id = $1 AND created_at >= $2;
 SELECT * FROM operations.counter
 WHERE stage_id = $1 AND is_active
 ORDER BY code;
+
+-- ---------------------------------------------------------------------------
+-- Flow/stage/counter configuration API (spec §5, task 3).
+-- ---------------------------------------------------------------------------
+
+-- name: ListMerchantQueueFlows :many
+SELECT * FROM operations.queue_flow
+WHERE merchant_id = $1 AND deleted_at IS NULL
+ORDER BY name;
+
+-- name: GetQueueFlowByID :one
+SELECT * FROM operations.queue_flow WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: CreateQueueFlow :one
+INSERT INTO operations.queue_flow (company_id, merchant_id, name, service_types, department_ids, is_default, is_active, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING *;
+
+-- name: UpdateQueueFlow :one
+UPDATE operations.queue_flow
+SET name = $2, is_default = $3, is_active = $4, updated_by = $5
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: SoftDeleteQueueFlow :exec
+UPDATE operations.queue_flow
+SET deleted_at = now(), deleted_by = $2, updated_by = $2
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: CountActiveJourneysForFlow :one
+SELECT count(*) FROM operations.queue_journey
+WHERE flow_id = $1 AND status IN ('in_progress','awaiting_checkin');
+
+-- name: UpdateQueueStageFull :one
+UPDATE operations.queue_stage
+SET seq = $2, name = $3, kind = $4, number_prefix = $5, skippable = $6,
+    requires_checkin = $7, bpjs_task_start = $8, bpjs_task_end = $9,
+    served_by_permission = $10
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteQueueStagesNotIn :exec
+DELETE FROM operations.queue_stage
+WHERE flow_id = $1 AND NOT (id = ANY($2::uuid[]));
+
+-- name: CountTicketsForStages :one
+SELECT count(*) FROM operations.queue
+WHERE stage_id = ANY($1::uuid[]);
+
+-- name: CreateCounterWithStage :one
+INSERT INTO operations.counter (company_id, merchant_id, queue_type, department_id, code, name, stage_id, location_id, binding, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING *;
+
+-- name: UpdateCounterBinding :one
+UPDATE operations.counter
+SET code = $2, name = $3, is_active = $4, stage_id = $5, location_id = $6, binding = $7, updated_by = $8
+WHERE id = $1
+RETURNING *;

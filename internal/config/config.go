@@ -32,6 +32,11 @@ type Config struct {
 	RateLimitRegisterWindowSeconds int
 	RateLimitAPITokensPerMinute    int
 	RateLimitAPIBurst              int
+	// RateLimitDisplayPerMinute — per-device token bucket for the
+	// unauthenticated display-board feed (env
+	// RATE_LIMIT_DISPLAY_REQUESTS_PER_MINUTE, default 60), see
+	// 2026-10-01-c-queue-flow-display-design §6.
+	RateLimitDisplayPerMinute int
 
 	Argon2MemoryKiB   uint32
 	Argon2Iterations  uint32
@@ -166,6 +171,7 @@ func Load() Config {
 		RateLimitRegisterWindowSeconds: getEnvInt("RATE_LIMIT_REGISTER_WINDOW_SECONDS", 3600),
 		RateLimitAPITokensPerMinute:    getEnvInt("RATE_LIMIT_API_TOKENS_PER_MINUTE", 100),
 		RateLimitAPIBurst:              getEnvInt("RATE_LIMIT_API_BURST", 20),
+		RateLimitDisplayPerMinute:      getEnvInt("RATE_LIMIT_DISPLAY_REQUESTS_PER_MINUTE", 60),
 
 		Argon2MemoryKiB:   uint32(getEnvInt("ARGON2_MEMORY_KIB", 19456)),
 		Argon2Iterations:  uint32(getEnvInt("ARGON2_ITERATIONS", 2)),

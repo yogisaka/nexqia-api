@@ -32,6 +32,28 @@ func RateLimitAPIMiddleware(limiter *ratelimit.Limiter, cfg config.Config) gin.H
 	}
 }
 
+// RateLimitDisplayMiddleware enforces a token bucket keyed per device
+// ("display:<ip>:<board id>") on the unauthenticated display-board feed
+// (spec 2026-10-01-c-queue-flow-display §6). Must be registered BEFORE the
+// handler on the route (needs the :id path param). Fail-closed like the API
+// limiter: Redis unreachable → 503.
+func RateLimitDisplayMiddleware(limiter *ratelimit.Limiter, cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		key := "display:" + c.ClientIP() + ":" + c.Param("id")
+		result, err := limiter.AllowTokenBucket(c.Request.Context(), key, cfg.RateLimitDisplayPerMinute, cfg.RateLimitDisplayPerMinute)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
+			return
+		}
+		if !result.Allowed {
+			c.Header("Retry-After", strconv.Itoa(int(result.RetryAfter.Seconds())))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests, try again later"})
+			return
+		}
+		c.Next()
+	}
+}
+
 // checkLoginRateLimit enforces sliding-window limits on both username and IP.
 // Called from LoginHandler after parsing the request body (username is not known
 // before that point) and before any password hash comparison — see spec §9 for
