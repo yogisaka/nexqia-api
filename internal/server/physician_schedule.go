@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
+	"github.com/yogisaka/nexqia-api/internal/schedule"
 )
 
 // PermScheduleManage guards operations.physician_schedule CRUD — jadwal praktik
@@ -25,6 +26,14 @@ func RegisterPhysicianScheduleRoutes(rg *gin.RouterGroup) {
 	rg.GET("/physician-schedules/:id", GetPhysicianScheduleHandler)
 	rg.PATCH("/physician-schedules/:id", UpdatePhysicianScheduleHandler)
 	rg.DELETE("/physician-schedules/:id", DeletePhysicianScheduleHandler)
+	// Calendar, summary, session overrides and settings (spec
+	// 2026-10-01-b-physician-schedule-design §4).
+	rg.GET("/merchants/:id/schedule/calendar", ScheduleCalendarHandler)
+	rg.GET("/merchants/:id/schedule/summary", ScheduleSummaryHandler)
+	rg.GET("/merchants/:id/schedule/settings", GetScheduleSettingsHandler)
+	rg.PUT("/merchants/:id/schedule/settings", UpdateScheduleSettingsHandler)
+	rg.PUT("/schedule/sessions/:schedule_id/:date", UpsertScheduleSessionHandler)
+	rg.DELETE("/schedule/sessions/:schedule_id/:date", DeleteScheduleSessionHandler)
 }
 
 // parseTimeOfDay parses "HH:MM" into pgtype.Time (microseconds since midnight —
@@ -67,33 +76,150 @@ func checkScheduleRanges(c *gin.Context, start, end pgtype.Time, effectiveFrom, 
 // start_time/end_time as "HH:MM" strings. Reused by display.go.
 func toScheduleResponse(s sqlcgen.OperationsPhysicianSchedule) gin.H {
 	return gin.H{
-		"id":             s.ID,
-		"company_id":     s.CompanyID,
-		"merchant_id":    s.MerchantID,
-		"physician_id":   s.PhysicianID,
-		"department_id":  s.DepartmentID,
-		"day_of_week":    s.DayOfWeek,
-		"start_time":     formatTimeOfDay(s.StartTime),
-		"end_time":       formatTimeOfDay(s.EndTime),
-		"slot_quota":     s.SlotQuota,
-		"effective_from": s.EffectiveFrom,
-		"effective_to":   s.EffectiveTo,
-		"is_active":      s.IsActive,
-		"created_at":     s.CreatedAt,
-		"updated_at":     s.UpdatedAt,
+		"id":                  s.ID,
+		"company_id":          s.CompanyID,
+		"merchant_id":         s.MerchantID,
+		"physician_id":        s.PhysicianID,
+		"department_id":       s.DepartmentID,
+		"day_of_week":         s.DayOfWeek,
+		"start_time":          formatTimeOfDay(s.StartTime),
+		"end_time":            formatTimeOfDay(s.EndTime),
+		"slot_quota":          s.SlotQuota,
+		"effective_from":      s.EffectiveFrom,
+		"effective_to":        s.EffectiveTo,
+		"is_active":           s.IsActive,
+		"created_at":          s.CreatedAt,
+		"updated_at":          s.UpdatedAt,
+		"room_id":             s.RoomID,
+		"quota_jkn":           s.QuotaJkn,
+		"minutes_per_patient": s.MinutesPerPatient,
+		"service_types":       s.ServiceTypes,
+		"shift_id":            s.ShiftID,
+		"notes":               s.Notes,
 	}
 }
 
+// resolveScheduleRoom validates the pattern's room_id: it must be a
+// core.location of the same merchant with kind='room' carrying the 'practice'
+// function (spec §3). Writes 400 and returns false when invalid; an empty
+// value (legacy data) passes as NULL.
+func resolveScheduleRoom(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, raw string) (pgtype.UUID, bool) {
+	if raw == "" {
+		return pgtype.UUID{}, true
+	}
+	roomID, ok := parseUUID(raw)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid room_id"})
+		return pgtype.UUID{}, false
+	}
+	loc, err := q.GetLocationByID(c.Request.Context(), roomID)
+	if err != nil || loc.MerchantID != merchantID || loc.Kind != "room" || !locationHasFunction(loc, "practice") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "room must be a practice room"})
+		return pgtype.UUID{}, false
+	}
+	return roomID, true
+}
+
+func locationHasFunction(loc sqlcgen.CoreLocation, fn string) bool {
+	for _, f := range loc.Functions {
+		if f == fn {
+			return true
+		}
+	}
+	return false
+}
+
+// scheduleConflict is one entry of the 409 conflicts list.
+type scheduleConflict struct {
+	ScheduleID string `json:"schedule_id"`
+	Reason     string `json:"reason"` // room | physician
+}
+
+// checkPatternConflicts rejects a create/update whose candidate pattern
+// overlaps another active pattern of the same merchant on the same weekday
+// (schedule.PatternOverlap). excludeID skips the pattern being updated.
+// Returns false when it already wrote the 409 response.
+func checkPatternConflicts(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, candidate schedule.Pattern, excludeID string) bool {
+	rows, err := q.ListSchedulesByMerchantAndDay(c.Request.Context(), sqlcgen.ListSchedulesByMerchantAndDayParams{
+		MerchantID: merchantID,
+		DayOfWeek:  int16(candidate.DayOfWeek),
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	for _, r := range rows {
+		if excludeID != "" && r.ID.String() == excludeID {
+			continue
+		}
+		other := schedule.Pattern{
+			ID: r.ID.String(), PhysicianID: r.PhysicianID.String(), RoomID: r.RoomID.String(),
+			DayOfWeek: time.Weekday(r.DayOfWeek),
+			Start:     formatTimeOfDay(r.StartTime), End: formatTimeOfDay(r.EndTime),
+			EffectiveFrom: r.EffectiveFrom.Time, EffectiveTo: effectiveToDate(r.EffectiveTo),
+			Active: r.IsActive,
+		}
+		if !schedule.PatternOverlap(candidate, other) {
+			continue
+		}
+		reason := "physician"
+		if candidate.RoomID != "" && candidate.RoomID == other.RoomID {
+			reason = "room"
+		}
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "schedule overlaps another schedule",
+			"conflicts": []scheduleConflict{{
+				ScheduleID: other.ID,
+				Reason:     reason,
+			}},
+		})
+		return false
+	}
+	return true
+}
+
+// scheduleWarnings computes the response warnings[] (spec §4):
+//   - sip_expires_before_end: effective_to (or an open-ended pattern) passes
+//     the physician's sip_valid_until;
+//   - contract_ending: effective_to is within today + contract_warning_days
+//     (merchant timezone).
+func scheduleWarnings(c *gin.Context, q *sqlcgen.Queries, merchantID, physicianID pgtype.UUID, effectiveTo pgtype.Date) []string {
+	warnings := []string{}
+	sip, err := q.GetPhysicianSipValidUntil(c.Request.Context(), physicianID)
+	if err == nil && sip.Valid &&
+		(!effectiveTo.Valid || effectiveTo.Time.After(sip.Time)) {
+		warnings = append(warnings, "sip_expires_before_end")
+	}
+	loc, err := merchantLocation(c, q, merchantID)
+	if err != nil {
+		return warnings
+	}
+	settings := loadScheduleSettings(c, q, merchantID)
+	today := time.Now().In(loc)
+	y, m, d := today.Date()
+	deadline := time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, settings.ContractWarningDays)
+	if effectiveTo.Valid && !effectiveTo.Time.After(deadline) {
+		warnings = append(warnings, "contract_ending")
+	}
+	return warnings
+}
+
 type createPhysicianScheduleRequest struct {
-	MerchantID    string `json:"merchant_id" binding:"required"`
-	PhysicianID   string `json:"physician_id" binding:"required"`
-	DepartmentID  string `json:"department_id" binding:"required"`
-	DayOfWeek     int16  `json:"day_of_week" binding:"gte=0,lte=6"`
-	StartTime     string `json:"start_time" binding:"required"`
-	EndTime       string `json:"end_time" binding:"required"`
-	SlotQuota     int32  `json:"slot_quota"`
-	EffectiveFrom string `json:"effective_from" binding:"required"`
-	EffectiveTo   string `json:"effective_to"`
+	MerchantID        string   `json:"merchant_id" binding:"required"`
+	PhysicianID       string   `json:"physician_id" binding:"required"`
+	DepartmentID      string   `json:"department_id" binding:"required"`
+	DayOfWeek         int16    `json:"day_of_week" binding:"gte=0,lte=6"`
+	StartTime         string   `json:"start_time" binding:"required"`
+	EndTime           string   `json:"end_time" binding:"required"`
+	SlotQuota         int32    `json:"slot_quota"`
+	EffectiveFrom     string   `json:"effective_from" binding:"required"`
+	EffectiveTo       string   `json:"effective_to"`
+	RoomID            string   `json:"room_id"`
+	QuotaJkn          int32    `json:"quota_jkn"`
+	MinutesPerPatient int32    `json:"minutes_per_patient"`
+	ServiceTypes      []string `json:"service_types"`
+	ShiftID           string   `json:"shift_id"`
+	Notes             string   `json:"notes"`
 }
 
 // CreatePhysicianScheduleHandler godoc
@@ -158,24 +284,62 @@ func CreatePhysicianScheduleHandler(c *gin.Context) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
+	roomID, ok := resolveScheduleRoom(c, q, merchantID, req.RoomID)
+	if !ok {
+		return
+	}
+	var shiftID pgtype.UUID
+	if req.ShiftID != "" {
+		var ok bool
+		shiftID, ok = parseUUID(req.ShiftID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid shift_id"})
+			return
+		}
+	}
+	minutes := req.MinutesPerPatient
+	if minutes <= 0 {
+		minutes = defaultMinutesPerPatient
+	}
+	serviceTypes := req.ServiceTypes
+	if len(serviceTypes) == 0 {
+		serviceTypes = []string{"umum", "bpjs"}
+	}
+	candidate := schedule.Pattern{
+		ID: "new", PhysicianID: physicianID.String(), RoomID: roomID.String(),
+		DayOfWeek: time.Weekday(req.DayOfWeek),
+		Start:     formatTimeOfDay(startTime), End: formatTimeOfDay(endTime),
+		EffectiveFrom: effectiveFrom.Time, EffectiveTo: effectiveToDate(effectiveTo),
+		Active: true,
+	}
+	if !checkPatternConflicts(c, q, merchantID, candidate, "") {
+		return
+	}
 	schedule, err := q.CreatePhysicianSchedule(c.Request.Context(), sqlcgen.CreatePhysicianScheduleParams{
-		CompanyID:     AuthCompanyID(c),
-		MerchantID:    merchantID,
-		PhysicianID:   physicianID,
-		DepartmentID:  departmentID,
-		DayOfWeek:     req.DayOfWeek,
-		StartTime:     startTime,
-		EndTime:       endTime,
-		SlotQuota:     req.SlotQuota,
-		EffectiveFrom: effectiveFrom,
-		EffectiveTo:   effectiveTo,
-		CreatedBy:     AuthUserID(c),
+		CompanyID:         AuthCompanyID(c),
+		MerchantID:        merchantID,
+		PhysicianID:       physicianID,
+		DepartmentID:      departmentID,
+		DayOfWeek:         req.DayOfWeek,
+		StartTime:         startTime,
+		EndTime:           endTime,
+		SlotQuota:         req.SlotQuota,
+		EffectiveFrom:     effectiveFrom,
+		EffectiveTo:       effectiveTo,
+		CreatedBy:         AuthUserID(c),
+		RoomID:            roomID,
+		QuotaJkn:          req.QuotaJkn,
+		MinutesPerPatient: minutes,
+		ServiceTypes:      serviceTypes,
+		ShiftID:           shiftID,
+		Notes:             pgtype.Text{String: req.Notes, Valid: req.Notes != ""},
 	})
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": toScheduleResponse(schedule), "meta": gin.H{}})
+	warnings := scheduleWarnings(c, q, merchantID, physicianID, effectiveTo)
+	c.JSON(http.StatusCreated, gin.H{"data": toScheduleResponse(schedule), "meta": gin.H{}, "warnings": warnings})
 }
 
 // ListPhysicianSchedulesHandler godoc
@@ -245,13 +409,19 @@ func GetPhysicianScheduleHandler(c *gin.Context) {
 }
 
 type updatePhysicianScheduleRequest struct {
-	DayOfWeek     int16  `json:"day_of_week" binding:"gte=0,lte=6"`
-	StartTime     string `json:"start_time" binding:"required"`
-	EndTime       string `json:"end_time" binding:"required"`
-	SlotQuota     int32  `json:"slot_quota"`
-	EffectiveFrom string `json:"effective_from" binding:"required"`
-	EffectiveTo   string `json:"effective_to"`
-	IsActive      bool   `json:"is_active"`
+	DayOfWeek         int16    `json:"day_of_week" binding:"gte=0,lte=6"`
+	StartTime         string   `json:"start_time" binding:"required"`
+	EndTime           string   `json:"end_time" binding:"required"`
+	SlotQuota         int32    `json:"slot_quota"`
+	EffectiveFrom     string   `json:"effective_from" binding:"required"`
+	EffectiveTo       string   `json:"effective_to"`
+	IsActive          bool     `json:"is_active"`
+	RoomID            *string  `json:"room_id"`
+	QuotaJkn          *int32   `json:"quota_jkn"`
+	MinutesPerPatient *int32   `json:"minutes_per_patient"`
+	ServiceTypes      []string `json:"service_types"`
+	ShiftID           *string  `json:"shift_id"`
+	Notes             *string  `json:"notes"`
 }
 
 // UpdatePhysicianScheduleHandler godoc
@@ -312,16 +482,72 @@ func UpdatePhysicianScheduleHandler(c *gin.Context) {
 	if !checkScheduleRanges(c, startTime, endTime, effectiveFrom, effectiveTo) {
 		return
 	}
+	roomID := existing.RoomID
+	if req.RoomID != nil {
+		parsed, ok := resolveScheduleRoom(c, q, existing.MerchantID, *req.RoomID)
+		if !ok {
+			return
+		}
+		roomID = parsed
+	}
+	shiftID := existing.ShiftID
+	if req.ShiftID != nil {
+		if *req.ShiftID == "" {
+			shiftID = pgtype.UUID{}
+		} else {
+			parsed, ok := parseUUID(*req.ShiftID)
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid shift_id"})
+				return
+			}
+			shiftID = parsed
+		}
+	}
+	quotaJkn := existing.QuotaJkn
+	if req.QuotaJkn != nil {
+		quotaJkn = *req.QuotaJkn
+	}
+	minutes := existing.MinutesPerPatient
+	if req.MinutesPerPatient != nil && *req.MinutesPerPatient > 0 {
+		minutes = *req.MinutesPerPatient
+	}
+	if minutes <= 0 {
+		minutes = defaultMinutesPerPatient
+	}
+	serviceTypes := existing.ServiceTypes
+	if len(req.ServiceTypes) > 0 {
+		serviceTypes = req.ServiceTypes
+	}
+	notes := existing.Notes
+	if req.Notes != nil {
+		notes = pgtype.Text{String: *req.Notes, Valid: *req.Notes != ""}
+	}
+	candidate := schedule.Pattern{
+		ID: id.String(), PhysicianID: existing.PhysicianID.String(), RoomID: roomID.String(),
+		DayOfWeek: time.Weekday(req.DayOfWeek),
+		Start:     formatTimeOfDay(startTime), End: formatTimeOfDay(endTime),
+		EffectiveFrom: effectiveFrom.Time, EffectiveTo: effectiveToDate(effectiveTo),
+		Active: req.IsActive,
+	}
+	if !checkPatternConflicts(c, q, existing.MerchantID, candidate, id.String()) {
+		return
+	}
 	schedule, err := q.UpdatePhysicianSchedule(c.Request.Context(), sqlcgen.UpdatePhysicianScheduleParams{
-		ID:            id,
-		DayOfWeek:     req.DayOfWeek,
-		StartTime:     startTime,
-		EndTime:       endTime,
-		SlotQuota:     req.SlotQuota,
-		EffectiveFrom: effectiveFrom,
-		EffectiveTo:   effectiveTo,
-		IsActive:      req.IsActive,
-		UpdatedBy:     AuthUserID(c),
+		ID:                id,
+		DayOfWeek:         req.DayOfWeek,
+		StartTime:         startTime,
+		EndTime:           endTime,
+		SlotQuota:         req.SlotQuota,
+		EffectiveFrom:     effectiveFrom,
+		EffectiveTo:       effectiveTo,
+		IsActive:          req.IsActive,
+		UpdatedBy:         AuthUserID(c),
+		RoomID:            roomID,
+		QuotaJkn:          quotaJkn,
+		MinutesPerPatient: minutes,
+		ServiceTypes:      serviceTypes,
+		ShiftID:           shiftID,
+		Notes:             notes,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "physician schedule not found"})
@@ -331,7 +557,8 @@ func UpdatePhysicianScheduleHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": toScheduleResponse(schedule), "meta": gin.H{}})
+	warnings := scheduleWarnings(c, q, existing.MerchantID, existing.PhysicianID, effectiveTo)
+	c.JSON(http.StatusOK, gin.H{"data": toScheduleResponse(schedule), "meta": gin.H{}, "warnings": warnings})
 }
 
 // DeletePhysicianScheduleHandler godoc

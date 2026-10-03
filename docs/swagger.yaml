@@ -231,7 +231,21 @@ definitions:
         type: string
       merchant_id:
         type: string
+      minutes_per_patient:
+        type: integer
+      notes:
+        type: string
       physician_id:
+        type: string
+      quota_jkn:
+        type: integer
+      room_id:
+        type: string
+      service_types:
+        items:
+          type: string
+        type: array
+      shift_id:
         type: string
       slot_quota:
         type: integer
@@ -826,6 +840,20 @@ definitions:
         type: string
       is_active:
         type: boolean
+      minutes_per_patient:
+        type: integer
+      notes:
+        type: string
+      quota_jkn:
+        type: integer
+      room_id:
+        type: string
+      service_types:
+        items:
+          type: string
+        type: array
+      shift_id:
+        type: string
       slot_quota:
         type: integer
       start_time:
@@ -860,6 +888,23 @@ definitions:
     required:
     - name
     type: object
+  server.updateScheduleSettingsRequest:
+    properties:
+      contract_warning_days:
+        maximum: 365
+        minimum: 1
+        type: integer
+      near_full_threshold:
+        maximum: 100
+        minimum: 1
+        type: integer
+      quota_mode:
+        type: string
+    required:
+    - contract_warning_days
+    - near_full_threshold
+    - quota_mode
+    type: object
   server.updateServiceItemRequest:
     properties:
       is_active:
@@ -880,6 +925,21 @@ definitions:
         type: string
     required:
     - amount
+    type: object
+  server.upsertScheduleSessionRequest:
+    properties:
+      end_time:
+        type: string
+      notes:
+        type: string
+      quota_jkn:
+        type: integer
+      room_id:
+        type: string
+      slot_quota:
+        type: integer
+      start_time:
+        type: string
     type: object
 info:
   contact: {}
@@ -3260,6 +3320,145 @@ paths:
       summary: List rate components under a merchant
       tags:
       - tariff
+  /merchants/{id}/schedule/calendar:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Range start YYYY-MM-DD
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Range end YYYY-MM-DD
+        in: query
+        name: to
+        required: true
+        type: string
+      - description: Filter by department UUID
+        in: query
+        name: department_id
+        type: string
+      - description: Filter by physician UUID
+        in: query
+        name: physician_id
+        type: string
+      - description: Filter by room UUID
+        in: query
+        name: room_id
+        type: string
+      - description: Filter by shift UUID
+        in: query
+        name: shift_id
+        type: string
+      - description: Filter by computed status
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Merchant schedule calendar (projected + stored sessions)
+      tags:
+      - physician_schedule
+  /merchants/{id}/schedule/settings:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Read merchant schedule settings (defaults when unset)
+      tags:
+      - physician_schedule
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Settings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateScheduleSettingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update merchant schedule settings (three feature flags)
+      tags:
+      - physician_schedule
+  /merchants/{id}/schedule/summary:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Range start YYYY-MM-DD
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Range end YYYY-MM-DD
+        in: query
+        name: to
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Merchant schedule summary for a range
+      tags:
+      - physician_schedule
   /merchants/{id}/service-items:
     get:
       parameters:
@@ -4807,6 +5006,75 @@ paths:
       summary: Revoke a permission from a role
       tags:
       - rbac
+  /schedule/sessions/{schedule_id}/{date}:
+    delete:
+      parameters:
+      - description: Physician schedule UUID
+        in: path
+        name: schedule_id
+        required: true
+        type: string
+      - description: Session date YYYY-MM-DD
+        in: path
+        name: date
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a per-date session override (back to the pattern)
+      tags:
+      - physician_schedule
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Physician schedule UUID
+        in: path
+        name: schedule_id
+        required: true
+        type: string
+      - description: Session date YYYY-MM-DD
+        in: path
+        name: date
+        required: true
+        type: string
+      - description: Override values (empty = from pattern)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.upsertScheduleSessionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Override (or create) the stored session of a schedule for one date
+      tags:
+      - physician_schedule
   /service-items:
     post:
       consumes:

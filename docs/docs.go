@@ -3684,6 +3684,224 @@ const docTemplate = `{
                 }
             }
         },
+        "/merchants/{id}/schedule/calendar": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "physician_schedule"
+                ],
+                "summary": "Merchant schedule calendar (projected + stored sessions)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Range start YYYY-MM-DD",
+                        "name": "from",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Range end YYYY-MM-DD",
+                        "name": "to",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by department UUID",
+                        "name": "department_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by physician UUID",
+                        "name": "physician_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by room UUID",
+                        "name": "room_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by shift UUID",
+                        "name": "shift_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by computed status",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/schedule/settings": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "physician_schedule"
+                ],
+                "summary": "Read merchant schedule settings (defaults when unset)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "physician_schedule"
+                ],
+                "summary": "Update merchant schedule settings (three feature flags)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updateScheduleSettingsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/schedule/summary": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "physician_schedule"
+                ],
+                "summary": "Merchant schedule summary for a range",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Range start YYYY-MM-DD",
+                        "name": "from",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Range end YYYY-MM-DD",
+                        "name": "to",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/merchants/{id}/service-items": {
             "get": {
                 "security": [
@@ -6116,6 +6334,114 @@ const docTemplate = `{
                 }
             }
         },
+        "/schedule/sessions/{schedule_id}/{date}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "physician_schedule"
+                ],
+                "summary": "Override (or create) the stored session of a schedule for one date",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Physician schedule UUID",
+                        "name": "schedule_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session date YYYY-MM-DD",
+                        "name": "date",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Override values (empty = from pattern)",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.upsertScheduleSessionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "physician_schedule"
+                ],
+                "summary": "Delete a per-date session override (back to the pattern)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Physician schedule UUID",
+                        "name": "schedule_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session date YYYY-MM-DD",
+                        "name": "date",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/service-items": {
             "post": {
                 "security": [
@@ -7549,7 +7875,28 @@ const docTemplate = `{
                 "merchant_id": {
                     "type": "string"
                 },
+                "minutes_per_patient": {
+                    "type": "integer"
+                },
+                "notes": {
+                    "type": "string"
+                },
                 "physician_id": {
+                    "type": "string"
+                },
+                "quota_jkn": {
+                    "type": "integer"
+                },
+                "room_id": {
+                    "type": "string"
+                },
+                "service_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "shift_id": {
                     "type": "string"
                 },
                 "slot_quota": {
@@ -8429,6 +8776,27 @@ const docTemplate = `{
                 "is_active": {
                     "type": "boolean"
                 },
+                "minutes_per_patient": {
+                    "type": "integer"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "quota_jkn": {
+                    "type": "integer"
+                },
+                "room_id": {
+                    "type": "string"
+                },
+                "service_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "shift_id": {
+                    "type": "string"
+                },
                 "slot_quota": {
                     "type": "integer"
                 },
@@ -8476,6 +8844,29 @@ const docTemplate = `{
                 }
             }
         },
+        "server.updateScheduleSettingsRequest": {
+            "type": "object",
+            "required": [
+                "contract_warning_days",
+                "near_full_threshold",
+                "quota_mode"
+            ],
+            "properties": {
+                "contract_warning_days": {
+                    "type": "integer",
+                    "maximum": 365,
+                    "minimum": 1
+                },
+                "near_full_threshold": {
+                    "type": "integer",
+                    "maximum": 100,
+                    "minimum": 1
+                },
+                "quota_mode": {
+                    "type": "string"
+                }
+            }
+        },
         "server.updateServiceItemRequest": {
             "type": "object",
             "required": [
@@ -8504,6 +8895,29 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "effective_to": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.upsertScheduleSessionRequest": {
+            "type": "object",
+            "properties": {
+                "end_time": {
+                    "type": "string"
+                },
+                "notes": {
+                    "type": "string"
+                },
+                "quota_jkn": {
+                    "type": "integer"
+                },
+                "room_id": {
+                    "type": "string"
+                },
+                "slot_quota": {
+                    "type": "integer"
+                },
+                "start_time": {
                     "type": "string"
                 }
             }
