@@ -752,6 +752,34 @@ type OperationsCounter struct {
 	UpdatedAt    pgtype.Timestamptz
 	UpdatedBy    pgtype.UUID
 	RowVersion   int32
+	StageID      pgtype.UUID
+	LocationID   pgtype.UUID
+	Binding      string
+}
+
+type OperationsDisplayBoard struct {
+	ID             pgtype.UUID
+	CompanyID      pgtype.UUID
+	MerchantID     pgtype.UUID
+	Name           string
+	LocationID     pgtype.UUID
+	StageIds       []pgtype.UUID
+	CounterIds     []pgtype.UUID
+	Layout         string
+	ShowNextN      int32
+	Voice          string
+	NameDisplay    string
+	PollSeconds    int32
+	TokenHash      pgtype.Text
+	TokenCreatedAt pgtype.Timestamptz
+	IsActive       bool
+	CreatedAt      pgtype.Timestamptz
+	CreatedBy      pgtype.UUID
+	UpdatedAt      pgtype.Timestamptz
+	UpdatedBy      pgtype.UUID
+	DeletedAt      pgtype.Timestamptz
+	DeletedBy      pgtype.UUID
+	RowVersion     int32
 }
 
 type OperationsPhysicianLeave struct {
@@ -817,6 +845,13 @@ type OperationsQueue struct {
 	UpdatedAt    pgtype.Timestamptz
 	UpdatedBy    pgtype.UUID
 	RowVersion   int32
+	JourneyID    pgtype.UUID
+	StageID      pgtype.UUID
+	Priority     bool
+	CheckedInAt  pgtype.Timestamptz
+	StartedAt    pgtype.Timestamptz
+	FinishedAt   pgtype.Timestamptz
+	ServedBy     pgtype.UUID
 }
 
 type OperationsQueueBoard struct {
@@ -843,6 +878,59 @@ type OperationsQueueBoard struct {
 	CounterID             pgtype.UUID
 	CounterCode           pgtype.Text
 	CounterName           pgtype.Text
+}
+
+type OperationsQueueFlow struct {
+	ID            pgtype.UUID
+	CompanyID     pgtype.UUID
+	MerchantID    pgtype.UUID
+	Name          string
+	ServiceTypes  []string
+	DepartmentIds []pgtype.UUID
+	IsDefault     bool
+	IsActive      bool
+	CreatedAt     pgtype.Timestamptz
+	CreatedBy     pgtype.UUID
+	UpdatedAt     pgtype.Timestamptz
+	UpdatedBy     pgtype.UUID
+	DeletedAt     pgtype.Timestamptz
+	DeletedBy     pgtype.UUID
+	RowVersion    int32
+}
+
+type OperationsQueueJourney struct {
+	ID             pgtype.UUID
+	CompanyID      pgtype.UUID
+	MerchantID     pgtype.UUID
+	AdmissionID    pgtype.UUID
+	PersonID       pgtype.UUID
+	FlowID         pgtype.UUID
+	CurrentStageID pgtype.UUID
+	Status         string
+	CreatedAt      pgtype.Timestamptz
+	CreatedBy      pgtype.UUID
+	UpdatedAt      pgtype.Timestamptz
+	UpdatedBy      pgtype.UUID
+	RowVersion     int32
+}
+
+type OperationsQueueStage struct {
+	ID                 pgtype.UUID
+	CompanyID          pgtype.UUID
+	MerchantID         pgtype.UUID
+	FlowID             pgtype.UUID
+	Seq                int32
+	Name               string
+	Kind               string
+	NumberPrefix       pgtype.Text
+	Skippable          bool
+	RequiresCheckin    bool
+	BpjsTaskStart      pgtype.Int2
+	BpjsTaskEnd        pgtype.Int2
+	ServedByPermission string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	RowVersion         int32
 }
 
 type OperationsQueueStatusHistory struct {

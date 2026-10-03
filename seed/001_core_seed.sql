@@ -109,7 +109,8 @@ INSERT INTO core.permission (id, code, description, module) VALUES
     ('00000000-0000-0000-0004-000000000021', 'operations.schedule.manage', 'Kelola jadwal praktik dokter', 'operations'),
     ('00000000-0000-0000-0004-000000000022', 'operations.counter.manage', 'Kelola loket dan panggil antrian', 'operations'),
     ('00000000-0000-0000-0004-000000000023', 'operations.visit.manage', 'Kelola kunjungan rajal dan antrian', 'operations'),
-    ('00000000-0000-0000-0004-000000000030', 'core.location.manage', 'Kelola lokasi fisik: gedung, lantai, ruangan, tempat tidur', 'core')
+    ('00000000-0000-0000-0004-000000000030', 'core.location.manage', 'Kelola lokasi fisik: gedung, lantai, ruangan, tempat tidur', 'core'),
+    ('00000000-0000-0000-0004-000000000031', 'operations.queue.configure', 'Atur alur antrean, titik layanan, dan layar display', 'operations')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO core.role (id, company_id, name, description, is_system) VALUES
