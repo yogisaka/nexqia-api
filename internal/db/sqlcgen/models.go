@@ -190,6 +190,31 @@ type CoreFeatureFlag struct {
 	RowVersion int32
 }
 
+type CoreLocation struct {
+	ID                  pgtype.UUID
+	CompanyID           pgtype.UUID
+	MerchantID          pgtype.UUID
+	ParentID            pgtype.UUID
+	Kind                string
+	Code                string
+	Name                string
+	Functions           []string
+	ServiceClass        pgtype.Text
+	Capacity            pgtype.Int4
+	Latitude            pgtype.Numeric
+	Longitude           pgtype.Numeric
+	Status              string
+	SortOrder           int32
+	SatusehatLocationID pgtype.Text
+	CreatedAt           pgtype.Timestamptz
+	CreatedBy           pgtype.UUID
+	UpdatedAt           pgtype.Timestamptz
+	UpdatedBy           pgtype.UUID
+	DeletedAt           pgtype.Timestamptz
+	DeletedBy           pgtype.UUID
+	RowVersion          int32
+}
+
 type CoreManufacturer struct {
 	ID           pgtype.UUID
 	CompanyID    pgtype.UUID
