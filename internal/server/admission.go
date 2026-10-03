@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
+	"github.com/yogisaka/nexqia-api/internal/schedule"
 )
 
 func RegisterAdmissionRoutes(rg *gin.RouterGroup) {
@@ -20,6 +21,77 @@ func RegisterAdmissionRoutes(rg *gin.RouterGroup) {
 	rg.GET("/admissions/payer-summary", PayerSummaryHandler)
 	rg.GET("/admissions/:id", AccessLog("admission", "view", "id"), GetAdmissionHandler)
 	rg.PATCH("/admissions/:id", UpdateAdmissionHandler)
+	// Physician leave (cuti) endpoints (spec 2026-10-01-b §3/§4) plus the
+	// calendar CSV export and copy-week endpoints. server.go is outside this
+	// task's Files list, so these register here; each handler enforces its own
+	// permission via RequirePermissionForMerchant (schedule.manage for leave
+	// and copy-week, visit.manage for the CSV/FO export).
+	RegisterPhysicianLeaveRoutes(rg)
+	RegisterScheduleCalendarExportRoutes(rg)
+}
+
+// uuidJSON renders an optional pgtype.UUID as a string (nil when NULL).
+func uuidJSON(u pgtype.UUID) any {
+	if !u.Valid {
+		return nil
+	}
+	return u.String()
+}
+
+// tsJSON renders an optional pgtype.Timestamptz as RFC3339 (nil when NULL).
+func tsJSON(t pgtype.Timestamptz) any {
+	if !t.Valid {
+		return nil
+	}
+	return t.Time.Format(time.RFC3339)
+}
+
+// textJSON renders an optional pgtype.Text as a string (nil when NULL).
+func textJSON(t pgtype.Text) any {
+	if !t.Valid {
+		return nil
+	}
+	return t.String
+}
+
+// admissionJSON maps a raw sqlcgen.OperationsAdmission to a snake_case JSON
+// object — the sqlcgen struct has no json tags, so returning it directly
+// produced PascalCase keys.
+func admissionJSON(a sqlcgen.OperationsAdmission) gin.H {
+	return gin.H{
+		"id":                   uuidJSON(a.ID),
+		"company_id":           uuidJSON(a.CompanyID),
+		"merchant_id":          uuidJSON(a.MerchantID),
+		"visit_no":             a.VisitNo,
+		"person_id":            uuidJSON(a.PersonID),
+		"admission_type":       a.AdmissionType,
+		"department_id":        uuidJSON(a.DepartmentID),
+		"physician_id":         uuidJSON(a.PhysicianID),
+		"ward_id":              uuidJSON(a.WardID),
+		"bed_id":               uuidJSON(a.BedID),
+		"primary_payer_id":     uuidJSON(a.PrimaryPayerID),
+		"bpjs_sep_number":      textJSON(a.BpjsSepNumber),
+		"status":               a.Status,
+		"admission_at":         tsJSON(a.AdmissionAt),
+		"discharge_at":         tsJSON(a.DischargeAt),
+		"created_at":           tsJSON(a.CreatedAt),
+		"created_by":           uuidJSON(a.CreatedBy),
+		"updated_at":           tsJSON(a.UpdatedAt),
+		"updated_by":           uuidJSON(a.UpdatedBy),
+		"deleted_at":           tsJSON(a.DeletedAt),
+		"deleted_by":           uuidJSON(a.DeletedBy),
+		"row_version":          a.RowVersion,
+		"complaint":            textJSON(a.Complaint),
+		"referral_source":      textJSON(a.ReferralSource),
+		"note":                 textJSON(a.Note),
+		"diagnosis_text":       textJSON(a.DiagnosisText),
+		"treatment_barriers":   textJSON(a.TreatmentBarriers),
+		"special_patient_type": textJSON(a.SpecialPatientType),
+		"needs_companion":      a.NeedsCompanion,
+		"companion_name":       textJSON(a.CompanionName),
+		"referral_origin":      textJSON(a.ReferralOrigin),
+		"schedule_id":          uuidJSON(a.ScheduleID),
+	}
 }
 
 // PayerSummaryHandler godoc
@@ -63,6 +135,7 @@ type createAdmissionRequest struct {
 	NeedsCompanion     bool   `json:"needs_companion"`
 	CompanionName      string `json:"companion_name"`
 	ReferralOrigin     string `json:"referral_origin"`
+	ScheduleID         string `json:"schedule_id"`
 }
 
 // CreateAdmissionHandler is FO check-in (spec §4 point 1): registers the
@@ -118,6 +191,107 @@ func CreateAdmissionHandler(c *gin.Context) {
 	ctx := c.Request.Context()
 	q := sqlcgen.New(TxFromContext(c))
 
+	// Optional session pick (spec 2026-10-01-b §4): validate the schedule
+	// pattern, replace the physician with the substitute when the session was
+	// substituted, and enforce the payer quota. The pattern row is locked
+	// FOR UPDATE so two concurrent registrations cannot both pass the quota
+	// check. Without schedule_id the legacy behavior is unchanged.
+	admissionScheduleID := pgtype.UUID{}
+	effectivePhysician := optUUID(req.PhysicianID)
+	if req.ScheduleID != "" {
+		scheduleID, ok := parseUUID(req.ScheduleID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid schedule_id"})
+			return
+		}
+		pattern, err := q.GetPhysicianScheduleForUpdate(ctx, scheduleID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "schedule does not match"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		reqPhysician := optUUID(req.PhysicianID)
+		if pattern.MerchantID != merchantID || !pattern.IsActive ||
+			pattern.DepartmentID != departmentID ||
+			(reqPhysician.Valid && reqPhysician != pattern.PhysicianID) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "schedule does not match"})
+			return
+		}
+		loc, err := merchantLocation(c, q, merchantID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		now := time.Now().In(loc)
+		y, m, d := now.Date()
+		today := time.Date(y, m, d, 0, 0, 0, 0, loc)
+		if int16(today.Weekday()) != pattern.DayOfWeek ||
+			today.Before(pattern.EffectiveFrom.Time) ||
+			(pattern.EffectiveTo.Valid && today.After(pattern.EffectiveTo.Time)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "schedule does not match"})
+			return
+		}
+		session, err := q.GetScheduleSessionByScheduleAndDate(ctx, sqlcgen.GetScheduleSessionByScheduleAndDateParams{
+			ScheduleID: scheduleID, SessionDate: pgtype.Date{Time: today, Valid: true},
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			respondInternalError(c, err)
+			return
+		}
+		quotaJkn, slotQuota := pattern.QuotaJkn, pattern.SlotQuota
+		if err == nil {
+			if session.Status == schedule.StatusLeave || session.Status == schedule.StatusCancelled {
+				c.JSON(http.StatusConflict, gin.H{"error": "session quota full"})
+				return
+			}
+			quotaJkn, slotQuota = session.QuotaJkn, session.SlotQuota
+		}
+		counts, err := q.CountScheduleAdmissionsForQuota(ctx, sqlcgen.CountScheduleAdmissionsForQuotaParams{
+			ScheduleID: scheduleID, Column2: loc.String(),
+			Column3: pgtype.Date{Time: today, Valid: true},
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		payerIsJKN := false
+		if primaryPayerID.Valid {
+			payerType, err := q.GetPayerType(ctx, primaryPayerID)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				respondInternalError(c, err)
+				return
+			}
+			payerIsJKN = payerType == "bpjs"
+		}
+		// Full = this admission would exceed the payer's pool. A pattern with
+		// quota_jkn > 0 uses split pools (JKN against quota_jkn, others against
+		// slot_quota); otherwise one combined pool (slot_quota). Zero quota =
+		// unlimited (schedule.Status).
+		full := false
+		if quotaJkn > 0 {
+			if payerIsJKN && counts.RegisteredJkn >= int64(quotaJkn) {
+				full = true
+			}
+			if !payerIsJKN && slotQuota > 0 && counts.RegisteredOther >= int64(slotQuota) {
+				full = true
+			}
+		} else if slotQuota > 0 && counts.RegisteredJkn+counts.RegisteredOther >= int64(slotQuota) {
+			full = true
+		}
+		if full {
+			c.JSON(http.StatusConflict, gin.H{"error": "session quota full"})
+			return
+		}
+		admissionScheduleID = scheduleID
+		effectivePhysician = pattern.PhysicianID
+		if err == nil && session.Status == schedule.StatusSubstituted {
+			effectivePhysician = session.PhysicianID
+		}
+	}
+
 	department, err := q.GetDepartmentByID(ctx, departmentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "department not found"})
@@ -139,10 +313,10 @@ func CreateAdmissionHandler(c *gin.Context) {
 
 	admission, err := q.CreateAdmission(ctx, sqlcgen.CreateAdmissionParams{
 		CompanyID: AuthCompanyID(c), MerchantID: merchantID, VisitNo: visitNo, PersonID: personID,
-		AdmissionType: "outpatient", DepartmentID: departmentID, PhysicianID: optUUID(req.PhysicianID),
+		AdmissionType: "outpatient", DepartmentID: departmentID, PhysicianID: effectivePhysician,
 		PrimaryPayerID: primaryPayerID, Complaint: optText(req.Complaint),
 		ReferralSource: optText(req.ReferralSource), Note: optText(req.Note),
-		CreatedBy: AuthUserID(c),
+		CreatedBy: AuthUserID(c), ScheduleID: admissionScheduleID,
 	})
 	if err != nil {
 		respondInternalError(c, err)
@@ -183,7 +357,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"admission": admission, "queue": queue}, "meta": gin.H{}})
+	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"admission": admissionJSON(admission), "queue": queue}, "meta": gin.H{}})
 }
 
 // ListAdmissionsHandler godoc
@@ -256,7 +430,7 @@ func GetAdmissionHandler(c *gin.Context) {
 	if !RequirePermissionForMerchant(c, PermVisitManage, admission.MerchantID) {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": admission, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": admissionJSON(admission), "meta": gin.H{}})
 }
 
 // updateAdmissionRequest is deliberately generic (physician reassignment,
@@ -325,5 +499,5 @@ func UpdateAdmissionHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": admission, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": admissionJSON(admission), "meta": gin.H{}})
 }

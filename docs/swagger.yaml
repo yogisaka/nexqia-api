@@ -52,6 +52,16 @@ definitions:
     - current_password
     - new_password
     type: object
+  server.copyScheduleWeekRequest:
+    properties:
+      from_week_start:
+        type: string
+      to_week_start:
+        type: string
+    required:
+    - from_week_start
+    - to_week_start
+    type: object
   server.createAccessReviewRequest:
     properties:
       from:
@@ -88,6 +98,8 @@ definitions:
       referral_origin:
         type: string
       referral_source:
+        type: string
+      schedule_id:
         type: string
       special_patient_type:
         type: string
@@ -198,6 +210,26 @@ definitions:
     - company_id
     - name
     - timezone
+    type: object
+  server.createPhysicianLeaveRequest:
+    properties:
+      date_from:
+        type: string
+      date_to:
+        type: string
+      merchant_id:
+        type: string
+      physician_id:
+        type: string
+      reason:
+        type: string
+      substitute_physician_id:
+        type: string
+    required:
+    - date_from
+    - date_to
+    - merchant_id
+    - physician_id
     type: object
   server.createPhysicianRequest:
     properties:
@@ -647,6 +679,15 @@ definitions:
         items:
           $ref: '#/definitions/server.departmentCodeMapItem'
         type: array
+    type: object
+  server.resolveLeaveAffectedRequest:
+    properties:
+      action:
+        type: string
+      target_date:
+        type: string
+    required:
+    - action
     type: object
   server.securitySettingsRequest:
     properties:
@@ -3374,6 +3415,72 @@ paths:
       summary: Merchant schedule calendar (projected + stored sessions)
       tags:
       - physician_schedule
+  /merchants/{id}/schedule/calendar.csv:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Range start YYYY-MM-DD
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Range end YYYY-MM-DD
+        in: query
+        name: to
+        required: true
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV export
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Export the schedule calendar as CSV (Indonesian headers)
+      tags:
+      - physician_schedule
+  /merchants/{id}/schedule/copy-week:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Week starts (Mondays, YYYY-MM-DD)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.copyScheduleWeekRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Copy stored session overrides from one week to another
+      tags:
+      - physician_schedule
   /merchants/{id}/schedule/settings:
     get:
       parameters:
@@ -3859,6 +3966,159 @@ paths:
       summary: Search persons by name
       tags:
       - person
+  /physician-leaves:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: query
+        name: merchant_id
+        required: true
+        type: string
+      - description: Range start YYYY-MM-DD
+        in: query
+        name: from
+        type: string
+      - description: Range end YYYY-MM-DD
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List physician leaves of a merchant in a date range
+      tags:
+      - physician_leave
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Leave data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createPhysicianLeaveRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a physician leave, mark its sessions and list affected patients
+      tags:
+      - physician_leave
+  /physician-leaves/{id}:
+    delete:
+      parameters:
+      - description: Physician leave UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cancel a leave and restore its sessions to the pattern physician
+      tags:
+      - physician_leave
+  /physician-leaves/{id}/affected:
+    get:
+      parameters:
+      - description: Physician leave UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List the patients affected by a leave
+      tags:
+      - physician_leave
+  /physician-leaves/{id}/affected/{admission_id}/resolve:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Physician leave UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Admission UUID
+        in: path
+        name: admission_id
+        required: true
+        type: string
+      - description: Action
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.resolveLeaveAffectedRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Resolve one affected admission of a leave (substitute/reschedule/cancel)
+      tags:
+      - physician_leave
   /physician-schedules:
     post:
       consumes:

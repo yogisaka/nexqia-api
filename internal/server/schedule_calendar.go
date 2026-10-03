@@ -4,9 +4,11 @@
 package server
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -789,4 +791,196 @@ func UpdateScheduleSettingsHandler(c *gin.Context) {
 		NearFullThreshold:   req.NearFullThreshold,
 		ContractWarningDays: req.ContractWarningDays,
 	}), "meta": gin.H{}})
+}
+
+// ScheduleCalendarCSVHandler godoc
+// @Summary Export the schedule calendar as CSV (Indonesian headers)
+// @Tags physician_schedule
+// @Produce text/csv
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Param from query string true "Range start YYYY-MM-DD"
+// @Param to query string true "Range end YYYY-MM-DD"
+// @Success 200 {string} string "CSV export"
+// @Failure 400 {object} apiErrorResponse
+// @Router /merchants/{id}/schedule/calendar.csv [get]
+func ScheduleCalendarCSVHandler(c *gin.Context) {
+	merchantID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	// The FO team also exports the calendar via operations.visit.manage; the
+	// final RequirePermissionForMerchant call writes the 403 when neither holds.
+	if !callerHasPermission(c, PermScheduleManage, merchantID) &&
+		!RequirePermissionForMerchant(c, PermVisitManage, merchantID) {
+		return
+	}
+	from, to, ok := parseCalendarRange(c)
+	if !ok {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	data, err := computeCalendarData(c, q, merchantID, from, to)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	settings := loadScheduleSettings(c, q, merchantID)
+
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="kalender-jadwal.csv"`)
+	w := csv.NewWriter(c.Writer)
+	w.Write([]string{
+		"tanggal", "poli", "dokter", "ruang", "mulai", "selesai",
+		"kuota JKN", "kuota non-JKN", "terdaftar JKN", "terdaftar lain", "status", "catatan",
+	})
+	for _, s := range data.sessions {
+		pattern := data.patterns[s.ScheduleID]
+		reg := data.registrations[registrationKey(s.ScheduleID, s.Date)]
+		status := schedule.Status(int(reg.JKN), int(reg.Other), s, settings.QuotaMode, settings.NearFullThreshold)
+		quotaJKN, quotaNonJKN, _ := schedule.Capacity(s, settings.QuotaMode)
+		roomPath := ""
+		if id, ok := parseUUID(s.RoomID); ok {
+			roomPath = data.roomPaths[id]
+		}
+		w.Write([]string{
+			s.Date.Format("2006-01-02"), pattern.DepartmentName, pattern.PhysicianName, roomPath,
+			s.Start, s.End, strconv.Itoa(quotaJKN), strconv.Itoa(quotaNonJKN),
+			strconv.FormatInt(reg.JKN, 10), strconv.FormatInt(reg.Other, 10), status, s.Notes,
+		})
+	}
+	w.Flush()
+}
+
+// RegisterScheduleCalendarExportRoutes registers the calendar CSV export and
+// copy-week endpoints. Called from RegisterAdmissionRoutes (admission.go,
+// inside this task's Files list) because server.go is outside it — plan Task 4.
+// Handlers enforce their own permissions via RequirePermissionForMerchant
+// (visit.manage or schedule.manage for CSV, schedule.manage for copy-week).
+func RegisterScheduleCalendarExportRoutes(rg *gin.RouterGroup) {
+	rg.GET("/merchants/:id/schedule/calendar.csv", ScheduleCalendarCSVHandler)
+	rg.POST("/merchants/:id/schedule/copy-week", CopyScheduleWeekHandler)
+}
+
+type copyScheduleWeekRequest struct {
+	FromWeekStart string `json:"from_week_start" binding:"required"`
+	ToWeekStart   string `json:"to_week_start" binding:"required"`
+}
+
+// CopyScheduleWeekHandler godoc
+// @Summary Copy stored session overrides from one week to another
+// @Tags physician_schedule
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Param request body copyScheduleWeekRequest true "Week starts (Mondays, YYYY-MM-DD)"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Router /merchants/{id}/schedule/copy-week [post]
+func CopyScheduleWeekHandler(c *gin.Context) {
+	merchantID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermScheduleManage, merchantID) {
+		return
+	}
+	var req copyScheduleWeekRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	fromWeek, ok := parseScheduleDate(req.FromWeekStart)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid from_week_start, expected YYYY-MM-DD"})
+		return
+	}
+	toWeek, ok := parseScheduleDate(req.ToWeekStart)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid to_week_start, expected YYYY-MM-DD"})
+		return
+	}
+	if fromWeek.Weekday() != time.Monday {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from_week_start must be a Monday"})
+		return
+	}
+	if toWeek.Weekday() != time.Monday {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "to_week_start must be a Monday"})
+		return
+	}
+	ctx := c.Request.Context()
+	q := sqlcgen.New(TxFromContext(c))
+	rows, err := q.ListStoredActiveSessionsBetween(ctx, sqlcgen.ListStoredActiveSessionsBetweenParams{
+		MerchantID:    merchantID,
+		SessionDate:   pgtype.Date{Time: fromWeek, Valid: true},
+		SessionDate_2: pgtype.Date{Time: fromWeek.AddDate(0, 0, 6), Valid: true},
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	shift := int(toWeek.Sub(fromWeek).Hours() / 24)
+	copied := 0
+	skipped := []gin.H{}
+	for _, row := range rows {
+		dest := row.SessionDate.Time.AddDate(0, 0, shift)
+		dateStr := dest.Format("2006-01-02")
+		// An existing stored session for that (pattern, date) wins — skip.
+		if _, err := q.GetScheduleSessionByScheduleAndDate(ctx, sqlcgen.GetScheduleSessionByScheduleAndDateParams{
+			ScheduleID: row.ScheduleID, SessionDate: pgtype.Date{Time: dest, Valid: true},
+		}); err == nil {
+			skipped = append(skipped, gin.H{"schedule_id": row.ScheduleID, "date": dateStr, "reason": "target date already has a stored session"})
+			continue
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			abortInternalError(c, err)
+			return
+		}
+		// An overlap with another session on the destination date — skip.
+		if ok := checkCopyWeekConflict(c, q, merchantID, row, dest); !ok {
+			skipped = append(skipped, gin.H{"schedule_id": row.ScheduleID, "date": dateStr, "reason": "conflicts with another session"})
+			continue
+		}
+		if _, err := q.UpsertScheduleSession(ctx, sqlcgen.UpsertScheduleSessionParams{
+			CompanyID: row.CompanyID, MerchantID: row.MerchantID, ScheduleID: row.ScheduleID,
+			SessionDate: pgtype.Date{Time: dest, Valid: true}, PhysicianID: row.PhysicianID,
+			DepartmentID: row.DepartmentID, RoomID: row.RoomID,
+			StartTime: row.StartTime, EndTime: row.EndTime,
+			QuotaJkn: row.QuotaJkn, SlotQuota: row.SlotQuota,
+			Notes: row.Notes, CreatedBy: AuthUserID(c),
+		}); err != nil {
+			abortInternalError(c, err)
+			return
+		}
+		copied++
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"copied": copied, "skipped": skipped}, "meta": gin.H{}})
+}
+
+// checkCopyWeekConflict reports whether the copied session would overlap
+// another session on the destination date. Returns false when it must be
+// skipped (the caller records the skip).
+func checkCopyWeekConflict(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, row sqlcgen.OperationsScheduleSession, dest time.Time) bool {
+	data, err := computeCalendarData(c, q, merchantID, dest, dest)
+	if err != nil {
+		abortInternalError(c, err)
+		return false
+	}
+	candidate := schedule.Session{
+		ScheduleID: row.ScheduleID.String(), Date: dest,
+		PhysicianID: row.PhysicianID.String(), RoomID: row.RoomID.String(),
+		Start: formatTimeOfDay(row.StartTime), End: formatTimeOfDay(row.EndTime),
+		Status: schedule.StatusAvailable,
+	}
+	for _, other := range data.sessions {
+		if other.ScheduleID == candidate.ScheduleID {
+			continue
+		}
+		if schedule.Overlaps(candidate, other) {
+			return false
+		}
+	}
+	return true
 }
