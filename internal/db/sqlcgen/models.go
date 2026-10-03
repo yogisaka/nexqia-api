@@ -465,6 +465,7 @@ type CorePhysician struct {
 	DeletedAt          pgtype.Timestamptz
 	DeletedBy          pgtype.UUID
 	RowVersion         int32
+	SipValidUntil      pgtype.Date
 }
 
 type CoreRateComponent struct {
@@ -721,6 +722,7 @@ type OperationsAdmission struct {
 	NeedsCompanion     bool
 	CompanionName      pgtype.Text
 	ReferralOrigin     pgtype.Text
+	ScheduleID         pgtype.UUID
 }
 
 type OperationsAdmissionGuarantor struct {
@@ -752,26 +754,50 @@ type OperationsCounter struct {
 	RowVersion   int32
 }
 
+type OperationsPhysicianLeave struct {
+	ID                    pgtype.UUID
+	CompanyID             pgtype.UUID
+	MerchantID            pgtype.UUID
+	PhysicianID           pgtype.UUID
+	DateFrom              pgtype.Date
+	DateTo                pgtype.Date
+	Reason                pgtype.Text
+	SubstitutePhysicianID pgtype.UUID
+	CreatedAt             pgtype.Timestamptz
+	CreatedBy             pgtype.UUID
+	UpdatedAt             pgtype.Timestamptz
+	UpdatedBy             pgtype.UUID
+	DeletedAt             pgtype.Timestamptz
+	DeletedBy             pgtype.UUID
+	RowVersion            int32
+}
+
 type OperationsPhysicianSchedule struct {
-	ID            pgtype.UUID
-	CompanyID     pgtype.UUID
-	MerchantID    pgtype.UUID
-	PhysicianID   pgtype.UUID
-	DepartmentID  pgtype.UUID
-	DayOfWeek     int16
-	StartTime     pgtype.Time
-	EndTime       pgtype.Time
-	SlotQuota     int32
-	EffectiveFrom pgtype.Date
-	EffectiveTo   pgtype.Date
-	IsActive      bool
-	CreatedAt     pgtype.Timestamptz
-	CreatedBy     pgtype.UUID
-	UpdatedAt     pgtype.Timestamptz
-	UpdatedBy     pgtype.UUID
-	DeletedAt     pgtype.Timestamptz
-	DeletedBy     pgtype.UUID
-	RowVersion    int32
+	ID                pgtype.UUID
+	CompanyID         pgtype.UUID
+	MerchantID        pgtype.UUID
+	PhysicianID       pgtype.UUID
+	DepartmentID      pgtype.UUID
+	DayOfWeek         int16
+	StartTime         pgtype.Time
+	EndTime           pgtype.Time
+	SlotQuota         int32
+	EffectiveFrom     pgtype.Date
+	EffectiveTo       pgtype.Date
+	IsActive          bool
+	CreatedAt         pgtype.Timestamptz
+	CreatedBy         pgtype.UUID
+	UpdatedAt         pgtype.Timestamptz
+	UpdatedBy         pgtype.UUID
+	DeletedAt         pgtype.Timestamptz
+	DeletedBy         pgtype.UUID
+	RowVersion        int32
+	RoomID            pgtype.UUID
+	QuotaJkn          int32
+	MinutesPerPatient int32
+	ServiceTypes      []string
+	ShiftID           pgtype.UUID
+	Notes             pgtype.Text
 }
 
 type OperationsQueue struct {
@@ -829,6 +855,46 @@ type OperationsQueueStatusHistory struct {
 	ChangedAt  pgtype.Timestamptz
 	CompanyID  pgtype.UUID
 	MerchantID pgtype.UUID
+}
+
+type OperationsScheduleSession struct {
+	ID             pgtype.UUID
+	CompanyID      pgtype.UUID
+	MerchantID     pgtype.UUID
+	ScheduleID     pgtype.UUID
+	SessionDate    pgtype.Date
+	PhysicianID    pgtype.UUID
+	DepartmentID   pgtype.UUID
+	RoomID         pgtype.UUID
+	StartTime      pgtype.Time
+	EndTime        pgtype.Time
+	QuotaJkn       int32
+	SlotQuota      int32
+	Status         string
+	LeaveID        pgtype.UUID
+	Notes          pgtype.Text
+	BpjsSyncStatus string
+	CreatedAt      pgtype.Timestamptz
+	CreatedBy      pgtype.UUID
+	UpdatedAt      pgtype.Timestamptz
+	UpdatedBy      pgtype.UUID
+	RowVersion     int32
+}
+
+type OperationsShift struct {
+	ID         pgtype.UUID
+	CompanyID  pgtype.UUID
+	MerchantID pgtype.UUID
+	Name       string
+	StartTime  pgtype.Time
+	EndTime    pgtype.Time
+	CreatedAt  pgtype.Timestamptz
+	CreatedBy  pgtype.UUID
+	UpdatedAt  pgtype.Timestamptz
+	UpdatedBy  pgtype.UUID
+	DeletedAt  pgtype.Timestamptz
+	DeletedBy  pgtype.UUID
+	RowVersion int32
 }
 
 type PlatformAdminMfaRecoveryCode struct {
