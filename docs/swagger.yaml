@@ -27,6 +27,13 @@ definitions:
       data: {}
       meta: {}
     type: object
+  server.applyDepartmentTemplateRequest:
+    properties:
+      department_ids:
+        items:
+          type: string
+        type: array
+    type: object
   server.applyRoleTemplateRequest:
     properties:
       role_ids:
@@ -315,6 +322,18 @@ definitions:
     - rate_component_id
     - service_item_id
     type: object
+  server.departmentCodeMapItem:
+    properties:
+      code:
+        type: string
+      display:
+        type: string
+      system:
+        type: string
+    required:
+    - code
+    - system
+    type: object
   server.diagnosisConfigRequest:
     properties:
       code_system:
@@ -573,6 +592,13 @@ definitions:
     - password_confirmation
     - phone
     - username
+    type: object
+  server.replaceDepartmentCodeMapsRequest:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/server.departmentCodeMapItem'
+        type: array
     type: object
   server.securitySettingsRequest:
     properties:
@@ -2297,6 +2323,65 @@ paths:
       summary: Call the next waiting queue entry at this counter
       tags:
       - counter
+  /department-templates:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List department templates with per-department status against the merchant's
+        departments
+      tags:
+      - department
+  /department-templates/{id}/apply:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Template ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Template department IDs to copy
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/server.applyDepartmentTemplateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Copy selected departments of a department template into the merchant
+      tags:
+      - department
   /departments:
     post:
       consumes:
@@ -2398,6 +2483,65 @@ paths:
       security:
       - BearerAuth: []
       summary: Update a department
+      tags:
+      - department
+  /departments/{id}/code-maps:
+    get:
+      parameters:
+      - description: Department UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List a department's external system code mappings
+      tags:
+      - department
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Department UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Code map items
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.replaceDepartmentCodeMapsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace a department's whole external code map set
       tags:
       - department
   /display/queue:

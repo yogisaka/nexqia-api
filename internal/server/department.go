@@ -4,9 +4,12 @@ package server
 import (
 	"errors"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
@@ -27,6 +30,10 @@ func RegisterDepartmentRoutes(rg *gin.RouterGroup) {
 	rg.GET("/departments/:id", GetDepartmentHandler)
 	rg.PATCH("/departments/:id", UpdateDepartmentHandler)
 	rg.DELETE("/departments/:id", DeleteDepartmentHandler)
+	rg.GET("/department-templates", ListDepartmentTemplatesHandler)
+	rg.POST("/department-templates/:id/apply", ApplyDepartmentTemplateHandler)
+	rg.GET("/departments/:id/code-maps", GetDepartmentCodeMapsHandler)
+	rg.PUT("/departments/:id/code-maps", ReplaceDepartmentCodeMapsHandler)
 }
 
 type createDepartmentRequest struct {
@@ -234,4 +241,146 @@ func DeleteDepartmentHandler(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// codeMapSystemRe mirrors the CHECK on core.department_code_map.system from
+// migration 000054, so a rejected system never reaches the database.
+var codeMapSystemRe = regexp.MustCompile(`^[a-z0-9][a-z0-9:._-]*$`)
+
+// GetDepartmentCodeMapsHandler godoc
+// @Summary List a department's external system code mappings
+// @Tags department
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Department UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /departments/{id}/code-maps [get]
+func GetDepartmentCodeMapsHandler(c *gin.Context) {
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	department, err := q.GetDepartmentByID(c.Request.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "department not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermDepartmentManage, department.MerchantID) {
+		return
+	}
+	maps, err := q.ListDepartmentCodeMaps(c.Request.Context(), id)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(maps))
+	for _, m := range maps {
+		data = append(data, gin.H{"system": m.System, "code": m.Code, "display": textOrNil(m.Display)})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+type departmentCodeMapItem struct {
+	System  string  `json:"system" binding:"required"`
+	Code    string  `json:"code" binding:"required"`
+	Display *string `json:"display"`
+}
+
+type replaceDepartmentCodeMapsRequest struct {
+	Items []departmentCodeMapItem `json:"items"`
+}
+
+// ReplaceDepartmentCodeMapsHandler godoc
+// @Summary Replace a department's whole external code map set
+// @Tags department
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Department UUID"
+// @Param request body replaceDepartmentCodeMapsRequest true "Code map items"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /departments/{id}/code-maps [put]
+func ReplaceDepartmentCodeMapsHandler(c *gin.Context) {
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	department, err := q.GetDepartmentByID(c.Request.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "department not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermDepartmentManage, department.MerchantID) {
+		return
+	}
+	var req replaceDepartmentCodeMapsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Validate everything before the first write so a bad item cannot leave a
+	// half-replaced set behind.
+	seen := make(map[string]bool, len(req.Items))
+	for _, item := range req.Items {
+		if !codeMapSystemRe.MatchString(item.System) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid system"})
+			return
+		}
+		if item.Code == "" || strings.TrimSpace(item.Code) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
+			return
+		}
+		if seen[item.System] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "system must not repeat"})
+			return
+		}
+		seen[item.System] = true
+	}
+
+	systems := make([]string, 0, len(req.Items))
+	for _, item := range req.Items {
+		systems = append(systems, item.System)
+	}
+	// Atomic replace: drop systems the caller no longer sends, then upsert the
+	// rest. The request transaction commits or rolls back as one unit.
+	if err := q.DeleteDepartmentCodeMapsNotIn(c.Request.Context(), sqlcgen.DeleteDepartmentCodeMapsNotInParams{
+		DepartmentID: id,
+		Systems:      systems,
+	}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	userID := AuthUserID(c)
+	for _, item := range req.Items {
+		display := pgtype.Text{Valid: item.Display != nil}
+		if item.Display != nil {
+			display.String = *item.Display
+		}
+		if err := q.UpsertDepartmentCodeMap(c.Request.Context(), sqlcgen.UpsertDepartmentCodeMapParams{
+			DepartmentID: id,
+			System:       item.System,
+			Code:         item.Code,
+			Display:      display,
+			ActorID:      userID,
+		}); err != nil {
+			abortInternalError(c, err)
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"replaced": len(req.Items)}, "meta": gin.H{}})
 }
