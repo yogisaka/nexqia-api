@@ -152,7 +152,7 @@ func TestRoleTemplate_RuntimeCannotWriteTemplates(t *testing.T) {
 	}
 
 	var visible int
-	if err := tx.QueryRow(ctx, "SELECT count(*) FROM core.template").Scan(&visible); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM core.template WHERE kind = 'role'").Scan(&visible); err != nil {
 		t.Fatalf("count templates as app_runtime: %v", err)
 	}
 	if visible != 3 {
@@ -173,7 +173,7 @@ func TestRoleTemplate_CompanyIsolation(t *testing.T) {
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO core.template_application (company_id, template_id, template_version)
-		SELECT $1, id, 1 FROM core.template WHERE code = 'klinik_pratama' AND scope = 'platform'`, companyB); err != nil {
+		SELECT $1, id, 1 FROM core.template WHERE code = 'klinik_pratama' AND scope = 'platform' AND kind = 'role'`, companyB); err != nil {
 		t.Fatalf("seed template_application: %v", err)
 	}
 

@@ -120,6 +120,21 @@ type CoreDepartment struct {
 	RowVersion         int32
 }
 
+type CoreDepartmentCodeMap struct {
+	ID           pgtype.UUID
+	CompanyID    pgtype.UUID
+	MerchantID   pgtype.UUID
+	DepartmentID pgtype.UUID
+	System       string
+	Code         string
+	Display      pgtype.Text
+	CreatedAt    pgtype.Timestamptz
+	CreatedBy    pgtype.UUID
+	UpdatedAt    pgtype.Timestamptz
+	UpdatedBy    pgtype.UUID
+	RowVersion   int32
+}
+
 type CoreDiagnosisConfig struct {
 	ID         pgtype.UUID
 	CompanyID  pgtype.UUID
@@ -582,6 +597,21 @@ type CoreTemplateApplication struct {
 	AppliedAt       pgtype.Timestamptz
 	RolesCreated    []string
 	RolesSkipped    []string
+}
+
+type CoreTemplateDepartment struct {
+	ID            pgtype.UUID
+	TemplateID    pgtype.UUID
+	Code          string
+	Name          string
+	SpecialtyCode pgtype.Text
+	SortOrder     int32
+}
+
+type CoreTemplateDepartmentCodeMap struct {
+	TemplateDepartmentID pgtype.UUID
+	System               string
+	Code                 string
 }
 
 type CoreTemplateRole struct {
