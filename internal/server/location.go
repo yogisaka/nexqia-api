@@ -114,7 +114,7 @@ func CreateLocationHandler(c *gin.Context) {
 		if respondLocationError(c, err) {
 			return
 		}
-		respondInternalError(c, err)
+		abortInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": locationEnriched(c, q, loc), "meta": gin.H{}})
@@ -335,7 +335,7 @@ func UpdateLocationHandler(c *gin.Context) {
 		if respondLocationError(c, err) {
 			return
 		}
-		respondInternalError(c, err)
+		abortInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": locationEnriched(c, q, loc), "meta": gin.H{}})
@@ -381,7 +381,7 @@ func DeleteLocationHandler(c *gin.Context) {
 		return
 	}
 	if err := q.SoftDeleteLocation(c.Request.Context(), sqlcgen.SoftDeleteLocationParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		respondInternalError(c, err)
+		abortInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
