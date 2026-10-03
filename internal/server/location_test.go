@@ -4,13 +4,19 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
@@ -259,5 +265,279 @@ func TestLocation_DB_PermissionGranted(t *testing.T) {
 	}
 	if adminRS != 1 {
 		t.Fatalf("expected Admin RS (rumah_sakit) to hold core.location.manage, got %d", adminRS)
+	}
+}
+
+// ---- API tests (handlers in location.go) ----
+
+// locationCreate calls POST /api/v1/locations and returns the data object.
+func locationCreate(t *testing.T, router *gin.Engine, token, companyID, merchantID string, body map[string]any) (int, map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal create body: %v", err)
+	}
+	rec := accountRequest(router, http.MethodPost, "/api/v1/locations", token, companyID, merchantID, raw)
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if rec.Code == http.StatusCreated {
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode create response: %v", err)
+		}
+	}
+	return rec.Code, resp.Data
+}
+
+// locationByCode finds one item in a list response by code.
+func locationByCode(t *testing.T, items []map[string]any, code string) map[string]any {
+	t.Helper()
+	for _, item := range items {
+		if item["code"] == code {
+			return item
+		}
+	}
+	t.Fatalf("location %q not in list response", code)
+	return nil
+}
+
+// locationError decodes {"error": "..."} responses.
+func locationError(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error response %q: %v", rec.Body.String(), err)
+	}
+	return resp.Error
+}
+
+// TestLocation_API_TreePath — creating a 4-level chain (site → building →
+// level → room) via POST, then GET list returns each item with path built from
+// ancestor names joined " › " and children_count of active children.
+func TestLocation_API_TreePath(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "loc.api.tree", "081234570110")
+
+	create := func(body map[string]any) map[string]any {
+		t.Helper()
+		code, data := locationCreate(t, router, token, companyID, merchantID, body)
+		if code != http.StatusCreated {
+			t.Fatalf("create %v expected 201, got %d", body["code"], code)
+		}
+		return data
+	}
+	site := create(map[string]any{"merchant_id": merchantID, "kind": "site", "code": "API-SITE", "name": "Kampus Utama", "latitude": -6.2, "longitude": 106.8})
+	building := create(map[string]any{"merchant_id": merchantID, "parent_id": site["id"], "kind": "building", "code": "API-BLD", "name": "Gedung Utama"})
+	level := create(map[string]any{"merchant_id": merchantID, "parent_id": building["id"], "kind": "level", "code": "API-LVL", "name": "Lantai 2"})
+	room := create(map[string]any{"merchant_id": merchantID, "parent_id": level["id"], "kind": "room", "code": "API-RM", "name": "Kamar Rawat 1", "functions": []string{"ward_room"}})
+	create(map[string]any{"merchant_id": merchantID, "parent_id": room["id"], "kind": "bed", "code": "API-BED", "name": "TT 1"})
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/merchants/"+merchantID+"/locations", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+
+	// path = names from root to node joined " › ": Kampus Utama › Gedung
+	// Utama › Lantai 2 › Kamar Rawat 1 (4 parts). children_count = active
+	// children: site 1 (the building), room 1 (the bed).
+	roomItem := locationByCode(t, resp.Data, "API-RM")
+	if roomItem["path"] != "Kampus Utama › Gedung Utama › Lantai 2 › Kamar Rawat 1" {
+		t.Fatalf("room path = %v, want 4-part ancestor path", roomItem["path"])
+	}
+	if roomItem["children_count"] != float64(1) {
+		t.Fatalf("room children_count = %v, want 1", roomItem["children_count"])
+	}
+	siteItem := locationByCode(t, resp.Data, "API-SITE")
+	if siteItem["path"] != "Kampus Utama" {
+		t.Fatalf("site path = %v, want root name only", siteItem["path"])
+	}
+	if siteItem["children_count"] != float64(1) {
+		t.Fatalf("site children_count = %v, want 1", siteItem["children_count"])
+	}
+	bedItem := locationByCode(t, resp.Data, "API-BED")
+	if bedItem["path"] != "Kampus Utama › Gedung Utama › Lantai 2 › Kamar Rawat 1 › TT 1" {
+		t.Fatalf("bed path = %v, want 5-part ancestor path", bedItem["path"])
+	}
+}
+
+// TestLocation_API_DuplicateCode409 — UNIQUE (merchant_id, code) surfaces as
+// 409 "location code already exists".
+func TestLocation_API_DuplicateCode409(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "loc.api.dup", "081234570111")
+	body := map[string]any{"merchant_id": merchantID, "kind": "building", "code": "API-DUP", "name": "Gedung A"}
+	if code, _ := locationCreate(t, router, token, companyID, merchantID, body); code != http.StatusCreated {
+		t.Fatalf("first create expected 201, got %d", code)
+	}
+	raw, _ := json.Marshal(body)
+	rec := accountRequest(router, http.MethodPost, "/api/v1/locations", token, companyID, merchantID, raw)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate code expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if msg := locationError(t, rec); msg != "location code already exists" {
+		t.Fatalf("error = %q, want location code already exists", msg)
+	}
+}
+
+// TestLocation_API_BedValidation400 — a bed under a room without ward_room is
+// rejected by the parent-check trigger (23514, trigger message verbatim), and
+// a site without coordinates hits chk_location_site_position.
+func TestLocation_API_BedValidation400(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "loc.api.bed", "081234570112")
+	code, room := locationCreate(t, router, token, companyID, merchantID, map[string]any{
+		"merchant_id": merchantID, "kind": "room", "code": "API-PLN", "name": "Kamar Biasa",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("plain room create expected 201, got %d", code)
+	}
+	raw, _ := json.Marshal(map[string]any{"merchant_id": merchantID, "parent_id": room["id"], "kind": "bed", "code": "API-BED2", "name": "TT 2"})
+	rec := accountRequest(router, http.MethodPost, "/api/v1/locations", token, companyID, merchantID, raw)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bed in non-ward room expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if msg := locationError(t, rec); msg != "bed must be inside a ward room" {
+		t.Fatalf("error = %q, want bed must be inside a ward room", msg)
+	}
+
+	raw, _ = json.Marshal(map[string]any{"merchant_id": merchantID, "kind": "site", "code": "API-SITE2", "name": "Kampus 2"})
+	rec = accountRequest(router, http.MethodPost, "/api/v1/locations", token, companyID, merchantID, raw)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("site without coordinates expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if msg := locationError(t, rec); msg != "site requires latitude and longitude" {
+		t.Fatalf("error = %q, want site requires latitude and longitude", msg)
+	}
+}
+
+// TestLocation_API_DeleteWithChild409 — deleting a node that still has active
+// children is 409; once the child is gone the delete succeeds (204) and the
+// row disappears (404).
+func TestLocation_API_DeleteWithChild409(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "loc.api.del", "081234570113")
+	_, site := locationCreate(t, router, token, companyID, merchantID, map[string]any{
+		"merchant_id": merchantID, "kind": "site", "code": "API-DEL-S", "name": "Kampus", "latitude": -6.2, "longitude": 106.8,
+	})
+	_, building := locationCreate(t, router, token, companyID, merchantID, map[string]any{
+		"merchant_id": merchantID, "parent_id": site["id"], "kind": "building", "code": "API-DEL-B", "name": "Gedung",
+	})
+	siteID := site["id"].(string)
+	buildingID := building["id"].(string)
+
+	rec := accountRequest(router, http.MethodDelete, "/api/v1/locations/"+siteID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete with child expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if msg := locationError(t, rec); msg != "location still has child locations" {
+		t.Fatalf("error = %q, want location still has child locations", msg)
+	}
+	rec = accountRequest(router, http.MethodDelete, "/api/v1/locations/"+buildingID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete leaf expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = accountRequest(router, http.MethodGet, "/api/v1/locations/"+buildingID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET deleted location expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestLocation_API_RequiresPermission — a user whose role lacks
+// core.location.manage gets 403 on both list and create.
+func TestLocation_API_RequiresPermission(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, _, _ := seedAccountOwner(t, ctx, pool, router, "loc.api.perm", "081234570114")
+	restrictedUserID := seedRestrictedAuditUser(t, ctx, pool, companyID, merchantID, "loc.api.noperm")
+	restrictedToken, err := auth.GenerateToken(testJWTSecret, restrictedUserID, companyID, merchantID, "", "loc.api.noperm", "loc-noperm-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate restricted token: %v", err)
+	}
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/merchants/"+merchantID+"/locations", restrictedToken, companyID, merchantID, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET without permission expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	raw, _ := json.Marshal(map[string]any{"merchant_id": merchantID, "kind": "building", "code": "API-NOPE", "name": "Gedung"})
+	rec = accountRequest(router, http.MethodPost, "/api/v1/locations", restrictedToken, companyID, merchantID, raw)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST without permission expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestLocation_API_PatchRoomWithBeds409 — PATCHing a ward room's functions to
+// drop ward_room while it still holds active beds is 409; kind is immutable
+// (silently ignored on PATCH, the row stays a room).
+func TestLocation_API_PatchRoomWithBeds409(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "loc.api.patch", "081234570115")
+	_, room := locationCreate(t, router, token, companyID, merchantID, map[string]any{
+		"merchant_id": merchantID, "kind": "room", "code": "API-PATCH-RM", "name": "Kamar Rawat 2", "functions": []string{"ward_room"},
+	})
+	roomID := room["id"].(string)
+	if code, _ := locationCreate(t, router, token, companyID, merchantID, map[string]any{
+		"merchant_id": merchantID, "parent_id": roomID, "kind": "bed", "code": "API-PATCH-BED", "name": "TT 3",
+	}); code != http.StatusCreated {
+		t.Fatalf("bed create expected 201, got %d", code)
+	}
+
+	raw, _ := json.Marshal(map[string]any{"functions": []string{}})
+	rec := accountRequest(router, http.MethodPatch, "/api/v1/locations/"+roomID, token, companyID, merchantID, raw)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("PATCH dropping ward_room with beds expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if msg := locationError(t, rec); msg != "room still has beds" {
+		t.Fatalf("error = %q, want room still has beds", msg)
+	}
+
+	// kind cannot be changed: the PATCH body's kind is ignored and the row
+	// stays a room.
+	raw, _ = json.Marshal(map[string]any{"kind": "site", "name": "Kamar Rawat 2 Renamed"})
+	rec = accountRequest(router, http.MethodPatch, "/api/v1/locations/"+roomID, token, companyID, merchantID, raw)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH name expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode patch response: %v", err)
+	}
+	if resp.Data["kind"] != "room" {
+		t.Fatalf("kind changed to %v, want immutable room", resp.Data["kind"])
+	}
+	if resp.Data["name"] != "Kamar Rawat 2 Renamed" {
+		t.Fatalf("name = %v, want Kamar Rawat 2 Renamed", resp.Data["name"])
 	}
 }

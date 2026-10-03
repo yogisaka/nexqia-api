@@ -148,6 +148,40 @@ definitions:
     - merchant_id
     - name
     type: object
+  server.createLocationRequest:
+    properties:
+      capacity:
+        type: integer
+      code:
+        type: string
+      functions:
+        items:
+          type: string
+        type: array
+      kind:
+        type: string
+      latitude:
+        type: number
+      longitude:
+        type: number
+      merchant_id:
+        type: string
+      name:
+        type: string
+      parent_id:
+        type: string
+      service_class:
+        type: string
+      sort_order:
+        type: integer
+      status:
+        type: string
+    required:
+    - code
+    - kind
+    - merchant_id
+    - name
+    type: object
   server.createMerchantRequest:
     properties:
       bpjs_ppk_code:
@@ -705,6 +739,31 @@ definitions:
         type: string
     required:
     - name
+    type: object
+  server.updateLocationRequest:
+    properties:
+      capacity:
+        type: integer
+      code:
+        type: string
+      functions:
+        items:
+          type: string
+        type: array
+      latitude:
+        type: number
+      longitude:
+        type: number
+      name:
+        type: string
+      parent_id:
+        type: string
+      service_class:
+        type: string
+      sort_order:
+        type: integer
+      status:
+        type: string
     type: object
   server.updateMeRequest:
     properties:
@@ -2606,6 +2665,141 @@ paths:
       summary: Liveness check
       tags:
       - system
+  /locations:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Location data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createLocationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a location in the physical tree
+      tags:
+      - locations
+  /locations/{id}:
+    delete:
+      parameters:
+      - description: Location UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a location
+      tags:
+      - locations
+    get:
+      parameters:
+      - description: Location UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a location by id
+      tags:
+      - locations
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Location UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Location data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateLocationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a location (kind is immutable)
+      tags:
+      - locations
   /merchant-roles/{id}:
     delete:
       parameters:
@@ -2853,6 +3047,50 @@ paths:
       summary: Set a merchant-specific diagnosis code system override
       tags:
       - diagnosis-config
+  /merchants/{id}/locations:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by kind (site/building/wing/level/room/bed)
+        in: query
+        name: kind
+        type: string
+      - description: Filter by function (practice/nurse_station/counter/ward_room/treatment/support)
+        in: query
+        name: function
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's locations
+      tags:
+      - locations
   /merchants/{id}/mrn-config:
     delete:
       parameters:
