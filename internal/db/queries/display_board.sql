@@ -39,6 +39,9 @@ UPDATE operations.display_board
 SET token_hash = NULL, token_created_at = NULL, updated_by = $2
 WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: GetMerchantDisplayName :one
+SELECT name FROM core.merchant WHERE id = $1 AND deleted_at IS NULL;
+
 -- name: ListBoardFeedTickets :many
 -- Tickets visible on a board: called/in_progress (current) plus waiting, for
 -- the board's stage_ids/counter_ids. Deliberately selects NO patient

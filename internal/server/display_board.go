@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,7 +42,6 @@ func boardJSON(b sqlcgen.OperationsDisplayBoard) gin.H {
 		"location_id":  boardUUIDOrNil(b.LocationID),
 		"stage_ids":    b.StageIds,
 		"counter_ids":  b.CounterIds,
-		"layout":       b.Layout,
 		"show_next_n":  b.ShowNextN,
 		"voice":        b.Voice,
 		"name_display": b.NameDisplay,
@@ -90,7 +90,7 @@ func normalizeBoardInput(req *displayBoardInput) bool {
 		return false
 	}
 	if req.NameDisplay == "" {
-		req.NameDisplay = "hidden"
+		req.NameDisplay = "initials"
 	} else if !validNameDisplays[req.NameDisplay] {
 		return false
 	}
@@ -169,7 +169,8 @@ func CreateDisplayBoardHandler(c *gin.Context) {
 		IsActive: req.IsActive == nil || *req.IsActive, CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		respondInternalError(c, err)
+		c.Error(err)
+		abortInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": boardJSON(board), "meta": gin.H{}})
@@ -270,7 +271,8 @@ func UpdateDisplayBoardHandler(c *gin.Context) {
 		IsActive: isActive, UpdatedBy: AuthUserID(c),
 	})
 	if err != nil {
-		respondInternalError(c, err)
+		c.Error(err)
+		abortInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": boardJSON(board), "meta": gin.H{}})
@@ -306,7 +308,7 @@ func DeleteDisplayBoardHandler(c *gin.Context) {
 	}
 	if err := q.SoftDeleteDisplayBoard(ctx, sqlcgen.SoftDeleteDisplayBoardParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
 		c.Error(err)
-		respondInternalError(c, err)
+		abortInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -361,7 +363,7 @@ func CreateDisplayBoardTokenHandler(c *gin.Context) {
 	}
 	if err := q.SetDisplayBoardToken(ctx, sqlcgen.SetDisplayBoardTokenParams{ID: id, TokenHash: pgtype.Text{String: hash, Valid: true}, UpdatedBy: AuthUserID(c)}); err != nil {
 		c.Error(err)
-		respondInternalError(c, err)
+		abortInternalError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"token": token}, "meta": gin.H{}})
@@ -397,7 +399,7 @@ func RevokeDisplayBoardTokenHandler(c *gin.Context) {
 	}
 	if err := q.ClearDisplayBoardToken(ctx, sqlcgen.ClearDisplayBoardTokenParams{ID: id, UpdatedBy: AuthUserID(c)}); err != nil {
 		c.Error(err)
-		respondInternalError(c, err)
+		abortInternalError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -473,6 +475,11 @@ func DisplayBoardFeedHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	merchant, err := q.GetMerchantDisplayName(c.Request.Context(), board.MerchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	current := []gin.H{}
 	waiting := []gin.H{}
 	for _, t := range tickets {
@@ -499,17 +506,88 @@ func DisplayBoardFeedHandler(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"board": gin.H{
-			"id":           board.ID,
-			"name":         board.Name,
-			"layout":       board.Layout,
-			"voice":        board.Voice,
-			"poll_seconds": board.PollSeconds,
-			"show_next_n":  board.ShowNextN,
-			"name_display": board.NameDisplay,
+			"id":            board.ID,
+			"name":          board.Name,
+			"merchant_name": merchant,
+			"voice":         board.Voice,
+			"poll_seconds":  board.PollSeconds,
+			"show_next_n":   board.ShowNextN,
+			"name_display":  board.NameDisplay,
 		},
 		"current": current,
 		"waiting": waiting,
+		"summary": boardSummary(tickets),
 	}, "meta": gin.H{}})
+}
+
+// boardSummary computes aggregate counts from the FULL ticket list (not the
+// show_next_n-truncated waiting slice): top-level waiting/called/in_progress
+// and active_total (= called+in_progress), plus per-stage groups keyed by
+// stage_name with counter_name fallback and "-" when both are null. Groups
+// with zero active tickets are omitted; groups are sorted by active count desc.
+func boardSummary(tickets []sqlcgen.ListBoardFeedTicketsRow) gin.H {
+	type stageCounts struct {
+		waiting, called, inProgress int
+	}
+	var topWaiting, topCalled, topInProgress int
+	byStage := map[string]*stageCounts{}
+	order := []string{}
+	stageOf := func(t sqlcgen.ListBoardFeedTicketsRow) string {
+		if t.StageName.Valid && t.StageName.String != "" {
+			return t.StageName.String
+		}
+		if t.CounterName.Valid && t.CounterName.String != "" {
+			return t.CounterName.String
+		}
+		return "-"
+	}
+	for _, t := range tickets {
+		var sc *stageCounts
+		key := stageOf(t)
+		if sc = byStage[key]; sc == nil {
+			sc = &stageCounts{}
+			byStage[key] = sc
+			order = append(order, key)
+		}
+		switch t.Status {
+		case "waiting":
+			topWaiting++
+			sc.waiting++
+		case "called":
+			topCalled++
+			sc.called++
+		case "in_progress":
+			topInProgress++
+			sc.inProgress++
+		}
+	}
+	stages := make([]gin.H, 0, len(order))
+	for _, key := range order {
+		sc := byStage[key]
+		active := sc.called + sc.inProgress
+		if active == 0 {
+			continue
+		}
+		stages = append(stages, gin.H{
+			"name":        key,
+			"waiting":     sc.waiting,
+			"called":      sc.called,
+			"in_progress": sc.inProgress,
+		})
+	}
+	sort.SliceStable(stages, func(i, j int) bool {
+		act := func(s gin.H) int {
+			return s["called"].(int) + s["in_progress"].(int)
+		}
+		return act(stages[i]) > act(stages[j])
+	})
+	return gin.H{
+		"waiting":      topWaiting,
+		"called":       topCalled,
+		"in_progress":  topInProgress,
+		"active_total": topCalled + topInProgress,
+		"stages":       stages,
+	}
 }
 
 func sha256Hex(s string) string {

@@ -72,8 +72,22 @@ func TestDisplayBoard_CRUDAndTokenLifecycle(t *testing.T) {
 	if _, leaked := board["token_hash"]; leaked {
 		t.Fatalf("board response must never include token_hash: %v", board)
 	}
-	if board["layout"] != "single" || board["name_display"] != "initials" {
+	if board["name_display"] != "initials" {
 		t.Fatalf("board defaults/payload unexpected: %v", board)
+	}
+	if _, ok := board["layout"]; ok {
+		t.Fatalf("board response must not include layout: %v", board)
+	}
+
+	// Create without name_display → default "initials" (migration 000058).
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/display-boards", map[string]any{
+		"merchant_id": env.merchantID, "name": "Layar Default",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("POST /display-boards (no name_display) expected 201, got %d: %v", code, resp)
+	}
+	if got := resp["data"].(map[string]any)["name_display"]; got != "initials" {
+		t.Fatalf("name_display default: expected \"initials\", got %v", got)
 	}
 
 	// Invalid enum → 400.
@@ -115,7 +129,10 @@ func TestDisplayBoard_CRUDAndTokenLifecycle(t *testing.T) {
 		t.Fatalf("feed with valid token expected 200, got %d", code)
 	}
 	cfg := resp["data"].(map[string]any)["board"].(map[string]any)
-	if cfg["layout"] != "single" || cfg["poll_seconds"] != float64(5) || cfg["show_next_n"] != float64(3) {
+	if _, ok := cfg["layout"]; ok {
+		t.Fatalf("feed board config must not include layout: %v", cfg)
+	}
+	if cfg["poll_seconds"] != float64(5) || cfg["show_next_n"] != float64(3) {
 		t.Fatalf("feed board config unexpected: %v", cfg)
 	}
 
@@ -219,9 +236,40 @@ func TestDisplayBoard_FeedPayload(t *testing.T) {
 		t.Fatalf("expected 1 waiting ticket, got %d: %s", len(waiting), raw)
 	}
 
-	// No patient identifiers anywhere in the payload.
+	// merchant_name = name of the seeded merchant.
+	var merchantName string
+	if err := env.pool.QueryRow(t.Context(),
+		"SELECT name FROM core.merchant WHERE id = $1", env.merchantID).Scan(&merchantName); err != nil {
+		t.Fatalf("read merchant name: %v", err)
+	}
+	if data["board"].(map[string]any)["merchant_name"] != merchantName {
+		t.Fatalf("merchant_name: expected %q, got %v", merchantName, data["board"].(map[string]any)["merchant_name"])
+	}
+
+	// summary counts the FULL ticket slice, not the truncated waiting list.
+	// Seed: 1 called (A) + 1 waiting (B), both in stage "Admisi" →
+	// waiting:1, called:1, in_progress:0, active_total = called+in_progress = 1;
+	// one stage group "Admisi" {waiting:1, called:1, in_progress:0}.
+	summary := data["summary"].(map[string]any)
+	if summary["waiting"] != float64(1) || summary["called"] != float64(1) ||
+		summary["in_progress"] != float64(0) || summary["active_total"] != float64(1) {
+		t.Fatalf("summary top-level counts unexpected: %v", summary)
+	}
+	stagesSum := summary["stages"].([]any)
+	if len(stagesSum) != 1 {
+		t.Fatalf("expected 1 summary stage, got %d: %s", len(stagesSum), raw)
+	}
+	sg := stagesSum[0].(map[string]any)
+	if sg["name"] != "Admisi" || sg["waiting"] != float64(1) ||
+		sg["called"] != float64(1) || sg["in_progress"] != float64(0) {
+		t.Fatalf("summary stage unexpected: %v", sg)
+	}
+
+	// No patient identifiers anywhere in the payload. Fields are checked as
+	// quoted JSON keys so substrings inside values (e.g. "Klinik" contains
+	// "nik") don't false-positive.
 	for _, forbidden := range []string{"person_id", "full_name", "medical_record", "birth_date", "photo", "nik", "patient_id"} {
-		if strings.Contains(raw, forbidden) {
+		if strings.Contains(raw, `"`+forbidden+`"`) {
 			t.Fatalf("feed leaks forbidden field %q: %s", forbidden, raw)
 		}
 	}
