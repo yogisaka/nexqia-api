@@ -515,9 +515,25 @@ type CoreRole struct {
 	RequiresPhysicianData bool
 }
 
+type CoreRoleChangeLog struct {
+	ID        pgtype.UUID
+	CompanyID pgtype.UUID
+	RoleID    pgtype.UUID
+	ChangedBy pgtype.UUID
+	ChangedAt pgtype.Timestamptz
+	Reason    string
+	Changes   []byte
+}
+
 type CoreRolePermission struct {
 	RoleID       pgtype.UUID
 	PermissionID pgtype.UUID
+}
+
+type CoreRoleWidget struct {
+	RoleID    pgtype.UUID
+	WidgetKey string
+	Visible   bool
 }
 
 type CoreSecuritySettingLog struct {
