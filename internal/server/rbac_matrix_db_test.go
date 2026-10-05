@@ -40,6 +40,8 @@ const (
 
 	rmCompany     = "00000000-0000-0000-0060-000000000001"
 	rmMerchant    = "00000000-0000-0000-0060-000000000011"
+	rmMerchant2   = "00000000-0000-0000-0060-000000000012"
+	rmPerson      = "00000000-0000-0000-0060-000000000055"
 	rmUser        = "00000000-0000-0000-0060-0000000000aa"
 	rmRoleAdmin   = "00000000-0000-0000-0060-0000000000a1" // grants core.role.manage
 	rmRoleTarget  = "00000000-0000-0000-0060-0000000000b1" // PUT permissions target
@@ -100,6 +102,16 @@ func roleMatrixSeed(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	roleMatrixExec(t, ctx, pool,
 		`INSERT INTO core.merchant (id, company_id, code, name) VALUES ($1, $2, 'M1', 'RS Role Matrix utama')`,
 		rmMerchant, rmCompany)
+	// Second merchant: same user + role assigned here too, to prove
+	// UserCount counts DISTINCT users (see TestRoleMatrixRolesListCounts).
+	roleMatrixExec(t, ctx, pool,
+		`INSERT INTO core.merchant (id, company_id, code, name) VALUES ($1, $2, 'M2', 'RS Role Matrix cabang')`,
+		rmMerchant2, rmCompany)
+	// Person behind the admin user — change-log rows join through it for
+	// changed_by_name.
+	roleMatrixExec(t, ctx, pool,
+		`INSERT INTO core.person (id, company_id, full_name) VALUES ($1, $2, 'Admin Matrix')`,
+		rmPerson, rmCompany)
 
 	// Permission catalog entries (ON CONFLICT keeps a pre-seeded row's own id;
 	// the tests always look ids up by code afterwards).
@@ -116,8 +128,8 @@ func roleMatrixSeed(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 
 	// Users (password_hash NOT NULL; login not needed — token generated directly).
 	roleMatrixExec(t, ctx, pool,
-		`INSERT INTO core.app_user (id, company_id, username, password_hash, is_active) VALUES ($1, $2, 'matrix.admin', 'x-hash', true)`,
-		rmUser, rmCompany)
+		`INSERT INTO core.app_user (id, company_id, person_id, username, password_hash, is_active) VALUES ($1, $2, $3, 'matrix.admin', 'x-hash', true)`,
+		rmUser, rmCompany, rmPerson)
 
 	// Roles. UNIQUE(company_id, name); soft-delete CHECK needs deleted_at+deleted_by together.
 	roleMatrixExec(t, ctx, pool,
@@ -157,6 +169,280 @@ func roleMatrixSeed(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	roleMatrixExec(t, ctx, pool,
 		`INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)`,
 		rmUser, rmMerchant, rmRoleAdmin)
+	// Same user, same admin role, second merchant — 2 rows, still 1 distinct user.
+	roleMatrixExec(t, ctx, pool,
+		`INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)`,
+		rmUser, rmMerchant2, rmRoleAdmin)
+}
+
+func TestRoleMatrixReadEndpoints(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := roleMatrixPool(t, ctx)
+	roleMatrixSeed(t, ctx, pool)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	// Admin token without an active role id (legacy shape) — fine for the
+	// PermRoleManage-gated read endpoints.
+	token, err := auth.GenerateToken(testJWTSecret, rmUser, rmCompany, rmMerchant, "", "matrix.admin", "matrix-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	get := func(path string) *httptest.ResponseRecorder {
+		return roleMatrixRequest(t, router, token, http.MethodGet, path, nil)
+	}
+
+	// Make one permission change first so matrix last_edit is populated.
+	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleTarget+"/permissions", map[string]any{
+		"permission_ids": []string{rmPermA, rmPermB, rmPermC},
+		"reason":         "ubah izin target",
+	}); rec.Code != http.StatusNoContent {
+		t.Fatalf("seed PUT expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// --- matrix shape ---
+	rec := get("/api/v1/roles/" + rmRoleTarget + "/matrix")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("matrix expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var matrix struct {
+		Data struct {
+			Role struct {
+				ID                    string `json:"id"`
+				Name                  string `json:"name"`
+				Description           string `json:"description"`
+				IsSystem              bool   `json:"is_system"`
+				RequiresPhysicianData bool   `json:"requires_physician_data"`
+			} `json:"role"`
+			PermissionIDs []string `json:"permission_ids"`
+			Widgets       []struct {
+				Key     string `json:"key"`
+				Visible bool   `json:"visible"`
+			} `json:"widgets"`
+			LastEdit *struct {
+				ByName string `json:"by_name"`
+				At     string `json:"at"`
+				Reason string `json:"reason"`
+			} `json:"last_edit"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &matrix); err != nil {
+		t.Fatalf("decode matrix: %v", err)
+	}
+	if matrix.Data.Role.Name != "Matrix Target" || matrix.Data.Role.Description != "target role" ||
+		matrix.Data.Role.IsSystem || matrix.Data.Role.RequiresPhysicianData {
+		t.Fatalf("unexpected role block: %+v", matrix.Data.Role)
+	}
+	if len(matrix.Data.PermissionIDs) != 3 { // 3 = 2 lama (a,b) + 1 baru (c)
+		t.Fatalf("want 3 permission ids, got %v", matrix.Data.PermissionIDs)
+	}
+	for _, want := range []string{rmPermA, rmPermB, rmPermC} {
+		found := false
+		for _, got := range matrix.Data.PermissionIDs {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("permission id %s missing from %v", want, matrix.Data.PermissionIDs)
+		}
+	}
+	if len(matrix.Data.Widgets) != 0 {
+		t.Fatalf("want no widget overrides, got %v", matrix.Data.Widgets)
+	}
+	if matrix.Data.LastEdit == nil {
+		t.Fatal("last_edit must be populated after a PUT")
+	}
+	// by_name comes from person.full_name of the fixture user.
+	if matrix.Data.LastEdit.ByName != "Admin Matrix" {
+		t.Fatalf("want by_name %q, got %q", "Admin Matrix", matrix.Data.LastEdit.ByName)
+	}
+	if matrix.Data.LastEdit.Reason != "ubah izin target" {
+		t.Fatalf("want last_edit reason %q, got %q", "ubah izin target", matrix.Data.LastEdit.Reason)
+	}
+	if _, err := time.Parse(time.RFC3339, matrix.Data.LastEdit.At); err != nil {
+		t.Fatalf("last_edit.at not RFC3339 (%q): %v", matrix.Data.LastEdit.At, err)
+	}
+
+	// --- matrix widgets sorted by key ---
+	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleWidgets+"/widgets", map[string]any{
+		"widgets": []map[string]any{{"key": "queue", "visible": false}, {"key": "kpi", "visible": true}},
+		"reason":  "widget awal",
+	}); rec.Code != http.StatusNoContent {
+		t.Fatalf("widget PUT expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleWidgets+"/widgets", map[string]any{
+		"widgets": []map[string]any{{"key": "kpi", "visible": false}, {"key": "queue", "visible": true}},
+		"reason":  "widget ubah",
+	}); rec.Code != http.StatusNoContent {
+		t.Fatalf("widget PUT 2 expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = get("/api/v1/roles/" + rmRoleWidgets + "/matrix")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("matrix widgets expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var wmat struct {
+		Data struct {
+			Widgets []struct {
+				Key     string `json:"key"`
+				Visible bool   `json:"visible"`
+			} `json:"widgets"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &wmat); err != nil {
+		t.Fatalf("decode widget matrix: %v", err)
+	}
+	// Stored overrides: kpi=false (2nd PUT), queue=true; keys alphabetical.
+	if len(wmat.Data.Widgets) != 2 ||
+		wmat.Data.Widgets[0].Key != "kpi" || wmat.Data.Widgets[0].Visible ||
+		wmat.Data.Widgets[1].Key != "queue" || !wmat.Data.Widgets[1].Visible {
+		t.Fatalf("want sorted overrides [kpi:false queue:true], got %+v", wmat.Data.Widgets)
+	}
+
+	// --- audit list: newest first + limit ---
+	rec = get("/api/v1/roles/" + rmRoleWidgets + "/audit")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var audit struct {
+		Data []struct {
+			ChangedAt     string         `json:"changed_at"`
+			ChangedByName string         `json:"changed_by_name"`
+			Reason        string         `json:"reason"`
+			Changes       map[string]any `json:"changes"`
+		} `json:"data"`
+		Meta map[string]any `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	// 2 log rows were written by the two widget PUTs above.
+	if len(audit.Data) != 2 {
+		t.Fatalf("want 2 audit entries, got %d", len(audit.Data))
+	}
+	// DESC: newest ("widget ubah") first.
+	if audit.Data[0].Reason != "widget ubah" || audit.Data[1].Reason != "widget awal" {
+		t.Fatalf("want desc order [widget ubah, widget awal], got [%q, %q]",
+			audit.Data[0].Reason, audit.Data[1].Reason)
+	}
+	if audit.Data[0].ChangedByName != "Admin Matrix" {
+		t.Fatalf("want changed_by_name %q, got %q", "Admin Matrix", audit.Data[0].ChangedByName)
+	}
+	if _, err := time.Parse(time.RFC3339, audit.Data[0].ChangedAt); err != nil {
+		t.Fatalf("changed_at not RFC3339 (%q): %v", audit.Data[0].ChangedAt, err)
+	}
+	if audit.Meta["limit"] != float64(20) { // default limit = 20
+		t.Fatalf("want default meta.limit 20, got %v", audit.Meta["limit"])
+	}
+	rec = get("/api/v1/roles/" + rmRoleWidgets + "/audit?limit=1")
+	var limited struct {
+		Data []map[string]any `json:"data"`
+		Meta map[string]any   `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &limited); err != nil {
+		t.Fatalf("decode limited audit: %v", err)
+	}
+	if len(limited.Data) != 1 || limited.Meta["limit"] != float64(1) {
+		t.Fatalf("want 1 entry with meta.limit 1, got %d entries, meta %v", len(limited.Data), limited.Meta)
+	}
+
+	// --- self widgets: active role override ---
+	// Token WITH an active role id: dup source has one stored override (kpi=true).
+	selfToken, err := auth.GenerateToken(testJWTSecret, rmUser, rmCompany, rmMerchant, rmRoleDupSrc, "matrix.admin", "matrix-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate self token: %v", err)
+	}
+	rec = roleMatrixRequest(t, router, selfToken, http.MethodGet,
+		"/api/v1/users/"+rmUser+"/widgets?merchant_id="+rmMerchant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("self widgets expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var selfw struct {
+		Data []struct {
+			Key     string `json:"key"`
+			Visible bool   `json:"visible"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &selfw); err != nil {
+		t.Fatalf("decode self widgets: %v", err)
+	}
+	if len(selfw.Data) != 1 || selfw.Data[0].Key != "kpi" || !selfw.Data[0].Visible {
+		t.Fatalf("want [{kpi true}], got %+v", selfw.Data)
+	}
+	// Legacy token without a role id → fallback empty list.
+	rec = roleMatrixRequest(t, router, token, http.MethodGet,
+		"/api/v1/users/"+rmUser+"/widgets?merchant_id="+rmMerchant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("legacy self widgets expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var legacy struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &legacy); err != nil {
+		t.Fatalf("decode legacy self widgets: %v", err)
+	}
+	if len(legacy.Data) != 0 {
+		t.Fatalf("want [] for token without role id, got %v", legacy.Data)
+	}
+}
+
+func TestRoleMatrixRolesListCounts(t *testing.T) {
+	ctx := context.Background()
+	pool, _ := roleMatrixPool(t, ctx)
+	roleMatrixSeed(t, ctx, pool)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	token, err := auth.GenerateToken(testJWTSecret, rmUser, rmCompany, rmMerchant, "", "matrix.admin", "matrix-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	rec := roleMatrixRequest(t, router, token, http.MethodGet, "/api/v1/roles", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /roles expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode roles list: %v", err)
+	}
+	byName := make(map[string]map[string]any, len(list.Data))
+	for _, item := range list.Data {
+		byName[item["Name"].(string)] = item
+	}
+	// Old PascalCase fields preserved.
+	admin, ok := byName["Matrix Admin"]
+	if !ok {
+		t.Fatalf("Matrix Admin missing from list: %v", byName)
+	}
+	for _, field := range []string{"ID", "Name", "Description", "IsSystem", "RequiresPhysicianData"} {
+		if _, present := admin[field]; !present {
+			t.Fatalf("legacy field %s missing on role item", field)
+		}
+	}
+	// UserCount = COUNT(DISTINCT user_id) in user_merchant_role for the role:
+	// rmUser is assigned Matrix Admin on 2 merchants → 2 rows, 1 DISTINCT user.
+	if admin["UserCount"] != float64(1) {
+		t.Fatalf("want Matrix Admin UserCount 1, got %v", admin["UserCount"])
+	}
+	// PermissionCount = 1 grant (core.role.manage).
+	if admin["PermissionCount"] != float64(1) {
+		t.Fatalf("want Matrix Admin PermissionCount 1, got %v", admin["PermissionCount"])
+	}
+	dupSrc := byName["Matrix Dup Source"]
+	// 5 = grants a..e seeded on the duplicate source.
+	if dupSrc["PermissionCount"] != float64(5) {
+		t.Fatalf("want Dup Source PermissionCount 5, got %v", dupSrc["PermissionCount"])
+	}
+	// No user_merchant_role row references the dup source → 0.
+	if dupSrc["UserCount"] != float64(0) {
+		t.Fatalf("want Dup Source UserCount 0, got %v", dupSrc["UserCount"])
+	}
+	// Soft-deleted role excluded (deleted_at IS NULL in ListRolesWithCounts).
+	if _, present := byName["Matrix Deleted"]; present {
+		t.Fatal("soft-deleted role must not be listed")
+	}
 }
 
 func roleMatrixRequest(t *testing.T, router *gin.Engine, token, method, path string, body map[string]any) *httptest.ResponseRecorder {

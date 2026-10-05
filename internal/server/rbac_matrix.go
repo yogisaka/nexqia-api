@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -394,4 +396,213 @@ func DuplicateRoleHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"id": newRole.ID, "name": newRole.Name}, "meta": gin.H{}})
+}
+
+// loadMatrixRole resolves :id into a live role owned by the caller's company.
+// Shared by the read endpoints: 400 on malformed id, 404 on missing /
+// soft-deleted / cross-company roles, then RequirePermission(PermRoleManage).
+func loadMatrixRole(c *gin.Context) (pgtype.UUID, sqlcgen.CoreRole, bool) {
+	roleID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return pgtype.UUID{}, sqlcgen.CoreRole{}, false
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	role, err := q.GetRoleByID(c.Request.Context(), roleID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "role not found"})
+		return pgtype.UUID{}, sqlcgen.CoreRole{}, false
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return pgtype.UUID{}, sqlcgen.CoreRole{}, false
+	}
+	if role.CompanyID != AuthCompanyID(c) || role.DeletedAt.Valid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "role not found"})
+		return pgtype.UUID{}, sqlcgen.CoreRole{}, false
+	}
+	if !RequirePermission(c, PermRoleManage) {
+		return pgtype.UUID{}, sqlcgen.CoreRole{}, false
+	}
+	return roleID, role, true
+}
+
+// roleWidgetOverrides returns the stored overrides of a role sorted by key.
+func roleWidgetOverrides(c *gin.Context, roleID pgtype.UUID) ([]gin.H, bool) {
+	q := sqlcgen.New(TxFromContext(c))
+	rows, err := q.ListRoleWidgets(c.Request.Context(), roleID)
+	if err != nil {
+		respondInternalError(c, err)
+		return nil, false
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].WidgetKey < rows[j].WidgetKey })
+	widgets := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		widgets = append(widgets, gin.H{"key": row.WidgetKey, "visible": row.Visible})
+	}
+	return widgets, true
+}
+
+// roleChangeLogEntry converts a role_change_log row into its snake_case JSON
+// shape; changes is passed through as raw jsonb.
+func roleChangeLogEntry(changedAt pgtype.Timestamptz, changedByName pgtype.Text, reason string, changes []byte) gin.H {
+	name := ""
+	if changedByName.Valid {
+		name = changedByName.String
+	}
+	return gin.H{
+		"changed_at":      changedAt.Time.Format(time.RFC3339),
+		"changed_by_name": name,
+		"reason":          reason,
+		"changes":         json.RawMessage(changes),
+	}
+}
+
+// GetRoleMatrixHandler godoc
+// @Summary Get the full permission + widget matrix of a role
+// @Description Returns the role metadata, its permission ids, stored widget overrides (sorted by key) and the last change-log entry (null when never changed).
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Role UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /roles/{id}/matrix [get]
+func GetRoleMatrixHandler(c *gin.Context) {
+	roleID, role, ok := loadMatrixRole(c)
+	if !ok {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	permRows, err := q.ListPermissionsByRole(c.Request.Context(), roleID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	permIDs := make([]string, 0, len(permRows))
+	for _, perm := range permRows {
+		permIDs = append(permIDs, perm.ID.String())
+	}
+	widgets, ok := roleWidgetOverrides(c, roleID)
+	if !ok {
+		return
+	}
+	var lastEdit any
+	last, err := q.GetLastRoleChange(c.Request.Context(), roleID)
+	if err == nil {
+		lastEdit = gin.H{
+			"by_name": last.ChangedByName.String,
+			"at":      last.ChangedAt.Time.Format(time.RFC3339),
+			"reason":  last.Reason,
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		respondInternalError(c, err)
+		return
+	}
+	description := ""
+	if role.Description.Valid {
+		description = role.Description.String
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"role": gin.H{
+			"id":                      role.ID.String(),
+			"name":                    role.Name,
+			"description":             description,
+			"is_system":               role.IsSystem,
+			"requires_physician_data": role.RequiresPhysicianData,
+		},
+		"permission_ids": permIDs,
+		"widgets":        widgets,
+		"last_edit":      lastEdit,
+	}, "meta": gin.H{}})
+}
+
+// ListRoleChangeLogHandler godoc
+// @Summary List the change history of a role
+// @Description Newest-first change log entries (reason + jsonb diff). Query param limit defaults to 20.
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Role UUID"
+// @Param limit query int false "Max entries (default 20)"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /roles/{id}/audit [get]
+func ListRoleChangeLogHandler(c *gin.Context) {
+	roleID, _, ok := loadMatrixRole(c)
+	if !ok {
+		return
+	}
+	limit := 20
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	rows, err := q.ListRoleChanges(c.Request.Context(), sqlcgen.ListRoleChangesParams{
+		RoleID: roleID, Limit: int32(limit),
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		data = append(data, roleChangeLogEntry(row.ChangedAt, row.ChangedByName, row.Reason, row.Changes))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"limit": limit}})
+}
+
+// ListUserRoleWidgetsHandler godoc
+// @Summary List the dashboard widget visibility overrides of the caller's active role
+// @Description Self-access allowed without PermRoleManage (pattern of ListUserPermissionsHandler). Role is taken from the token's active role id; legacy tokens without a role id get an empty list.
+// @Tags rbac
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "User UUID"
+// @Param merchant_id query string true "Merchant UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /users/{id}/widgets [get]
+func ListUserRoleWidgetsHandler(c *gin.Context) {
+	userID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if _, ok := parseUUID(c.Query("merchant_id")); !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "merchant_id query param required"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	targetUser, err := q.GetAppUserByID(c.Request.Context(), userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if targetUser.CompanyID != AuthCompanyID(c) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	if userID != AuthUserID(c) && !RequirePermission(c, PermUserManage) {
+		return
+	}
+	// Override of the caller's ACTIVE role only; legacy tokens without a
+	// role id get an empty list (frontend falls back to defaults).
+	data := []gin.H{}
+	roleID := AuthRoleID(c)
+	if roleID.Valid {
+		widgets, ok := roleWidgetOverrides(c, roleID)
+		if !ok {
+			return
+		}
+		data = widgets
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }

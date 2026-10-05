@@ -40,6 +40,9 @@ func RegisterRBACRoutes(rg *gin.RouterGroup, hasher *auth.PasswordHasher) {
 	rg.PUT("/roles/:id/permissions", ReplaceRolePermissionsHandler)
 	rg.PUT("/roles/:id/widgets", ReplaceRoleWidgetsHandler)
 	rg.POST("/roles/:id/duplicate", DuplicateRoleHandler)
+	rg.GET("/roles/:id/matrix", GetRoleMatrixHandler)
+	rg.GET("/roles/:id/audit", ListRoleChangeLogHandler)
+	rg.GET("/users/:id/widgets", ListUserRoleWidgetsHandler)
 
 	rg.GET("/role-templates", ListRoleTemplatesHandler)
 	rg.POST("/role-templates/:id/apply", ApplyRoleTemplateHandler)
@@ -448,8 +451,23 @@ func CreateRoleHandler(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"data": role, "meta": gin.H{}})
 }
 
+// roleListItem mirrors the PascalCase shape previously returned by
+// ListRolesByCompany, plus the new usage counters. Backward compatible: old
+// consumers (UserDetailPage.tsx) keep their fields untouched.
+type roleListItem struct {
+	ID                    pgtype.UUID `json:"ID"`
+	CompanyID             pgtype.UUID `json:"CompanyID"`
+	Name                  string      `json:"Name"`
+	Description           pgtype.Text `json:"Description"`
+	IsSystem              bool        `json:"IsSystem"`
+	RequiresPhysicianData bool        `json:"RequiresPhysicianData"`
+	UserCount             int64       `json:"UserCount"`
+	PermissionCount       int64       `json:"PermissionCount"`
+}
+
 // ListRolesHandler godoc
-// @Summary List roles in the caller's company
+// @Summary List roles in the caller's company with usage counts
+// @Description Each element carries the previous fields plus UserCount (COUNT(DISTINCT user_id) in user_merchant_role) and PermissionCount (granted permission rows).
 // @Tags rbac
 // @Produce json
 // @Security BearerAuth
@@ -463,14 +481,27 @@ func ListRolesHandler(c *gin.Context) {
 	}
 	limit, offset := paginationParams(c)
 	q := sqlcgen.New(TxFromContext(c))
-	roles, err := q.ListRolesByCompany(c.Request.Context(), sqlcgen.ListRolesByCompanyParams{
+	rows, err := q.ListRolesWithCounts(c.Request.Context(), sqlcgen.ListRolesWithCountsParams{
 		CompanyID: AuthCompanyID(c), Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": roles, "meta": gin.H{"limit": limit, "offset": offset}})
+	items := make([]roleListItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, roleListItem{
+			ID:                    row.ID,
+			CompanyID:             row.CompanyID,
+			Name:                  row.Name,
+			Description:           row.Description,
+			IsSystem:              row.IsSystem,
+			RequiresPhysicianData: row.RequiresPhysicianData,
+			UserCount:             row.UserCount,
+			PermissionCount:       row.PermissionCount,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{"limit": limit, "offset": offset}})
 }
 
 // GetRoleHandler godoc
