@@ -1,4 +1,4 @@
-.PHONY: migrate-up migrate-down sync-runtime-password seed bootstrap-platform-admin test test-integration lint fmt run dev sqlc-generate swag-generate
+.PHONY: migrate-up migrate-down sync-runtime-password seed import-terminology bootstrap-platform-admin test test-integration lint fmt run dev sqlc-generate swag-generate
 
 migrate-up:
 	set -a && . ./.env && set +a && $$(go env GOPATH)/bin/migrate -path migrations -database "$$DATABASE_URL" up
@@ -14,6 +14,9 @@ sync-runtime-password:
 
 seed:
 	set -a && . ./.env && set +a && psql "$$DATABASE_URL" -v nik_key="'$$NIK_ENCRYPTION_KEY'" -f seed/001_core_seed.sql
+
+import-terminology:
+	set -a && . ./.env && set +a && go run ./cmd/import-terminology $(ARGS)
 
 bootstrap-platform-admin:
 	set -a && . ./.env && set +a && go run ./cmd/bootstrap-platform-admin
