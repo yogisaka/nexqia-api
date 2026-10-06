@@ -111,7 +111,14 @@ func PayerSummaryHandler(c *gin.Context) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
-	summary, err := q.SummarizeTodayAdmissionsByPayerType(c.Request.Context(), merchantID)
+	loc, err := merchantLocation(c, q, merchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	summary, err := q.SummarizeAdmissionsByPayerTypeSince(c.Request.Context(), sqlcgen.SummarizeAdmissionsByPayerTypeSinceParams{
+		MerchantID: merchantID, Since: pgtype.Timestamptz{Time: localDayStart(time.Now(), loc), Valid: true},
+	})
 	if err != nil {
 		respondInternalError(c, err)
 		return
@@ -303,14 +310,24 @@ func CreateAdmissionHandler(c *gin.Context) {
 		return
 	}
 
-	admissionSeq, err := q.CountTodayAdmissionsByDepartment(ctx, sqlcgen.CountTodayAdmissionsByDepartmentParams{
-		MerchantID: merchantID, DepartmentID: departmentID,
+	loc, err := merchantLocation(ctx, q, merchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	dayStart := localDayStart(time.Now(), loc)
+	if err := lockDailySequence(ctx, q, merchantID, "visit:"+departmentID.String(), dayStart); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	admissionSeq, err := q.CountAdmissionsByDepartmentSince(ctx, sqlcgen.CountAdmissionsByDepartmentSinceParams{
+		MerchantID: merchantID, DepartmentID: departmentID, Since: pgtype.Timestamptz{Time: dayStart, Valid: true},
 	})
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
-	visitNo := fmt.Sprintf("%s%s-%04d", department.Code, time.Now().Format("20060102"), admissionSeq+1)
+	visitNo := fmt.Sprintf("%s%s-%04d", department.Code, dayStart.Format("20060102"), admissionSeq+1)
 
 	admission, err := q.CreateAdmission(ctx, sqlcgen.CreateAdmissionParams{
 		CompanyID: AuthCompanyID(c), MerchantID: merchantID, VisitNo: visitNo, PersonID: personID,
