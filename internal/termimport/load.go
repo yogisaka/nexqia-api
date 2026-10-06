@@ -37,7 +37,7 @@ func LoadConcepts(ctx context.Context, db *pgxpool.Pool, cs CodeSystem, res Pars
 	var systemID string
 	err = tx.QueryRow(ctx, `
 INSERT INTO terminology.code_system AS cs (system_uri, name, version, tags, license, attribution, source_url, source_sha256, imported_at)
-VALUES ($1, $2, $3, $4::text[], $5, $6, $7, $8, now())
+VALUES ($1, $2, $3, COALESCE($4::text[], '{}'::text[]), $5, $6, $7, $8, now())
 ON CONFLICT (system_uri) DO UPDATE SET
     name = EXCLUDED.name, version = EXCLUDED.version,
     tags = ARRAY(SELECT DISTINCT unnest(cs.tags || EXCLUDED.tags) ORDER BY 1),

@@ -102,3 +102,56 @@ func TestTermImport_DryRunAndTags(t *testing.T) {
 		t.Fatalf("tags must merge: legacy=%v diagnosis=%v", hasLegacy, hasDiagnosis)
 	}
 }
+
+// TestTermImport_MapClustersAndDots — spec §12 R3/R4: a cluster target is
+// stored on its stem concept with the full code; ICD-10 codes match with or
+// without the dot; unknown codes are skipped, not fatal.
+func TestTermImport_MapClustersAndDots(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	icd10 := termimport.CodeSystem{URI: "http://hl7.org/fhir/sid/icd-10", Name: "ICD-10", Version: "legacy"}
+	icd11 := termimport.CodeSystem{URI: "http://id.who.int/icd/release/11/mms", Name: "ICD-11", Version: "2026-01"}
+	if _, err := termimport.LoadConcepts(ctx, pool, icd10, termimport.ParseResult{Concepts: []termimport.Concept{
+		{Code: "A000", Display: "Cholera O1 (undotted legacy code)", Selectable: true},
+		{Code: "A00.9", Display: "Cholera", Selectable: true},
+	}}, false); err != nil {
+		t.Fatalf("load ICD-10: %v", err)
+	}
+	if _, err := termimport.LoadConcepts(ctx, pool, icd11, termimport.ParseResult{Concepts: []termimport.Concept{
+		{Code: "1A00", Display: "Cholera", Selectable: true},
+		{Code: "1A01", Display: "Other", Selectable: true},
+	}}, false); err != nil {
+		t.Fatalf("load ICD-11: %v", err)
+	}
+	sum, err := termimport.LoadMap(ctx, pool, "who-icd10-to-icd11-test", icd10.URI, icd11.URI, []termimport.MapRow{
+		{SourceCode: "A00.0", TargetCode: "1A00&XN8P1"},
+		{SourceCode: "A00.9", TargetCode: "1A00", Preferred: true},
+		{SourceCode: "A00.9", TargetCode: "1A01"},
+		{SourceCode: "Z99.9", TargetCode: "1A00"},
+	}, false)
+	if err != nil {
+		t.Fatalf("LoadMap: %v", err)
+	}
+	if sum.New != 3 || len(sum.Skipped) != 1 {
+		t.Fatalf("map summary = %+v, want 3 new and 1 skipped (Z99.9)", sum)
+	}
+	var targetCode, stem string
+	if err := pool.QueryRow(ctx, `SELECT cm.target_code, t.code FROM terminology.concept_map cm
+		JOIN terminology.concept s ON s.id = cm.source_concept_id
+		JOIN terminology.concept t ON t.id = cm.target_concept_id
+		WHERE cm.map_set = 'who-icd10-to-icd11-test' AND s.code = 'A000'`).Scan(&targetCode, &stem); err != nil {
+		t.Fatalf("cluster row for undotted A000: %v", err)
+	}
+	if targetCode != "1A00&XN8P1" || stem != "1A00" {
+		t.Fatalf("cluster row = %s on %s, want 1A00&XN8P1 on stem 1A00", targetCode, stem)
+	}
+	again, err := termimport.LoadMap(ctx, pool, "who-icd10-to-icd11-test", icd10.URI, icd11.URI, []termimport.MapRow{
+		{SourceCode: "A00.9", TargetCode: "1A00", Preferred: true},
+	}, false)
+	if err != nil {
+		t.Fatalf("LoadMap again: %v", err)
+	}
+	if again.Updated != 1 || again.Deactivated != 2 {
+		t.Fatalf("re-map summary = %+v, want 1 updated and 2 deactivated", again)
+	}
+}
