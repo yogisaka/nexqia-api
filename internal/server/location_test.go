@@ -247,8 +247,11 @@ func TestLocation_DB_PermissionGranted(t *testing.T) {
 		GROUP BY t.version`).Scan(&version, &adminKlinik); err != nil {
 		t.Fatalf("check klinik_pratama template: %v", err)
 	}
-	if version != 2 {
-		t.Fatalf("expected klinik_pratama version 2, got %d", version)
+	// 000055 bumps the template to version 2; later seed migrations
+	// (e.g. 000057) bump it further, so only the floor is asserted here.
+	// The exact current version is owned by role_template_test.go.
+	if version < 2 {
+		t.Fatalf("expected klinik_pratama version >= 2, got %d", version)
 	}
 	if adminKlinik != 1 {
 		t.Fatalf("expected Admin Klinik (klinik_pratama) to hold core.location.manage, got %d", adminKlinik)
