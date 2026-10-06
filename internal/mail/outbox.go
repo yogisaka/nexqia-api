@@ -23,13 +23,15 @@ type ClaimedEmail struct {
 	Kind     string
 }
 
-// ClaimEmails calls core.claim_emails (migrations/000052), a SECURITY DEFINER
-// function that marks up to batch due rows as 'sending' for lockSeconds — sqlc
-// can't type a RETURNS TABLE function call reliably, so this is a raw query.
-func ClaimEmails(ctx context.Context, q Querier, batch, lockSeconds int32) ([]ClaimedEmail, error) {
+// ClaimEmails calls core.claim_emails (migrations/000061), a SECURITY DEFINER
+// function that marks up to batch due rows as 'sending' for lockSeconds. A
+// 'sending' row whose lock expired counts as a failed attempt and is given up
+// (not returned) at maxAttempts — spec 2026-10-06-email-outbox-claim §2.2.
+// sqlc can't type a RETURNS TABLE function call reliably, so this is a raw query.
+func ClaimEmails(ctx context.Context, q Querier, batch, lockSeconds, maxAttempts int32) ([]ClaimedEmail, error) {
 	rows, err := q.Query(ctx,
-		"SELECT id, to_address, subject, body_text, body_html, attempts, kind FROM core.claim_emails($1, $2)",
-		batch, lockSeconds)
+		"SELECT id, to_address, subject, body_text, body_html, attempts, kind FROM core.claim_emails($1, $2, $3)",
+		batch, lockSeconds, maxAttempts)
 	if err != nil {
 		return nil, err
 	}

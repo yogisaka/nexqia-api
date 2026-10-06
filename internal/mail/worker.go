@@ -28,7 +28,10 @@ type outboxStore interface {
 	MarkFailed(ctx context.Context, id pgtype.UUID, errText string, retryAt time.Time, maxAttempts int32) error
 }
 
-type pgStore struct{ pool *pgxpool.Pool }
+type pgStore struct {
+	pool        *pgxpool.Pool
+	maxAttempts int32 // MAIL_MAX_ATTEMPTS: re-claimed stale rows count toward it
+}
 
 // Claim commits the claim in its own short transaction before anything is sent,
 // so a slow SMTP session never holds row locks.
@@ -38,7 +41,7 @@ func (s pgStore) Claim(ctx context.Context, batch int32) ([]ClaimedEmail, error)
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := ClaimEmails(ctx, tx, batch, claimLockSeconds)
+	rows, err := ClaimEmails(ctx, tx, batch, claimLockSeconds, s.maxAttempts)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +83,7 @@ func RunWorker(ctx context.Context, pool *pgxpool.Pool, sender Sender, cfg confi
 // RunOnce claims one batch and tries to send each row; it returns how many rows
 // were claimed.
 func RunOnce(ctx context.Context, pool *pgxpool.Pool, sender Sender, cfg config.Config) (int, error) {
-	return processBatch(ctx, pgStore{pool: pool}, sender, cfg, time.Now)
+	return processBatch(ctx, pgStore{pool: pool, maxAttempts: int32(cfg.MailMaxAttempts)}, sender, cfg, time.Now)
 }
 
 func processBatch(ctx context.Context, store outboxStore, sender Sender, cfg config.Config, now func() time.Time) (int, error) {

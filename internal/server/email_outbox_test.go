@@ -79,7 +79,7 @@ func TestEmailOutbox_DB_EnqueueClaimMark(t *testing.T) {
 	q := sqlcgen.New(tx)
 	id := enqueueTestEmail(t, ctx, q, "andi@example.com")
 
-	claimed, err := mail.ClaimEmails(ctx, tx, 10, 120)
+	claimed, err := mail.ClaimEmails(ctx, tx, 10, 120, 5)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestEmailOutbox_DB_EnqueueClaimMark(t *testing.T) {
 		t.Fatalf("expected sent with sent_at, got %s %v", status, sentAt)
 	}
 
-	again, err := mail.ClaimEmails(ctx, pool, 10, 120)
+	again, err := mail.ClaimEmails(ctx, pool, 10, 120, 5)
 	if err != nil {
 		t.Fatalf("claim again: %v", err)
 	}
@@ -125,13 +125,13 @@ func TestEmailOutbox_DB_ConcurrentClaimNoOverlap(t *testing.T) {
 	}
 
 	tx1 := beginAsRuntime(t, ctx, pool)
-	first, err := mail.ClaimEmails(ctx, tx1, 2, 120)
+	first, err := mail.ClaimEmails(ctx, tx1, 2, 120, 5)
 	if err != nil {
 		t.Fatalf("claim tx1: %v", err)
 	}
 	// tx1 still open: its rows are row-locked, the second claim must skip them.
 	tx2 := beginAsRuntime(t, ctx, pool)
-	second, err := mail.ClaimEmails(ctx, tx2, 10, 120)
+	second, err := mail.ClaimEmails(ctx, tx2, 10, 120, 5)
 	if err != nil {
 		t.Fatalf("claim tx2: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestEmailOutbox_DB_FailRetryThenGiveUp(t *testing.T) {
 	if next.Sub(retryAt).Abs() > time.Second {
 		t.Fatalf("next_attempt_at %v, want %v", next, retryAt)
 	}
-	claimed, err := mail.ClaimEmails(ctx, pool, 10, 120)
+	claimed, err := mail.ClaimEmails(ctx, pool, 10, 120, 5)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestEmailOutbox_DB_ReclaimStaleSending(t *testing.T) {
 		t.Fatalf("seed fresh: %v", err)
 	}
 
-	claimed, err := mail.ClaimEmails(ctx, pool, 10, 120)
+	claimed, err := mail.ClaimEmails(ctx, pool, 10, 120, 5)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -555,5 +555,114 @@ func TestEmailOutbox_WorkerRetriesThenGivesUp(t *testing.T) {
 	}
 	if status, attempts, _, _ := outboxRow(t, ctx, pool, id); status != "failed" || attempts != 2 {
 		t.Fatalf("after MailMaxAttempts expected failed/2, got %s/%d", status, attempts)
+	}
+}
+
+// TestEmailOutbox_DB_StaleSendingCountsAttempt — spec
+// 2026-10-06-email-outbox-claim §2.2: an expired 'sending' row is a failed
+// attempt; at the limit it is given up instead of re-sent.
+func TestEmailOutbox_DB_StaleSendingCountsAttempt(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	q := sqlcgen.New(pool)
+	retry := enqueueTestEmail(t, ctx, q, "retry@example.com")
+	giveUp := enqueueTestEmail(t, ctx, q, "giveup@example.com")
+	busy := enqueueTestEmail(t, ctx, q, "busy@example.com")
+	due := enqueueTestEmail(t, ctx, q, "due@example.com")
+	for _, s := range []struct {
+		id       pgtype.UUID
+		attempts int
+		lock     string
+	}{{retry, 0, "-1 minute"}, {giveUp, 4, "-1 minute"}, {busy, 0, "1 minute"}} {
+		if _, err := pool.Exec(ctx,
+			"UPDATE core.email_outbox SET status = 'sending', attempts = $2, locked_until = now() + $3::interval WHERE id = $1",
+			s.id, s.attempts, s.lock); err != nil {
+			t.Fatalf("seed sending row: %v", err)
+		}
+	}
+
+	tx := beginAsRuntime(t, ctx, pool)
+	claimed, err := mail.ClaimEmails(ctx, tx, 10, 120, 5)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	got := map[pgtype.UUID]int32{}
+	for _, e := range claimed {
+		got[e.ID] = e.Attempts
+	}
+	if len(got) != 2 || got[retry] != 1 || got[due] != 0 {
+		t.Fatalf("claimed = %+v, want retry (attempts 1) and due (attempts 0) only", claimed)
+	}
+	if _, ok := got[due]; !ok {
+		t.Fatalf("due pending row must be claimed, got %+v", claimed)
+	}
+
+	if status, attempts, _, lastErr := outboxRow(t, ctx, pool, retry); status != "sending" || attempts != 1 ||
+		lastErr == nil || *lastErr != "worker stopped during send (lock expired)" {
+		t.Fatalf("retry row = %s/%d/%v, want sending/1/lock-expired error", status, attempts, lastErr)
+	}
+	if status, attempts, _, _ := outboxRow(t, ctx, pool, giveUp); status != "failed" || attempts != 5 {
+		t.Fatalf("give-up row = %s/%d, want failed/5", status, attempts)
+	}
+	var lockedUntil *time.Time
+	if err := pool.QueryRow(ctx, "SELECT locked_until FROM core.email_outbox WHERE id = $1", giveUp).Scan(&lockedUntil); err != nil {
+		t.Fatalf("read locked_until: %v", err)
+	}
+	if lockedUntil != nil {
+		t.Fatalf("given-up row must have locked_until NULL, got %v", lockedUntil)
+	}
+	if status, attempts, _, lastErr := outboxRow(t, ctx, pool, busy); status != "sending" || attempts != 0 || lastErr != nil {
+		t.Fatalf("busy row = %s/%d/%v, want untouched sending/0/nil", status, attempts, lastErr)
+	}
+	if status, attempts, _, _ := outboxRow(t, ctx, pool, due); status != "sending" || attempts != 0 {
+		t.Fatalf("due row = %s/%d, want sending/0", status, attempts)
+	}
+}
+
+// TestEmailOutbox_DB_ClaimMigrationDownUp — 000061 down restores the
+// two-parameter function (with its grant); up brings the three-parameter one back.
+func TestEmailOutbox_DB_ClaimMigrationDownUp(t *testing.T) {
+	ctx := context.Background()
+	pool, m := roleMatrixPool(t, ctx)
+	if err := m.Migrate(61); err != nil {
+		t.Fatalf("migrate to 000061: %v", err)
+	}
+	claimArgs := func() (two, three bool) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `
+            SELECT
+              EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                       WHERE n.nspname = 'core' AND p.proname = 'claim_emails' AND p.pronargs = 2),
+              EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                       WHERE n.nspname = 'core' AND p.proname = 'claim_emails' AND p.pronargs = 3)`).Scan(&two, &three); err != nil {
+			t.Fatalf("inspect claim_emails: %v", err)
+		}
+		return two, three
+	}
+	canExec := func(signature string) bool {
+		t.Helper()
+		var ok bool
+		if err := pool.QueryRow(ctx, "SELECT has_function_privilege('app_runtime', $1, 'EXECUTE')", signature).Scan(&ok); err != nil {
+			t.Fatalf("check privilege %s: %v", signature, err)
+		}
+		return ok
+	}
+	if two, three := claimArgs(); two || !three || !canExec("core.claim_emails(integer, integer, integer)") {
+		t.Fatalf("after up: two=%v three=%v, want only the 3-parameter function executable by app_runtime", two, three)
+	}
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("down 000061: %v", err)
+	}
+	if two, three := claimArgs(); !two || three || !canExec("core.claim_emails(integer, integer)") {
+		t.Fatalf("after down: two=%v three=%v, want only the 2-parameter function executable by app_runtime", two, three)
+	}
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("up 000061 again: %v", err)
+	}
+	if two, three := claimArgs(); two || !three {
+		t.Fatalf("after re-up: two=%v three=%v, want only the 3-parameter function", two, three)
 	}
 }
