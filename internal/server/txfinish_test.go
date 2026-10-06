@@ -101,6 +101,25 @@ func txProbeRouter(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *gin.E
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "bad request"})
 		}
 	})
+	r.POST("/keep_then_partial", func(c *gin.Context) {
+		if !insert(c, 9) {
+			return
+		}
+		server.KeepTxOnError(c)
+		if err := server.RollbackHandlerWrites(c); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if insert(c, 10) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		}
+	})
+	r.POST("/panic_header", func(c *gin.Context) {
+		if insert(c, 11) {
+			c.Header("Location", "/probe/11")
+			panic("boom")
+		}
+	})
 	r.GET("/csv", func(c *gin.Context) {
 		c.Header("Content-Type", "text/csv; charset=utf-8")
 		c.Header("Content-Disposition", `attachment; filename="probe.csv"`)
@@ -225,6 +244,32 @@ func TestRunRequestTx(t *testing.T) {
 		}
 		if probeExists(t, ctx, pool, 8) {
 			t.Fatal("row 8 must be rolled back on abort")
+		}
+	})
+
+	t.Run("RollbackHandlerWrites keeps writes already marked must-keep", func(t *testing.T) {
+		rec := serveProbe(r, http.MethodPost, "/keep_then_partial")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401: %s", rec.Code, rec.Body.String())
+		}
+		if !probeExists(t, ctx, pool, 9) {
+			t.Fatal("row 9 (marked KeepTxOnError before RollbackHandlerWrites) must persist")
+		}
+		if !probeExists(t, ctx, pool, 10) {
+			t.Fatal("row 10 (after RollbackHandlerWrites) must persist")
+		}
+	})
+
+	t.Run("panic drops handler headers", func(t *testing.T) {
+		rec := serveProbe(r, http.MethodPost, "/panic_header")
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", rec.Code)
+		}
+		if got := rec.Header().Get("Location"); got != "" {
+			t.Fatalf("Location = %q, handler headers must not ride on the panic 500", got)
+		}
+		if probeExists(t, ctx, pool, 11) {
+			t.Fatal("row 11 must be rolled back on panic")
 		}
 	})
 

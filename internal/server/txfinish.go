@@ -50,6 +50,8 @@ func RunRequestTx(c *gin.Context, tx pgx.Tx) {
 			// Never leave the tx (its pool connection and row locks) open on
 			// panic; Recovery writes the 500 through the original writer.
 			_ = tx.Rollback(finishCtx)
+			// Handler headers (Location, Content-Disposition, …) must not ride on Recovery's 500.
+			restoreHeader(original.Header(), headerSnapshot)
 			c.Writer = original
 			panic(rec)
 		}
@@ -88,7 +90,12 @@ func KeepTxOnError(c *gin.Context) {
 // RollbackHandlerWrites drops everything written since the request
 // transaction opened, then keeps whatever the caller writes next — used by
 // middleware that records a trail after the handler (AccessLog, spec §4 #1).
+// Writes the handler already marked must-keep (KeepTxOnError) are NOT
+// dropped: the caller's later writes simply join them.
 func RollbackHandlerWrites(c *gin.Context) error {
+	if c.GetBool(txKeepOnErrorKey) {
+		return nil
+	}
 	if _, err := TxFromContext(c).Exec(c.Request.Context(), "ROLLBACK TO SAVEPOINT "+handlerSavepoint); err != nil {
 		return err
 	}
