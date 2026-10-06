@@ -155,3 +155,38 @@ func TestTermImport_MapClustersAndDots(t *testing.T) {
 		t.Fatalf("re-map summary = %+v, want 1 updated and 2 deactivated", again)
 	}
 }
+
+// TestTermImport_ReverseMapDotlessTarget — R4 on the target side: an
+// ICD-11→ICD-10 pair whose ICD-10 code is stored without the dot resolves.
+func TestTermImport_ReverseMapDotlessTarget(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	icd10 := termimport.CodeSystem{URI: "http://hl7.org/fhir/sid/icd-10", Name: "ICD-10", Version: "legacy"}
+	icd11 := termimport.CodeSystem{URI: "http://id.who.int/icd/release/11/mms", Name: "ICD-11", Version: "2026-01"}
+	if _, err := termimport.LoadConcepts(ctx, pool, icd10, termimport.ParseResult{Concepts: []termimport.Concept{
+		{Code: "A000", Display: "Cholera O1 (undotted legacy code)", Selectable: true},
+	}}, false); err != nil {
+		t.Fatalf("load ICD-10: %v", err)
+	}
+	if _, err := termimport.LoadConcepts(ctx, pool, icd11, termimport.ParseResult{Concepts: []termimport.Concept{
+		{Code: "1A00", Display: "Cholera", Selectable: true},
+	}}, false); err != nil {
+		t.Fatalf("load ICD-11: %v", err)
+	}
+	sum, err := termimport.LoadMap(ctx, pool, "who-icd11-to-icd10-test", icd11.URI, icd10.URI, []termimport.MapRow{
+		{SourceCode: "1A00", TargetCode: "A00.0", Preferred: true},
+	}, false)
+	if err != nil {
+		t.Fatalf("LoadMap: %v", err)
+	}
+	if sum.New != 1 || len(sum.Skipped) != 0 {
+		t.Fatalf("reverse map summary = %+v, want 1 new and none skipped", sum)
+	}
+	var targetCode string
+	if err := pool.QueryRow(ctx, `SELECT target_code FROM terminology.concept_map WHERE map_set = 'who-icd11-to-icd10-test'`).Scan(&targetCode); err != nil {
+		t.Fatalf("read map: %v", err)
+	}
+	if targetCode != "A00.0" {
+		t.Fatalf("target_code = %q, want the code as written in the WHO file", targetCode)
+	}
+}

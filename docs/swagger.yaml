@@ -6488,6 +6488,8 @@ paths:
       - settings
   /terminology/code-systems:
     get:
+      description: Profile is a JSON object (spec 2026-10-01-terminology-import §5);
+        Attribution must be shown with ICD-11.
       parameters:
       - description: Only systems carrying this tag, e.g. diagnosis
         in: query
@@ -6505,6 +6507,47 @@ paths:
       summary: List active terminology code systems (for diagnosis-config admin)
       tags:
       - diagnosis-config
+  /terminology/map:
+    get:
+      description: Returns every active map-set candidate source→target (spec §6.2);
+        auto is true only when exactly one selectable non-cluster candidate exists
+        (§3.3).
+      parameters:
+      - description: Source code system name, e.g. ICD-10
+        in: query
+        name: system
+        required: true
+        type: string
+      - description: Source concept code, e.g. A00.0
+        in: query
+        name: code
+        required: true
+        type: string
+      - description: Target code system name, e.g. ICD-11
+        in: query
+        name: target
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List conversion candidates from one code system to another
+      tags:
+      - terminology
   /terminology/search:
     get:
       parameters:

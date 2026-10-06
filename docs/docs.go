@@ -8298,6 +8298,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Profile is a JSON object (spec 2026-10-01-terminology-import §5); Attribution must be shown with ICD-11.",
                 "produces": [
                     "application/json"
                 ],
@@ -8316,6 +8317,66 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/terminology/map": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns every active map-set candidate source→target (spec §6.2); auto is true only when exactly one selectable non-cluster candidate exists (§3.3).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "terminology"
+                ],
+                "summary": "List conversion candidates from one code system to another",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Source code system name, e.g. ICD-10",
+                        "name": "system",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Source concept code, e.g. A00.0",
+                        "name": "code",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target code system name, e.g. ICD-11",
+                        "name": "target",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/server.apiResponse"
                         }

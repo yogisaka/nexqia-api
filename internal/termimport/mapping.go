@@ -2,7 +2,6 @@ package termimport
 
 import (
 	"context"
-	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -40,21 +39,25 @@ func readTSV(r io.Reader) ([]map[string]string, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// The WHO TSV files do not quote fields, so encoding/csv would fail on a
+	// bare quote inside a title; split manually instead.
 	text := strings.TrimPrefix(string(data), "\uFEFF")
 	text = strings.ReplaceAll(text, "\r\n", "\n")
-	cr := csv.NewReader(strings.NewReader(text))
-	cr.Comma = '\t'
-	cr.FieldsPerRecord = -1
-	records, err := cr.ReadAll()
-	if err != nil {
-		return nil, nil, err
+	text = strings.ReplaceAll(text, "\r", "\n")
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines = append(lines, line)
 	}
-	if len(records) == 0 {
+	if len(lines) == 0 {
 		return nil, nil, errors.New("empty TSV")
 	}
-	header := records[0]
-	rows := make([]map[string]string, 0, len(records)-1)
-	for _, rec := range records[1:] {
+	header := strings.Split(lines[0], "\t")
+	rows := make([]map[string]string, 0, len(lines)-1)
+	for _, line := range lines[1:] {
+		rec := strings.Split(line, "\t")
 		row := make(map[string]string, len(header))
 		for i, name := range header {
 			if i < len(rec) {
@@ -192,7 +195,12 @@ func LoadMap(ctx context.Context, db *pgxpool.Pool, mapSet, sourceURI, targetURI
 				fmt.Sprintf("%s %s→%s: source not found", mapSet, row.SourceCode, row.TargetCode))
 			continue
 		}
-		tgtID, ok := targetIDs[StemCode(row.TargetCode)]
+		tgtKey := StemCode(row.TargetCode)
+		if targetURI == icd10URI {
+			// dotless tolerance applies to the target side too (§12 R4)
+			tgtKey = strings.ReplaceAll(tgtKey, ".", "")
+		}
+		tgtID, ok := targetIDs[tgtKey]
 		if !ok {
 			summary.Skipped = append(summary.Skipped,
 				fmt.Sprintf("%s %s→%s: target not found", mapSet, row.SourceCode, row.TargetCode))

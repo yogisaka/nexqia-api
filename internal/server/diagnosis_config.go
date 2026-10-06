@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -70,6 +71,7 @@ func validateCodeSystem(ctx context.Context, q *sqlcgen.Queries, codeSystem stri
 // @Produce json
 // @Security BearerAuth
 // @Success 200 {object} apiResponse
+// @Description Profile is a JSON object (spec 2026-10-01-terminology-import §5); Attribution must be shown with ICD-11.
 // @Router /terminology/code-systems [get]
 func ListCodeSystemsHandler(c *gin.Context) {
 	if !RequirePermission(c, PermPersonManage) {
@@ -87,7 +89,22 @@ func ListCodeSystemsHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": systems, "meta": gin.H{}})
+	// Explicit response (spec §12 R6): sending the sqlc struct raw would
+	// base64-encode the jsonb profile column.
+	items := make([]gin.H, 0, len(systems))
+	for _, s := range systems {
+		profile := s.Profile
+		if len(profile) == 0 {
+			profile = []byte("{}")
+		}
+		items = append(items, gin.H{
+			"ID": s.ID, "Name": s.Name, "Version": s.Version, "SystemURI": s.SystemUri,
+			"License":     s.License.String,
+			"Attribution": s.Attribution.String,
+			"Profile":     json.RawMessage(profile),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{}})
 }
 
 // GetCompanyDiagnosisConfigHandler godoc
