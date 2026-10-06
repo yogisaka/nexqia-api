@@ -96,18 +96,9 @@ func loadScheduleSettings(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.
 
 // tzName resolves the merchant timezone string (spec §3: session dates and
 // "today" follow core.merchant.timezone), falling back to the spec default
-// when the merchant row cannot be loaded.
+// when the merchant row cannot be loaded — see merchantTZ.
 func tzName(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) string {
-	tz, err := q.GetMerchantTimezone(c.Request.Context(), merchantID)
-	if err != nil || tz == "" {
-		return "Asia/Jakarta"
-	}
-	return tz
-}
-
-// merchantLocation loads the merchant timezone as *time.Location.
-func merchantLocation(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) (*time.Location, error) {
-	return time.LoadLocation(tzName(c, q, merchantID))
+	return merchantTZ(c.Request.Context(), q, merchantID)
 }
 
 // parseScheduleDate parses a YYYY-MM-DD path/query parameter.

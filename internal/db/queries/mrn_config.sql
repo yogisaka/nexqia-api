@@ -12,9 +12,11 @@ UNION ALL
 (SELECT mc2.format FROM core.mrn_config mc2 WHERE mc2.company_id = $2 AND mc2.merchant_id IS NULL)
 LIMIT 1;
 
--- name: LockMRNSequence :exec
--- Transaction-scoped advisory lock keyed by company + resolved prefix, so two
--- concurrent check-ins can't compute the same next sequence number. Released
+-- name: LockSequence :exec
+-- Transaction-scoped advisory lock on (owner id, key) that serializes
+-- "count then insert" sequence generators: MRN (company id, resolved
+-- prefix|suffix) and the daily visit/queue numbers (merchant id,
+-- "<scope>:<local date>", spec 2026-10-06-daily-numbering §3.2). Released
 -- automatically at commit/rollback of the caller's request transaction.
 SELECT pg_advisory_xact_lock(hashtext($1::text || ':' || $2::text));
 

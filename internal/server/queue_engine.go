@@ -179,12 +179,11 @@ func scheduleRoomCounter(ctx context.Context, q *sqlcgen.Queries, stage sqlcgen.
 	if err != nil || len(counters) == 0 {
 		return pgtype.UUID{}
 	}
-	loc, err := merchantTimezone(ctx, q, admission.MerchantID)
+	loc, err := merchantLocation(ctx, q, admission.MerchantID)
 	if err != nil {
 		return pgtype.UUID{}
 	}
-	now := time.Now().In(loc)
-	today := pgtype.Date{Time: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc), Valid: true}
+	today := pgtype.Date{Time: localDayStart(time.Now(), loc), Valid: true}
 
 	var roomID pgtype.UUID
 	session, err := q.GetScheduleSessionByScheduleAndDate(ctx, sqlcgen.GetScheduleSessionByScheduleAndDateParams{
@@ -210,15 +209,6 @@ func scheduleRoomCounter(ctx context.Context, q *sqlcgen.Queries, stage sqlcgen.
 	return pgtype.UUID{}
 }
 
-// merchantTimezone loads the merchant's timezone as a *time.Location.
-func merchantTimezone(ctx context.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) (*time.Location, error) {
-	tz, err := q.GetMerchantTimezone(ctx, merchantID)
-	if err != nil {
-		return nil, err
-	}
-	return time.LoadLocation(tz)
-}
-
 // issueTicket creates the queue row for one stage of a journey (spec §4):
 // number "<prefix>-NNN" or legacy "<poli code>-NNN" when prefix is NULL, NNN =
 // today's ticket count for the stage (merchant timezone) + 1; queue_type from
@@ -239,12 +229,11 @@ func issueTicket(ctx context.Context, q *sqlcgen.Queries, journey *sqlcgen.Opera
 		counterID = scheduleRoomCounter(ctx, q, stage, admission)
 	}
 
-	loc, err := merchantTimezone(ctx, q, journey.MerchantID)
+	loc, err := merchantLocation(ctx, q, journey.MerchantID)
 	if err != nil {
 		return sqlcgen.OperationsQueue{}, err
 	}
-	now := time.Now().In(loc)
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	startOfDay := localDayStart(time.Now(), loc)
 	n, err := q.CountTicketsForStageSince(ctx, sqlcgen.CountTicketsForStageSinceParams{
 		StageID: stage.ID, CreatedAt: pgtype.Timestamptz{Time: startOfDay, Valid: true},
 	})

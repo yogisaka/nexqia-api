@@ -263,9 +263,10 @@ func DeleteMerchantMRNConfigHandler(c *gin.Context) {
 // {MERCHANT_CODE} tokens, and assigns the next {SEQ:N} value.
 //
 // Must run inside the caller's request transaction: the tx-scoped advisory
-// lock (LockMRNSequence, keyed by company + resolved prefix) serializes
+// lock (LockSequence, keyed by company + resolved prefix) serializes
 // concurrent check-ins so two requests in the same period/merchant can't
 // compute the same next sequence number.
+// Date tokens render in the merchant timezone (company-level formats without a merchant use the default zone).
 func generateMedicalRecordNo(ctx context.Context, q *sqlcgen.Queries, companyID, merchantID pgtype.UUID) (string, error) {
 	format, err := q.GetMRNFormat(ctx, sqlcgen.GetMRNFormatParams{MerchantID: merchantID, CompanyID: companyID})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -293,12 +294,16 @@ func generateMedicalRecordNo(ctx context.Context, q *sqlcgen.Queries, companyID,
 		merchantCode = merchant.Code
 	}
 
-	now := time.Now()
+	tzLoc, err := merchantLocation(ctx, q, merchantID)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().In(tzLoc)
 	prefix := renderMRNTokens(prefixTpl, now, merchantCode)
 	suffix := renderMRNTokens(suffixTpl, now, merchantCode)
 
 	lockKey := prefix + "|" + suffix
-	if err := q.LockMRNSequence(ctx, sqlcgen.LockMRNSequenceParams{Column1: companyID.String(), Column2: lockKey}); err != nil {
+	if err := q.LockSequence(ctx, sqlcgen.LockSequenceParams{Column1: companyID.String(), Column2: lockKey}); err != nil {
 		return "", err
 	}
 
