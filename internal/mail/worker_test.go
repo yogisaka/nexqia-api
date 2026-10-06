@@ -35,13 +35,20 @@ type failedCall struct {
 type fakeStore struct {
 	rows   []ClaimedEmail
 	batch  int32
+	claims int
 	sent   []pgtype.UUID
 	failed []failedCall
 }
 
+// Claim hands out up to batch queued rows, like the real store does with due
+// rows, and records every call.
 func (f *fakeStore) Claim(_ context.Context, batch int32) ([]ClaimedEmail, error) {
 	f.batch = batch
-	return f.rows, nil
+	f.claims++
+	n := min(int(batch), len(f.rows))
+	out := f.rows[:n]
+	f.rows = f.rows[n:]
+	return out, nil
 }
 
 func (f *fakeStore) MarkSent(_ context.Context, id pgtype.UUID) error {
@@ -67,8 +74,8 @@ func TestProcessBatch_SuccessMarksSent(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("processBatch = %d, %v", n, err)
 	}
-	if store.batch != 20 {
-		t.Errorf("claim batch = %d, want MailBatchSize 20", store.batch)
+	if store.batch != 1 {
+		t.Errorf("claim batch = %d, want 1 row per claim", store.batch)
 	}
 	if len(sender.sent) != 1 || sender.sent[0].To != "andi@gmail.com" || sender.sent[0].Subject != "S" {
 		t.Fatalf("unexpected sends: %+v", sender.sent)
@@ -115,5 +122,32 @@ func TestRetryDelay(t *testing.T) {
 		if got := retryDelay(attempts); got != want {
 			t.Errorf("retryDelay(%d) = %v, want %v", attempts, got, want)
 		}
+	}
+}
+
+func TestProcessBatch_ClaimsOneRowPerSend(t *testing.T) {
+	store := &fakeStore{rows: []ClaimedEmail{{ID: testUUID(5), To: "a@b.id"}, {ID: testUUID(6), To: "c@d.id"}, {ID: testUUID(7), To: "e@f.id"}}}
+	n, err := processBatch(context.Background(), store, &fakeSender{}, workerCfg, time.Now)
+	if err != nil || n != 3 {
+		t.Fatalf("processBatch = %d, %v; want 3", n, err)
+	}
+	// 3 claims of one row each + 1 empty claim that ends the tick.
+	if store.claims != 4 || store.batch != 1 || len(store.sent) != 3 {
+		t.Fatalf("claims=%d batch=%d sent=%d, want 4/1/3", store.claims, store.batch, len(store.sent))
+	}
+}
+
+func TestProcessBatch_StopsAtBatchSize(t *testing.T) {
+	store := &fakeStore{rows: []ClaimedEmail{
+		{ID: testUUID(8), To: "a@b.id"}, {ID: testUUID(9), To: "c@d.id"}, {ID: testUUID(10), To: "e@f.id"},
+	}}
+	cfg := workerCfg
+	cfg.MailBatchSize = 2
+	n, err := processBatch(context.Background(), store, &fakeSender{}, cfg, time.Now)
+	if err != nil || n != 2 {
+		t.Fatalf("processBatch = %d, %v; want 2 (MailBatchSize)", n, err)
+	}
+	if store.claims != 2 || len(store.sent) != 2 || len(store.rows) != 1 {
+		t.Fatalf("claims=%d sent=%d left=%d, want 2/2/1", store.claims, len(store.sent), len(store.rows))
 	}
 }

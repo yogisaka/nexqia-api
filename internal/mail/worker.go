@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	// claimLockSeconds must outlive one send (smtpDialTimeout 15s + smtpSessionTimeout 60s): rows are claimed one per send, so a lock never expires while its row waits in line.
 	claimLockSeconds = 120
 	purgeInterval    = time.Hour
 	maxRetryDelay    = 60 * time.Minute
@@ -80,33 +81,50 @@ func RunWorker(ctx context.Context, pool *pgxpool.Pool, sender Sender, cfg confi
 	}
 }
 
-// RunOnce claims one batch and tries to send each row; it returns how many rows
-// were claimed.
+// RunOnce sends up to MailBatchSize due rows, one claim per send; it returns
+// how many rows were claimed.
 func RunOnce(ctx context.Context, pool *pgxpool.Pool, sender Sender, cfg config.Config) (int, error) {
 	return processBatch(ctx, pgStore{pool: pool, maxAttempts: int32(cfg.MailMaxAttempts)}, sender, cfg, time.Now)
 }
 
+// processBatch claims ONE row per send, up to cfg.MailBatchSize sends per
+// tick, and stops early when nothing is due. Claiming a whole batch up front
+// let rows at the end of the batch outlive their lock while earlier rows were
+// still being sent, so another API instance re-claimed and sent them again
+// (spec 2026-10-06-email-outbox-claim §2.1).
 func processBatch(ctx context.Context, store outboxStore, sender Sender, cfg config.Config, now func() time.Time) (int, error) {
-	rows, err := store.Claim(ctx, int32(cfg.MailBatchSize))
-	if err != nil {
-		return 0, err
-	}
-	for _, e := range rows {
-		sendErr := safeSend(ctx, sender, Message{To: e.To, Subject: e.Subject, Text: e.Text, HTML: e.HTML})
-		if sendErr == nil {
-			if err := store.MarkSent(ctx, e.ID); err != nil {
-				slog.Warn("email worker: mark sent failed", "id", e.ID.String(), "error", err)
-			}
-			continue
+	claimed := 0
+	for claimed < cfg.MailBatchSize && ctx.Err() == nil {
+		rows, err := store.Claim(ctx, 1)
+		if err != nil {
+			return claimed, err
 		}
-		// SMTP replies may echo the recipient; the log only gets the masked form.
-		slog.Warn("email send failed", "id", e.ID.String(), "kind", e.Kind, "to", maskAddress(e.To),
-			"attempt", e.Attempts+1, "error", strings.ReplaceAll(sendErr.Error(), e.To, maskAddress(e.To)))
-		if err := store.MarkFailed(ctx, e.ID, sendErr.Error(), now().Add(retryDelay(e.Attempts)), int32(cfg.MailMaxAttempts)); err != nil {
-			slog.Warn("email worker: mark failed failed", "id", e.ID.String(), "error", err)
+		if len(rows) == 0 {
+			break
+		}
+		for _, e := range rows {
+			claimed++
+			deliver(ctx, store, sender, cfg, now, e)
 		}
 	}
-	return len(rows), nil
+	return claimed, nil
+}
+
+// deliver sends one claimed row and records the outcome.
+func deliver(ctx context.Context, store outboxStore, sender Sender, cfg config.Config, now func() time.Time, e ClaimedEmail) {
+	sendErr := safeSend(ctx, sender, Message{To: e.To, Subject: e.Subject, Text: e.Text, HTML: e.HTML})
+	if sendErr == nil {
+		if err := store.MarkSent(ctx, e.ID); err != nil {
+			slog.Warn("email worker: mark sent failed", "id", e.ID.String(), "error", err)
+		}
+		return
+	}
+	// SMTP replies may echo the recipient; the log only gets the masked form.
+	slog.Warn("email send failed", "id", e.ID.String(), "kind", e.Kind, "to", maskAddress(e.To),
+		"attempt", e.Attempts+1, "error", strings.ReplaceAll(sendErr.Error(), e.To, maskAddress(e.To)))
+	if err := store.MarkFailed(ctx, e.ID, sendErr.Error(), now().Add(retryDelay(e.Attempts)), int32(cfg.MailMaxAttempts)); err != nil {
+		slog.Warn("email worker: mark failed failed", "id", e.ID.String(), "error", err)
+	}
 }
 
 // retryDelay is 2^(attempts+1) minutes, capped at an hour: 2, 4, 8, 16, 32, 60, …

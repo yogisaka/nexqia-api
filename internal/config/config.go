@@ -144,7 +144,7 @@ type Config struct {
 	AppBaseURL string
 
 	// MailPollIntervalSeconds/MailBatchSize/MailMaxAttempts/MailOutboxRetentionDays —
-	// outbox worker tunables: poll period, rows claimed per poll, send attempts
+	// outbox worker tunables: poll period, maximum sends per poll (one row claimed per send), send attempts
 	// before a row is given up as failed, and days sent/failed rows are kept.
 	MailPollIntervalSeconds int
 	MailBatchSize           int
