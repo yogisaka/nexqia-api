@@ -106,6 +106,20 @@ func resolveFlow(ctx context.Context, q *sqlcgen.Queries, merchantID, department
 	}
 
 	if len(flows) == 0 {
+		// Serialize auto-provisioning of the built-in flow
+		// (uq_queue_flow_default): a concurrent first registration waits
+		// here, then sees the committed flow on the re-list (spec
+		// 2026-10-06-daily-numbering §3.2).
+		if err := q.LockSequence(ctx, sqlcgen.LockSequenceParams{Column1: merchantID.String(), Column2: "queue-flow-default"}); err != nil {
+			return sqlcgen.OperationsQueueFlow{}, nil, err
+		}
+		flows, err = q.ListActiveQueueFlows(ctx, merchantID)
+		if err != nil {
+			return sqlcgen.OperationsQueueFlow{}, nil, err
+		}
+	}
+
+	if len(flows) == 0 {
 		companyID, err := q.GetMerchantCompanyID(ctx, merchantID)
 		if err != nil {
 			return sqlcgen.OperationsQueueFlow{}, nil, err
@@ -211,9 +225,10 @@ func scheduleRoomCounter(ctx context.Context, q *sqlcgen.Queries, stage sqlcgen.
 
 // issueTicket creates the queue row for one stage of a journey (spec §4):
 // number "<prefix>-NNN" or legacy "<poli code>-NNN" when prefix is NULL, NNN =
-// today's ticket count for the stage (merchant timezone) + 1; queue_type from
-// stage.kind; checked_in_at = now(). journey may be nil for legacy
-// one-shot tickets created without a journey. For a physician stage the
+// today's ticket count for the stage (merchant timezone) + 1, counted under
+// the queue-stage advisory lock so concurrent issues never share a number;
+// queue_type from stage.kind; checked_in_at = now(). journey must be non-nil
+// (every caller passes the admission's journey). For a physician stage the
 // ticket's counter is resolved from the schedule room binding.
 func issueTicket(ctx context.Context, q *sqlcgen.Queries, journey *sqlcgen.OperationsQueueJourney, stage sqlcgen.OperationsQueueStage, counterID pgtype.UUID) (sqlcgen.OperationsQueue, error) {
 	admission, err := q.GetAdmissionByID(ctx, journey.AdmissionID)
@@ -234,6 +249,9 @@ func issueTicket(ctx context.Context, q *sqlcgen.Queries, journey *sqlcgen.Opera
 		return sqlcgen.OperationsQueue{}, err
 	}
 	startOfDay := localDayStart(time.Now(), loc)
+	if err := lockDailySequence(ctx, q, journey.MerchantID, "queue-stage:"+stage.ID.String(), startOfDay); err != nil {
+		return sqlcgen.OperationsQueue{}, err
+	}
 	n, err := q.CountTicketsForStageSince(ctx, sqlcgen.CountTicketsForStageSinceParams{
 		StageID: stage.ID, CreatedAt: pgtype.Timestamptz{Time: startOfDay, Valid: true},
 	})
@@ -303,8 +321,17 @@ func advanceStageTicket(ctx context.Context, q *sqlcgen.Queries, ticket sqlcgen.
 		if nextStage == nil {
 			return res, nil
 		}
-		seq, err := q.CountTodayQueueByType(ctx, sqlcgen.CountTodayQueueByTypeParams{
+		loc, err := merchantLocation(ctx, q, ticket.MerchantID)
+		if err != nil {
+			return res, err
+		}
+		dayStart := localDayStart(time.Now(), loc)
+		if err := lockDailySequence(ctx, q, ticket.MerchantID, "queue-legacy:"+nextType+":"+ticket.DepartmentID.String(), dayStart); err != nil {
+			return res, err
+		}
+		seq, err := q.CountQueueByTypeSince(ctx, sqlcgen.CountQueueByTypeSinceParams{
 			MerchantID: ticket.MerchantID, QueueType: nextType, DepartmentID: ticket.DepartmentID,
+			Since: pgtype.Timestamptz{Time: dayStart, Valid: true},
 		})
 		if err != nil {
 			return res, err

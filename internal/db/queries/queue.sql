@@ -26,16 +26,20 @@ ORDER BY queue_type, created_at
 LIMIT 100;
 
 -- name: GetOldestWaitingQueue :one
+-- SKIP LOCKED: two stage-less counters calling at once never pull the same ticket (pattern of CallNextFlowTicket).
 SELECT * FROM operations.queue
 WHERE merchant_id = $1 AND queue_type = $2
   AND (sqlc.narg('department_id')::uuid IS NULL OR department_id = sqlc.narg('department_id'))
   AND status = 'waiting'
 ORDER BY created_at
-LIMIT 1;
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
 
--- name: CountTodayQueueByType :one
+-- name: CountQueueByTypeSince :one
+-- Legacy (journey-less) ticket sequence; since = the merchant's local
+-- midnight (spec 2026-10-06-daily-numbering §3.3).
 SELECT count(*) FROM operations.queue
-WHERE merchant_id = $1 AND queue_type = $2 AND department_id = $3 AND created_at::date = current_date;
+WHERE merchant_id = $1 AND queue_type = $2 AND department_id = $3 AND created_at >= sqlc.arg('since')::timestamptz;
 
 -- name: UpdateQueueStatus :one
 UPDATE operations.queue
