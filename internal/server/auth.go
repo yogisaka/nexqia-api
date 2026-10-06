@@ -642,15 +642,6 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 			return
 		}
-		if hasher.NeedsRehash(user.PasswordHash) {
-			if newHash, rehashErr := hasher.Hash(c.Request.Context(), req.Password); rehashErr == nil {
-				_ = q.UpdateAppUserPassword(c.Request.Context(), sqlcgen.UpdateAppUserPasswordParams{
-					ID: user.ID, PasswordHash: newHash, UpdatedBy: user.ID,
-				})
-			}
-		}
-		_ = q.TouchAppUserLastLogin(c.Request.Context(), user.ID)
-
 		// TOTP check happens once here, before merchant enumeration — password is
 		// already confirmed above, so it's safe to reveal 2FA-enrollment status now
 		// (spec §4). SelectMerchantHandler needs no separate check as a result.
@@ -664,6 +655,15 @@ func LoginHandler(secret string, limiter *ratelimit.Limiter, cfg config.Config, 
 				return
 			}
 		}
+
+		if hasher.NeedsRehash(user.PasswordHash) {
+			if newHash, rehashErr := hasher.Hash(c.Request.Context(), req.Password); rehashErr == nil {
+				_ = q.UpdateAppUserPassword(c.Request.Context(), sqlcgen.UpdateAppUserPasswordParams{
+					ID: user.ID, PasswordHash: newHash, UpdatedBy: user.ID,
+				})
+			}
+		}
+		_ = q.TouchAppUserLastLogin(c.Request.Context(), user.ID)
 
 		merchants, err := session.ListUserMerchants(c.Request.Context(), TxFromContext(c), user.ID)
 		if err != nil {
