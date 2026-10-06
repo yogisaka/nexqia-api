@@ -315,7 +315,11 @@ func CreateAdmissionHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	dayStart := localDayStart(time.Now(), loc)
+	dayStart, err := txDayStart(ctx, q, loc)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	if err := lockDailySequence(ctx, q, merchantID, "visit:"+departmentID.String(), dayStart); err != nil {
 		respondInternalError(c, err)
 		return

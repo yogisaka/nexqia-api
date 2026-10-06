@@ -51,3 +51,15 @@ func lockDailySequence(ctx context.Context, q *sqlcgen.Queries, merchantID pgtyp
 		Column2: scope + ":" + dayStart.Format("2006-01-02"),
 	})
 }
+
+// txDayStart is the merchant-local midnight of the current transaction's
+// start (now(), what admission_at / queue.created_at defaults record): a
+// request that crosses midnight numbers its row on the day the row is
+// stamped with. Use it for sequences whose rows take the DB default time.
+func txDayStart(ctx context.Context, q *sqlcgen.Queries, loc *time.Location) (time.Time, error) {
+	ts, err := q.TransactionTime(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return localDayStart(ts.Time, loc), nil
+}

@@ -20,6 +20,12 @@ LIMIT 1;
 -- automatically at commit/rollback of the caller's request transaction.
 SELECT pg_advisory_xact_lock(hashtext($1::text || ':' || $2::text));
 
+-- name: TransactionTime :one
+-- now() = start of the current transaction — the instant admission_at /
+-- queue.created_at defaults record. Daily sequences derive their local day
+-- from it, so a number and its row's timestamp fall on the same day.
+SELECT now()::timestamptz AS tx_time;
+
 -- name: MaxPersonMRNSeqAt :one
 -- seq_start/seq_width = 1-based start position and digit width of the {SEQ:N}
 -- slot inside medical_record_no once the format's other tokens are resolved;

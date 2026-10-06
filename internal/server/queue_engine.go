@@ -260,7 +260,10 @@ func issueTicket(ctx context.Context, q *sqlcgen.Queries, journey *sqlcgen.Opera
 	if err != nil {
 		return sqlcgen.OperationsQueue{}, err
 	}
-	startOfDay := localDayStart(time.Now(), loc)
+	startOfDay, err := txDayStart(ctx, q, loc)
+	if err != nil {
+		return sqlcgen.OperationsQueue{}, err
+	}
 	if err := lockDailySequence(ctx, q, journey.MerchantID, "queue-stage:"+stage.ID.String(), startOfDay); err != nil {
 		return sqlcgen.OperationsQueue{}, err
 	}
@@ -337,7 +340,10 @@ func advanceStageTicket(ctx context.Context, q *sqlcgen.Queries, ticket sqlcgen.
 		if err != nil {
 			return res, err
 		}
-		dayStart := localDayStart(time.Now(), loc)
+		dayStart, err := txDayStart(ctx, q, loc)
+		if err != nil {
+			return res, err
+		}
 		if err := lockDailySequence(ctx, q, ticket.MerchantID, "queue-legacy:"+nextType+":"+ticket.DepartmentID.String(), dayStart); err != nil {
 			return res, err
 		}
