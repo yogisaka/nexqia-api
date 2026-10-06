@@ -79,9 +79,14 @@ func DisplayScheduleHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "department_id query param is required"})
 		return
 	}
-	today := time.Now()
-	dayOfWeek := int16(today.Weekday())
 	q := sqlcgen.New(TxFromContext(c))
+	loc, err := merchantLocation(c, q, merchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	today := localDayStart(time.Now(), loc)
+	dayOfWeek := int16(today.Weekday())
 	schedules, err := q.ListActiveSchedulesForDepartmentToday(c.Request.Context(), sqlcgen.ListActiveSchedulesForDepartmentTodayParams{
 		MerchantID: merchantID, DepartmentID: departmentID, DayOfWeek: dayOfWeek,
 		EffectiveFrom: pgtype.Date{Time: today, Valid: true},

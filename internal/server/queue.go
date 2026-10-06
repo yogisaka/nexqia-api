@@ -510,6 +510,7 @@ func ListQueueBoardHandler(c *gin.Context) {
 	board, err := q.ListQueueBoard(c.Request.Context(), sqlcgen.ListQueueBoardParams{
 		MerchantID: merchantID, QueueType: queueType, Date: date, Statuses: statuses,
 		Search: optText(c.Query("search")), Limit: limit, Offset: offset,
+		Tz: merchantTZ(c.Request.Context(), q, merchantID),
 	})
 	if err != nil {
 		respondInternalError(c, err)
