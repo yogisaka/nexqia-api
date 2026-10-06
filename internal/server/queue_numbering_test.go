@@ -130,3 +130,29 @@ func TestQueueNumbering_LegacyCallNextOnce(t *testing.T) {
 		t.Fatalf("ticket status = %s, want called", status)
 	}
 }
+
+// TestQueueNumbering_AllFlowsInactive409 — a merchant whose only flow (the
+// built-in default) was deactivated gets 409 "no queue flow configured" on
+// registration, not a 500 from re-creating the default.
+func TestQueueNumbering_AllFlowsInactive409(t *testing.T) {
+	env := dnNewEnv(t, "inactive", dnTimezone)
+	deptID := env.seedDepartment(t, "QI")
+	env.qeAdmit(t, deptID, env.seedPerson(t, "First"), "", "", http.StatusCreated)
+	if _, err := env.pool.Exec(context.Background(),
+		"UPDATE operations.queue_flow SET is_active = false WHERE merchant_id = $1", env.merchantID); err != nil {
+		t.Fatalf("deactivate flows: %v", err)
+	}
+	code, resp := qeRequest(t, env, http.MethodPost, "/api/v1/admissions",
+		map[string]string{"person_id": env.seedPerson(t, "Second"), "department_id": deptID})
+	if code != http.StatusConflict || resp["error"] != "no queue flow configured" {
+		t.Fatalf("registration with every flow inactive = %d %v, want 409 no queue flow configured", code, resp)
+	}
+	var flows int
+	if err := env.pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM operations.queue_flow WHERE merchant_id = $1 AND deleted_at IS NULL", env.merchantID).Scan(&flows); err != nil {
+		t.Fatalf("count flows: %v", err)
+	}
+	if flows != 1 {
+		t.Fatalf("flows = %d, want 1 (no new default created)", flows)
+	}
+}

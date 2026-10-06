@@ -8,6 +8,11 @@ SELECT * FROM operations.queue_flow
 WHERE merchant_id = $1 AND is_active AND deleted_at IS NULL
 ORDER BY name;
 
+-- name: MerchantHasQueueFlow :one
+-- Any non-deleted flow, active or not: only a merchant with no flow at all
+-- gets the built-in default flow auto-provisioned (resolveFlow).
+SELECT EXISTS (SELECT 1 FROM operations.queue_flow WHERE merchant_id = $1 AND deleted_at IS NULL);
+
 -- name: GetMerchantCompanyID :one
 SELECT company_id FROM core.merchant WHERE id = $1;
 

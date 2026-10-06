@@ -117,6 +117,18 @@ func resolveFlow(ctx context.Context, q *sqlcgen.Queries, merchantID, department
 		if err != nil {
 			return sqlcgen.OperationsQueueFlow{}, nil, err
 		}
+		if len(flows) == 0 {
+			// Every flow (the default included) was deactivated: creating
+			// another default would violate uq_queue_flow_default — report
+			// "no queue flow" (409) instead of a 500.
+			hasAny, err := q.MerchantHasQueueFlow(ctx, merchantID)
+			if err != nil {
+				return sqlcgen.OperationsQueueFlow{}, nil, err
+			}
+			if hasAny {
+				return sqlcgen.OperationsQueueFlow{}, nil, errNoQueueFlow
+			}
+		}
 	}
 
 	if len(flows) == 0 {
