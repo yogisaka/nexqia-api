@@ -1,0 +1,24 @@
+{
+  "as_of": "2026-10",
+  "status": "mandatory",
+  "recommended_for": ["klinik_pratama", "klinik_utama", "rumah_sakit"],
+  "support": [
+    {"target": "who", "level": "native"},
+    {"target": "bpjs_pcare", "level": "native"},
+    {"target": "bpjs_inacbg", "level": "native"},
+    {"target": "satusehat", "level": "native"},
+    {"target": "kemenkes_rl", "level": "native"}
+  ],
+  "pros": [
+    "Diterima semua sistem nasional: BPJS PCare, INA-CBG, SATUSEHAT, dan pelaporan Kemenkes",
+    "Dokter dan petugas koding sudah terbiasa"
+  ],
+  "cons": [
+    "Tidak dikembangkan lagi oleh WHO",
+    "Detail klinis terbatas dibanding ICD-11"
+  ],
+  "sources": [
+    {"label": "WHO ICD-10 Browser", "url": "https://icd.who.int/browse10/2019/en"},
+    {"label": "SATUSEHAT Platform", "url": "https://satusehat.kemkes.go.id/platform/docs/"}
+  ]
+}

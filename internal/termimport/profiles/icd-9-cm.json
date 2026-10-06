@@ -1,0 +1,23 @@
+{
+  "as_of": "2026-10",
+  "status": "mandatory",
+  "recommended_for": ["klinik_pratama", "klinik_utama", "rumah_sakit"],
+  "support": [
+    {"target": "who", "level": "none", "note": "Klasifikasi Amerika Serikat, bukan terbitan WHO"},
+    {"target": "bpjs_pcare", "level": "native"},
+    {"target": "bpjs_inacbg", "level": "native"},
+    {"target": "satusehat", "level": "native"},
+    {"target": "kemenkes_rl", "level": "native"}
+  ],
+  "pros": [
+    "Standar kode tindakan untuk INA-CBG dan SATUSEHAT",
+    "Dipakai luas oleh petugas koding di Indonesia"
+  ],
+  "cons": [
+    "Tidak diperbarui sejak 2013",
+    "Bukan terbitan WHO"
+  ],
+  "sources": [
+    {"label": "CMS ICD-9-CM v32", "url": "https://www.cms.gov/medicare/coding/icd9providerdiagnosticcodes/codes"}
+  ]
+}

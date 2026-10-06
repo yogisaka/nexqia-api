@@ -1,0 +1,26 @@
+{
+  "as_of": "2026-10",
+  "status": "future_ready",
+  "recommended_for": ["klinik_pratama", "klinik_utama", "rumah_sakit"],
+  "support": [
+    {"target": "who", "level": "native"},
+    {"target": "bpjs_pcare", "level": "via_mapping", "note": "ICD-10 tetap wajib untuk klaim"},
+    {"target": "bpjs_inacbg", "level": "via_mapping", "note": "ICD-10 tetap wajib untuk klaim"},
+    {"target": "satusehat", "level": "via_mapping", "note": "ICD-10 tetap dikirim"},
+    {"target": "kemenkes_rl", "level": "via_mapping"}
+  ],
+  "pros": [
+    "Lebih rinci: kode tambahan untuk keparahan, lateralitas, dan penyebab",
+    "Siap untuk transisi nasional ke ICD-11"
+  ],
+  "cons": [
+    "Belum diwajibkan di Indonesia",
+    "Sekitar 10% diagnosis perlu dipilih manual saat dikonversi ke ICD-10",
+    "Judul hanya bahasa Inggris; terjemahan resmi belum ada"
+  ],
+  "warning": "Klaim BPJS dan SATUSEHAT tetap memakai ICD-10. Setiap diagnosis disimpan dengan kode ganda; sebagian perlu dipilih manual.",
+  "sources": [
+    {"label": "WHO ICD-11 Browser", "url": "https://icd.who.int/browse/2026-01/mms/en"},
+    {"label": "Lisensi ICD-11 (CC BY-ND 3.0 IGO)", "url": "https://icd.who.int/en/docs/icd11-license.pdf"}
+  ]
+}
