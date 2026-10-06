@@ -797,6 +797,10 @@ func RefreshHandler(cfg config.Config) gin.HandlerFunc {
 			clearRefreshCookie(c, cfg)
 			switch {
 			case errors.Is(err, session.ErrNoSession), errors.Is(err, session.ErrSessionExpired), errors.Is(err, session.ErrSessionRevoked):
+				// session.Refresh revokes the device chain (reuse) or the expired
+				// token before returning these errors — security effects that must
+				// persist despite the 401 (spec 2026-10-06-request-tx-finalization §4 #2).
+				KeepTxOnError(c)
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or revoked, please log in again"})
 			default:
 				respondInternalError(c, err)

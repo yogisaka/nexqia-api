@@ -14,6 +14,7 @@ const txContextKey = "db_tx"
 // TenantMiddleware opens one transaction per request and binds Postgres RLS session
 // variables via set_config(..., true) (transaction-scoped, equivalent to SET LOCAL) —
 // required under PgBouncer transaction pooling, see docs/15-repo-infra-plan.md §6.
+// Commit/rollback and response buffering are handled by RunRequestTx (txfinish.go).
 func TenantMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		companyID := c.GetHeader("X-Company-ID")
@@ -41,16 +42,7 @@ func TenantMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 			return
 		}
 
-		c.Set(txContextKey, tx)
-		c.Next()
-
-		if c.IsAborted() || len(c.Errors) > 0 {
-			_ = tx.Rollback(ctx)
-			return
-		}
-		if err := tx.Commit(ctx); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to commit transaction"})
-		}
+		RunRequestTx(c, tx)
 	}
 }
 
@@ -86,15 +78,6 @@ func CompanyOnlyMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 			return
 		}
 
-		c.Set(txContextKey, tx)
-		c.Next()
-
-		if c.IsAborted() || len(c.Errors) > 0 {
-			_ = tx.Rollback(ctx)
-			return
-		}
-		if err := tx.Commit(ctx); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to commit transaction"})
-		}
+		RunRequestTx(c, tx)
 	}
 }

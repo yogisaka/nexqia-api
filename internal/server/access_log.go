@@ -4,6 +4,7 @@ package server
 
 import (
 	"log"
+	"net/http"
 	"net/netip"
 
 	"github.com/gin-gonic/gin"
@@ -23,14 +24,23 @@ func setAccessLogPersonID(c *gin.Context, id pgtype.UUID) {
 }
 
 // AccessLog records one core.access_log row per request, AFTER the handler ran, inside
-// the request transaction (an aborted request rolls back and is not recorded; a 403
-// written with c.JSON is recorded with its status). It never records the query string,
+// the request transaction (an aborted request rolls back and is not recorded; a response
+// >= 400 written with c.JSON is recorded with its status while the handler's own writes
+// are rolled back — RollbackHandlerWrites). It never records the query string,
 // headers or body. idParam names the route param holding resource_id ("" = none).
 func AccessLog(resource, action, idParam string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
 		if c.IsAborted() {
 			return
+		}
+		if c.Writer.Status() >= http.StatusBadRequest {
+			// The response is an error: drop the handler's own writes, keep the
+			// audit row written below (spec 2026-10-06-request-tx-finalization §4 #1).
+			if err := RollbackHandlerWrites(c); err != nil {
+				log.Printf("access log: rollback handler writes failed: resource=%s action=%s: %v", resource, action, err)
+				return
+			}
 		}
 		var personID pgtype.UUID
 		if v, ok := c.Get(accessLogPersonIDKey); ok {

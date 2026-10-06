@@ -184,17 +184,16 @@ func PlatformAdminRefreshHandler(cfg config.Config) gin.HandlerFunc {
 			clearPlatformRefreshCookie(c, cfg)
 			switch {
 			case errors.Is(err, platformsession.ErrNoSession), errors.Is(err, platformsession.ErrSessionExpired), errors.Is(err, platformsession.ErrSessionRevoked):
+				KeepTxOnError(c)
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired or revoked, please log in again"})
 			default:
-				// AbortWithStatusJSON, NOT plain JSON — this branch means
-				// platformsession.Refresh failed after revoking the old refresh
-				// token in this SAME tx (e.g. Issue inside it errored); a plain
-				// c.JSON would commit that revocation and leave the device with
-				// no successor token. Aborting rolls the whole rotation back so
-				// the caller can retry with the still-valid old token. The 401
-				// branches above MUST stay plain c.JSON: their revocations
+				// abortInternalError rolls the whole rotation back (the old
+				// refresh token was already revoked in this SAME tx), so the
+				// caller can retry with the still-valid old token. The 401
+				// branch above calls KeepTxOnError: its revocations
 				// (reuse-detection device-chain revoke, expired-token revoke)
-				// are security effects meant to persist.
+				// are security effects meant to persist (spec
+				// 2026-10-06-request-tx-finalization §4 #3).
 				abortInternalError(c, err)
 			}
 			return

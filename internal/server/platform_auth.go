@@ -55,16 +55,7 @@ func PlatformTxMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to open transaction"})
 			return
 		}
-		c.Set(txContextKey, tx)
-		c.Next()
-
-		if c.IsAborted() || len(c.Errors) > 0 {
-			_ = tx.Rollback(ctx)
-			return
-		}
-		if err := tx.Commit(ctx); err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to commit transaction"})
-		}
+		RunRequestTx(c, tx)
 	}
 }
 
