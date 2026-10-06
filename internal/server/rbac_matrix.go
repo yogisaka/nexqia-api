@@ -555,12 +555,12 @@ func ListRoleChangeLogHandler(c *gin.Context) {
 }
 
 // ListUserRoleWidgetsHandler godoc
-// @Summary List the dashboard widget visibility overrides of the caller's active role
-// @Description Self-access allowed without PermRoleManage (pattern of ListUserPermissionsHandler). Role is taken from the token's active role id; legacy tokens without a role id get an empty list.
+// @Summary List the dashboard widget overrides of the caller's effective role
+// @Description Self only (another user's id → 404). merchant_id must equal the token's active merchant when the token has one. Role = the token's active role, else the user's default role at that merchant (same as permission checks); no role → empty list.
 // @Tags rbac
 // @Produce json
 // @Security BearerAuth
-// @Param id path string true "User UUID"
+// @Param id path string true "User UUID (must be the caller)"
 // @Param merchant_id query string true "Merchant UUID"
 // @Success 200 {object} apiResponse
 // @Failure 400 {object} apiErrorResponse
@@ -572,31 +572,25 @@ func ListUserRoleWidgetsHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if _, ok := parseUUID(c.Query("merchant_id")); !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "merchant_id query param required"})
-		return
-	}
-	q := sqlcgen.New(TxFromContext(c))
-	targetUser, err := q.GetAppUserByID(c.Request.Context(), userID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if userID != AuthUserID(c) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
+	merchantID, ok := parseUUID(c.Query("merchant_id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "merchant_id query param required"})
+		return
+	}
+	if active := AuthMerchantID(c); active.Valid && active != merchantID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "merchant_id does not match the active merchant"})
+		return
+	}
+	roleID, err := effectiveRoleID(c, sqlcgen.New(TxFromContext(c)), userID, merchantID)
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
-	if targetUser.CompanyID != AuthCompanyID(c) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-		return
-	}
-	if userID != AuthUserID(c) && !RequirePermission(c, PermUserManage) {
-		return
-	}
-	// Override of the caller's ACTIVE role only; legacy tokens without a
-	// role id get an empty list (frontend falls back to defaults).
 	data := []gin.H{}
-	roleID := AuthRoleID(c)
 	if roleID.Valid {
 		widgets, ok := roleWidgetOverrides(c, roleID)
 		if !ok {

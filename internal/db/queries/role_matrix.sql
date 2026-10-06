@@ -1,5 +1,5 @@
 -- name: ListRolesWithCounts :many
-SELECT r.id, r.company_id, r.name, r.description, r.is_system, r.requires_physician_data,
+SELECT sqlc.embed(r),
        COALESCE(p.perm_count, 0)::bigint AS permission_count,
        COALESCE(u.user_count, 0)::bigint AS user_count
 FROM core.role r

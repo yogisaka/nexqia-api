@@ -8828,18 +8828,18 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Self-access allowed without PermRoleManage (pattern of ListUserPermissionsHandler). Role is taken from the token's active role id; legacy tokens without a role id get an empty list.",
+                "description": "Self only (another user's id → 404). merchant_id must equal the token's active merchant when the token has one. Role = the token's active role, else the user's default role at that merchant (same as permission checks); no role → empty list.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "rbac"
                 ],
-                "summary": "List the dashboard widget visibility overrides of the caller's active role",
+                "summary": "List the dashboard widget overrides of the caller's effective role",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "User UUID",
+                        "description": "User UUID (must be the caller)",
                         "name": "id",
                         "in": "path",
                         "required": true

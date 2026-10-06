@@ -450,18 +450,13 @@ func CreateRoleHandler(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"data": role, "meta": gin.H{}})
 }
 
-// roleListItem mirrors the PascalCase shape previously returned by
-// ListRolesByCompany, plus the new usage counters. Backward compatible: old
-// consumers (UserDetailPage.tsx) keep their fields untouched.
+// roleListItem is the PascalCase core.role shape GET /roles returned before
+// 2026-10-05 — every CoreRole field, promoted from the embedded struct —
+// plus the usage counters (spec 2026-10-06-role-matrix-fixes A6).
 type roleListItem struct {
-	ID                    pgtype.UUID `json:"ID"`
-	CompanyID             pgtype.UUID `json:"CompanyID"`
-	Name                  string      `json:"Name"`
-	Description           pgtype.Text `json:"Description"`
-	IsSystem              bool        `json:"IsSystem"`
-	RequiresPhysicianData bool        `json:"RequiresPhysicianData"`
-	UserCount             int64       `json:"UserCount"`
-	PermissionCount       int64       `json:"PermissionCount"`
+	sqlcgen.CoreRole
+	UserCount       int64 `json:"UserCount"`
+	PermissionCount int64 `json:"PermissionCount"`
 }
 
 // ListRolesHandler godoc
@@ -489,16 +484,7 @@ func ListRolesHandler(c *gin.Context) {
 	}
 	items := make([]roleListItem, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, roleListItem{
-			ID:                    row.ID,
-			CompanyID:             row.CompanyID,
-			Name:                  row.Name,
-			Description:           row.Description,
-			IsSystem:              row.IsSystem,
-			RequiresPhysicianData: row.RequiresPhysicianData,
-			UserCount:             row.UserCount,
-			PermissionCount:       row.PermissionCount,
-		})
+		items = append(items, roleListItem{CoreRole: row.CoreRole, UserCount: row.UserCount, PermissionCount: row.PermissionCount})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{"limit": limit, "offset": offset}})
 }
@@ -1050,17 +1036,24 @@ func ListUserPermissionsHandler(c *gin.Context) {
 	if userID != AuthUserID(c) && !RequirePermission(c, PermUserManage) {
 		return
 	}
-	// Self-access with an active role + merchant in the token reports only the
-	// ACTIVE role's permission codes (spec 2026-10-01-active-role-scope-design
-	// §3.4) — the permission-driven frontend must match what the API actually
-	// enforces now. Everyone else (admin viewing another user, legacy tokens
-	// without mid/rid) still gets the union across all roles.
-	roleID := AuthRoleID(c)
-	if userID == AuthUserID(c) && merchantID == AuthMerchantID(c) && roleID.Valid {
-		codes, err := q.ListPermissionCodesByRole(c.Request.Context(), roleID)
+	// Self-access at the token's merchant reports exactly what the API
+	// enforces: the effective role — the active role, or the default role for
+	// tokens without one (spec 2026-10-06-role-matrix-fixes §2.5b). An admin
+	// viewing another user (or another merchant) still gets the union across
+	// all roles.
+	if userID == AuthUserID(c) && merchantID == AuthMerchantID(c) {
+		roleID, err := effectiveRoleID(c, q, userID, merchantID)
 		if err != nil {
 			respondInternalError(c, err)
 			return
+		}
+		codes := []string{}
+		if roleID.Valid {
+			codes, err = q.ListPermissionCodesByRole(c.Request.Context(), roleID)
+			if err != nil {
+				respondInternalError(c, err)
+				return
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"data": codes, "meta": gin.H{}})
 		return

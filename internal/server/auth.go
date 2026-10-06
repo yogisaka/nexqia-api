@@ -193,6 +193,19 @@ func RequirePermission(c *gin.Context, code string) bool {
 	return RequirePermissionForMerchant(c, code, merchantID)
 }
 
+// effectiveRoleID is the role whose permissions and widget overrides apply
+// to the caller at merchantID: the token's active role ("rid") when
+// present, otherwise the user's default role there (legacy tokens,
+// impersonation sessions). Invalid = the user holds no role there.
+func effectiveRoleID(c *gin.Context, q *sqlcgen.Queries, userID, merchantID pgtype.UUID) (pgtype.UUID, error) {
+	if roleID := AuthRoleID(c); roleID.Valid {
+		return roleID, nil
+	}
+	return q.DefaultUserRole(c.Request.Context(), sqlcgen.DefaultUserRoleParams{
+		UserID: userID, MerchantID: merchantID,
+	})
+}
+
 // RequirePermissionForMerchant checks the caller holds `code` at merchantID specifically —
 // use this for mutations on an existing resource so the permission check is scoped to the
 // resource being mutated, not whatever merchant the caller happened to declare in X-Merchant-ID.
@@ -204,20 +217,14 @@ func RequirePermission(c *gin.Context, code string) bool {
 // `return` immediately.
 func RequirePermissionForMerchant(c *gin.Context, code string, merchantID pgtype.UUID) bool {
 	q := sqlcgen.New(TxFromContext(c))
-	roleID := AuthRoleID(c)
+	roleID, err := effectiveRoleID(c, q, AuthUserID(c), merchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
 	if !roleID.Valid {
-		def, err := q.DefaultUserRole(c.Request.Context(), sqlcgen.DefaultUserRoleParams{
-			UserID: AuthUserID(c), MerchantID: merchantID,
-		})
-		if err != nil {
-			respondInternalError(c, err)
-			return false
-		}
-		if !def.Valid {
-			c.JSON(http.StatusForbidden, gin.H{"error": "missing permission: " + code})
-			return false
-		}
-		roleID = def
+		c.JSON(http.StatusForbidden, gin.H{"error": "missing permission: " + code})
+		return false
 	}
 	has, err := q.UserHasPermission(c.Request.Context(), sqlcgen.UserHasPermissionParams{
 		UserID: AuthUserID(c), MerchantID: merchantID, Code: code, RoleID: roleID,

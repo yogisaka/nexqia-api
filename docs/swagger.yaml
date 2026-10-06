@@ -6825,11 +6825,12 @@ paths:
       - rbac
   /users/{id}/widgets:
     get:
-      description: Self-access allowed without PermRoleManage (pattern of ListUserPermissionsHandler).
-        Role is taken from the token's active role id; legacy tokens without a role
-        id get an empty list.
+      description: Self only (another user's id → 404). merchant_id must equal the
+        token's active merchant when the token has one. Role = the token's active
+        role, else the user's default role at that merchant (same as permission checks);
+        no role → empty list.
       parameters:
-      - description: User UUID
+      - description: User UUID (must be the caller)
         in: path
         name: id
         required: true
@@ -6856,8 +6857,7 @@ paths:
             $ref: '#/definitions/server.apiErrorResponse'
       security:
       - BearerAuth: []
-      summary: List the dashboard widget visibility overrides of the caller's active
-        role
+      summary: List the dashboard widget overrides of the caller's effective role
       tags:
       - rbac
   /version:
