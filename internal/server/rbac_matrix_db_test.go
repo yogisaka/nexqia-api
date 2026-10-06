@@ -26,7 +26,7 @@ import (
 )
 
 // Role Matrix bulk endpoints (spec 2026-10-05-role-matrix-rbac-design §4):
-// PUT /roles/:id/permissions, PUT /roles/:id/widgets, POST /roles/:id/duplicate.
+// PUT /roles/:id/matrix (rbac_matrix_save_test.go), read endpoints, POST /roles/:id/duplicate.
 // Fixtures follow role_consolidation_db_test.go (fresh container, manual INSERTs);
 // requests go through the full router like user_conflict_test.go so TenantMiddleware,
 // auth and permission gating are exercised (RLS is NOT tested here).
@@ -193,11 +193,9 @@ func TestRoleMatrixReadEndpoints(t *testing.T) {
 	}
 
 	// Make one permission change first so matrix last_edit is populated.
-	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleTarget+"/permissions", map[string]any{
-		"permission_ids": []string{rmPermA, rmPermB, rmPermC},
-		"reason":         "ubah izin target",
-	}); rec.Code != http.StatusNoContent {
-		t.Fatalf("seed PUT expected 204, got %d: %s", rec.Code, rec.Body.String())
+	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleTarget+"/matrix",
+		rmSaveBody(rmMatrixRowVersion(t, router, token, rmRoleTarget), []string{rmPermA, rmPermB, rmPermC}, []map[string]any{}, "ubah izin target")); rec.Code != http.StatusOK {
+		t.Fatalf("seed PUT expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	// --- matrix shape ---
@@ -265,17 +263,19 @@ func TestRoleMatrixReadEndpoints(t *testing.T) {
 	}
 
 	// --- matrix widgets sorted by key ---
-	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleWidgets+"/widgets", map[string]any{
-		"widgets": []map[string]any{{"key": "queue", "visible": false}, {"key": "kpi", "visible": true}},
-		"reason":  "widget awal",
-	}); rec.Code != http.StatusNoContent {
-		t.Fatalf("widget PUT expected 204, got %d: %s", rec.Code, rec.Body.String())
+	widgetsBody := func(widgets []map[string]any, reason string) map[string]any {
+		return map[string]any{
+			"row_version": rmMatrixRowVersion(t, router, token, rmRoleWidgets), "name": "Matrix Widgets", "description": "",
+			"requires_physician_data": false, "permission_ids": []string{}, "widgets": widgets, "reason": reason,
+		}
 	}
-	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleWidgets+"/widgets", map[string]any{
-		"widgets": []map[string]any{{"key": "kpi", "visible": false}, {"key": "queue", "visible": true}},
-		"reason":  "widget ubah",
-	}); rec.Code != http.StatusNoContent {
-		t.Fatalf("widget PUT 2 expected 204, got %d: %s", rec.Code, rec.Body.String())
+	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleWidgets+"/matrix",
+		widgetsBody([]map[string]any{{"key": "queue", "visible": false}, {"key": "kpi", "visible": true}}, "widget awal")); rec.Code != http.StatusOK {
+		t.Fatalf("widget save expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+rmRoleWidgets+"/matrix",
+		widgetsBody([]map[string]any{{"key": "kpi", "visible": false}, {"key": "queue", "visible": true}}, "widget ubah")); rec.Code != http.StatusOK {
+		t.Fatalf("widget save 2 expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	rec = get("/api/v1/roles/" + rmRoleWidgets + "/matrix")
 	if rec.Code != http.StatusOK {
@@ -556,173 +556,6 @@ func roleMatrixPermCodes(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	}
 	sort.Strings(codes)
 	return codes
-}
-
-func TestRoleMatrixReplacePermissions(t *testing.T) {
-	ctx := context.Background()
-	pool, _ := roleMatrixPool(t, ctx)
-	roleMatrixSeed(t, ctx, pool)
-	redisClient := newTestRedisClient(t, ctx)
-	router := server.NewRouter(pool, redisClient, testConfig())
-
-	token, err := auth.GenerateToken(testJWTSecret, rmUser, rmCompany, rmMerchant, "", "matrix.admin", "matrix-device", time.Hour)
-	if err != nil {
-		t.Fatalf("generate token: %v", err)
-	}
-	put := func(roleID string, body map[string]any) *httptest.ResponseRecorder {
-		return roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+roleID+"/permissions", body)
-	}
-
-	// Start: 2 grants (perm a + b). PUT 3 ids = 2 lama + 1 baru → 204, DB tepat 3.
-	if rec := put(rmRoleTarget, map[string]any{
-		"permission_ids": []string{rmPermA, rmPermB, rmPermC},
-		"reason":         "tambah perm c",
-	}); rec.Code != http.StatusNoContent {
-		t.Fatalf("first PUT expected 204, got %d: %s", rec.Code, rec.Body.String())
-	}
-	// 3 = 2 grant lama (a, b) + 1 grant baru (c).
-	if got := roleMatrixPermCount(t, ctx, pool, rmRoleTarget); got != 3 {
-		t.Fatalf("want exactly 3 grants, got %d", got)
-	}
-	logs := roleMatrixLogChanges(t, ctx, pool, rmRoleTarget)
-	if len(logs) != 1 {
-		t.Fatalf("want exactly 1 role_change_log row, got %d", len(logs))
-	}
-	perm, _ := logs[0].Changes["permission"].(map[string]any)
-	if perm == nil {
-		t.Fatalf("changes.permission missing: %v", logs[0].Changes)
-	}
-	added := toStrings(perm["added"])
-	removed := toStrings(perm["removed"])
-	// added = baru − lama = [c]; removed = lama − baru = [].
-	if len(added) != 1 || added[0] != "test.rm.perm.c" {
-		t.Fatalf("want added [test.rm.perm.c], got %v", added)
-	}
-	if len(removed) != 0 {
-		t.Fatalf("want removed [], got %v", removed)
-	}
-	if logs[0].Reason != "tambah perm c" {
-		t.Fatalf("want reason %q, got %q", "tambah perm c", logs[0].Reason)
-	}
-
-	// Idempotent: PUT the same set (different reason) → 204, NO new log row (total stays 1).
-	if rec := put(rmRoleTarget, map[string]any{
-		"permission_ids": []string{rmPermA, rmPermB, rmPermC},
-		"reason":         "ulang set sama",
-	}); rec.Code != http.StatusNoContent {
-		t.Fatalf("idempotent PUT expected 204, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if got := roleMatrixLogCount(t, ctx, pool, rmRoleTarget); got != 1 {
-		t.Fatalf("idempotent PUT must not log; want 1 log row, got %d", got)
-	}
-	if got := roleMatrixPermCount(t, ctx, pool, rmRoleTarget); got != 3 {
-		t.Fatalf("want still 3 grants, got %d", got)
-	}
-
-	// reason kosong → 400, DB tak berubah.
-	if rec := put(rmRoleTarget, map[string]any{
-		"permission_ids": []string{rmPermA},
-		"reason":         "",
-	}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("empty reason expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if got := roleMatrixPermCount(t, ctx, pool, rmRoleTarget); got != 3 {
-		t.Fatalf("failed PUT must not write; want 3 grants, got %d", got)
-	}
-
-	// Id tak dikenal (UUID valid tapi bukan katalog) → 400 tanpa write.
-	if rec := put(rmRoleTarget, map[string]any{
-		"permission_ids": []string{rmPermA, "99999999-9999-9999-9999-999999999999"},
-		"reason":         "unknown id",
-	}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("unknown id expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if got := roleMatrixPermCount(t, ctx, pool, rmRoleTarget); got != 3 {
-		t.Fatalf("unknown-id PUT must not write; want 3 grants, got %d", got)
-	}
-
-	// permission_ids duplikat → 400 tanpa write.
-	if rec := put(rmRoleTarget, map[string]any{
-		"permission_ids": []string{rmPermA, rmPermA},
-		"reason":         "dup",
-	}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("duplicate ids expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if got := roleMatrixPermCount(t, ctx, pool, rmRoleTarget); got != 3 {
-		t.Fatalf("duplicate-id PUT must not write; want 3 grants, got %d", got)
-	}
-	if got := roleMatrixLogCount(t, ctx, pool, rmRoleTarget); got != 1 {
-		t.Fatalf("want still 1 log row after failures, got %d", got)
-	}
-
-	// Role soft-deleted → 404.
-	if rec := put(rmRoleDeleted, map[string]any{
-		"permission_ids": []string{rmPermA},
-		"reason":         "deleted",
-	}); rec.Code != http.StatusNotFound {
-		t.Fatalf("soft-deleted role expected 404, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRoleMatrixWidgets(t *testing.T) {
-	ctx := context.Background()
-	pool, _ := roleMatrixPool(t, ctx)
-	roleMatrixSeed(t, ctx, pool)
-	redisClient := newTestRedisClient(t, ctx)
-	router := server.NewRouter(pool, redisClient, testConfig())
-
-	token, err := auth.GenerateToken(testJWTSecret, rmUser, rmCompany, rmMerchant, "", "matrix.admin", "matrix-device", time.Hour)
-	if err != nil {
-		t.Fatalf("generate token: %v", err)
-	}
-	put := func(roleID string, body map[string]any) *httptest.ResponseRecorder {
-		return roleMatrixRequest(t, router, token, http.MethodPut, "/api/v1/roles/"+roleID+"/widgets", body)
-	}
-
-	// PUT 2 valid keys → 204, role_widget tepat 2 baris.
-	if rec := put(rmRoleWidgets, map[string]any{
-		"widgets": []map[string]any{{"key": "kpi", "visible": true}, {"key": "queue", "visible": false}},
-		"reason":  "set widget awal",
-	}); rec.Code != http.StatusNoContent {
-		t.Fatalf("first widget PUT expected 204, got %d: %s", rec.Code, rec.Body.String())
-	}
-	// 2 = 2 key valid yang dikirim (kpi, queue).
-	if got := roleMatrixWidgetCount(t, ctx, pool, rmRoleWidgets); got != 2 {
-		t.Fatalf("want exactly 2 role_widget rows, got %d", got)
-	}
-	if got := roleMatrixLogCount(t, ctx, pool, rmRoleWidgets); got != 1 {
-		t.Fatalf("want 1 log row after widget change, got %d", got)
-	}
-
-	// Key bogus → 400 unknown widget key.
-	if rec := put(rmRoleWidgets, map[string]any{
-		"widgets": []map[string]any{{"key": "bogus", "visible": true}},
-		"reason":  "bogus",
-	}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("bogus key expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	// Duplikat key dalam satu request → 400.
-	if rec := put(rmRoleWidgets, map[string]any{
-		"widgets": []map[string]any{{"key": "kpi", "visible": true}, {"key": "kpi", "visible": false}},
-		"reason":  "dup",
-	}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("duplicate key expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	// Set ulang identik → 204 TANPA baris role_change_log baru (tetap 1).
-	if rec := put(rmRoleWidgets, map[string]any{
-		"widgets": []map[string]any{{"key": "queue", "visible": false}, {"key": "kpi", "visible": true}},
-		"reason":  "set sama",
-	}); rec.Code != http.StatusNoContent {
-		t.Fatalf("idempotent widget PUT expected 204, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if got := roleMatrixLogCount(t, ctx, pool, rmRoleWidgets); got != 1 {
-		t.Fatalf("idempotent widget PUT must not log; want 1, got %d", got)
-	}
-	if got := roleMatrixWidgetCount(t, ctx, pool, rmRoleWidgets); got != 2 {
-		t.Fatalf("want still 2 role_widget rows, got %d", got)
-	}
 }
 
 func TestRoleMatrixDuplicate(t *testing.T) {

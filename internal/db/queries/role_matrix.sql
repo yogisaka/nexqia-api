@@ -60,3 +60,14 @@ SELECT $1, widget_key, visible FROM core.role_widget src WHERE src.role_id = $2;
 
 -- name: ListPermissionCodesByIDs :many
 SELECT code FROM core.permission WHERE id = ANY($1::uuid[]);
+
+-- name: TouchRoleForMatrixSave :one
+-- Optimistic-lock write of PUT /roles/:id/matrix: metadata + row touch
+-- (trg_touch_row bumps row_version). No "AND NOT is_system" (unlike
+-- UpdateRole): system roles are touched with their metadata unchanged — the
+-- handler rejects metadata changes on them. 0 rows = stale row_version.
+UPDATE core.role
+SET name = sqlc.arg('name'), description = sqlc.arg('description'),
+    requires_physician_data = sqlc.arg('requires_physician_data'), updated_by = sqlc.arg('updated_by')
+WHERE id = sqlc.arg('id') AND row_version = sqlc.arg('row_version') AND deleted_at IS NULL
+RETURNING *;

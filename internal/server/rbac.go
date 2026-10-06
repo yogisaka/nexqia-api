@@ -37,10 +37,9 @@ func RegisterRBACRoutes(rg *gin.RouterGroup, hasher *auth.PasswordHasher) {
 	rg.GET("/roles/:id/permissions", ListRolePermissionsHandler)
 	rg.POST("/roles/:id/permissions", AddRolePermissionHandler)
 	rg.DELETE("/roles/:id/permissions/:permission_id", RemoveRolePermissionHandler)
-	rg.PUT("/roles/:id/permissions", ReplaceRolePermissionsHandler)
-	rg.PUT("/roles/:id/widgets", ReplaceRoleWidgetsHandler)
 	rg.POST("/roles/:id/duplicate", DuplicateRoleHandler)
 	rg.GET("/roles/:id/matrix", GetRoleMatrixHandler)
+	rg.PUT("/roles/:id/matrix", SaveRoleMatrixHandler)
 	rg.GET("/roles/:id/audit", ListRoleChangeLogHandler)
 	rg.GET("/users/:id/widgets", ListUserRoleWidgetsHandler)
 

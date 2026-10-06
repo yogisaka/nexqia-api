@@ -767,24 +767,6 @@ definitions:
           $ref: '#/definitions/server.departmentCodeMapItem'
         type: array
     type: object
-  server.replaceRolePermissionsRequest:
-    properties:
-      permission_ids:
-        items:
-          type: string
-        type: array
-      reason:
-        type: string
-    type: object
-  server.replaceRoleWidgetsRequest:
-    properties:
-      reason:
-        type: string
-      widgets:
-        items:
-          $ref: '#/definitions/server.roleWidgetOverrideInput'
-        type: array
-    type: object
   server.replaceStagesRequest:
     properties:
       stages:
@@ -810,6 +792,31 @@ definitions:
         type: string
       visible:
         type: boolean
+    type: object
+  server.saveRoleMatrixRequest:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      permission_ids:
+        items:
+          type: string
+        type: array
+      reason:
+        type: string
+      requires_physician_data:
+        type: boolean
+      row_version:
+        type: integer
+      widgets:
+        items:
+          $ref: '#/definitions/server.roleWidgetOverrideInput'
+        type: array
+    required:
+    - permission_ids
+    - row_version
+    - widgets
     type: object
   server.securitySettingsRequest:
     properties:
@@ -5819,14 +5826,14 @@ paths:
   /roles/{id}/audit:
     get:
       description: Newest-first change log entries (reason + jsonb diff). Query param
-        limit defaults to 20.
+        limit defaults to 20 and is clamped to 1–100.
       parameters:
       - description: Role UUID
         in: path
         name: id
         required: true
         type: string
-      - description: Max entries (default 20)
+      - description: Max entries (default 20, 1–100)
         in: query
         name: limit
         type: integer
@@ -5839,6 +5846,10 @@ paths:
             $ref: '#/definitions/server.apiResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
         "404":
@@ -5856,6 +5867,7 @@ paths:
       - application/json
       description: Copies Description/RequiresPhysicianData from the source role (IsSystem=false),
         then copies permission grants and widget overrides. Does NOT write role_change_log.
+        The name is trimmed.
       parameters:
       - description: Source role UUID
         in: path
@@ -5879,6 +5891,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
         "404":
           description: Not Found
           schema:
@@ -5894,8 +5910,9 @@ paths:
       - rbac
   /roles/{id}/matrix:
     get:
-      description: Returns the role metadata, its permission ids, stored widget overrides
-        (sorted by key) and the last change-log entry (null when never changed).
+      description: Returns the role details (with row_version for PUT /roles/{id}/matrix),
+        its permission ids, stored widget overrides (sorted by key) and the last change-log
+        entry (null when never changed).
       parameters:
       - description: Role UUID
         in: path
@@ -5913,6 +5930,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
         "404":
           description: Not Found
           schema:
@@ -5920,6 +5941,55 @@ paths:
       security:
       - BearerAuth: []
       summary: Get the full permission + widget matrix of a role
+      tags:
+      - rbac
+    put:
+      consumes:
+      - application/json
+      description: 'One request = one transaction = at most one role_change_log row
+        (spec 2026-10-06-role-matrix-fixes §2.1). permission_ids and widgets are the
+        complete final sets (empty arrays allowed, absent/null rejected). row_version
+        is the optimistic lock from GET /roles/{id}/matrix (stale → 409). System roles:
+        details must stay unchanged (409). No change → 200 without writing or logging.
+        Response = the GET /roles/{id}/matrix body.'
+      parameters:
+      - description: Role UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Final role matrix + reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.saveRoleMatrixRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Save a role's details, permission set and widget overrides atomically
       tags:
       - rbac
   /roles/{id}/permissions:
@@ -5975,41 +6045,6 @@ paths:
       summary: Grant a permission to a role
       tags:
       - rbac
-    put:
-      consumes:
-      - application/json
-      description: 'Bulk PUT: the submitted set becomes the role''s exact permission
-        set. Idempotent — an identical set returns 204 without writing or logging.'
-      parameters:
-      - description: Role UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Permission ids + reason
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/server.replaceRolePermissionsRequest'
-      produces:
-      - application/json
-      responses:
-        "204":
-          description: No Content
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/server.apiErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/server.apiErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Replace the full permission set of a role
-      tags:
-      - rbac
   /roles/{id}/permissions/{permission_id}:
     delete:
       parameters:
@@ -6035,43 +6070,6 @@ paths:
       security:
       - BearerAuth: []
       summary: Revoke a permission from a role
-      tags:
-      - rbac
-  /roles/{id}/widgets:
-    put:
-      consumes:
-      - application/json
-      description: 'Bulk PUT: the submitted overrides become the role''s exact widget
-        override set. Idempotent — an identical set returns 204 without writing or
-        logging.'
-      parameters:
-      - description: Role UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Widget overrides + reason
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/server.replaceRoleWidgetsRequest'
-      produces:
-      - application/json
-      responses:
-        "204":
-          description: No Content
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/server.apiErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/server.apiErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Replace the dashboard widget visibility overrides of a role
       tags:
       - rbac
   /schedule/sessions/{schedule_id}/{date}:
