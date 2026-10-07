@@ -142,3 +142,40 @@ func TestVerifySHA256(t *testing.T) {
 		t.Fatal("mismatching hash accepted")
 	}
 }
+
+// TestParseICD11_BlockWithoutBlockId — release 2026-01 has 572 blocks in
+// chapters V and X with an empty BlockId; they get a synthetic code and keep
+// their children attached.
+func TestParseICD11_BlockWithoutBlockId(t *testing.T) {
+	input := strings.Join([]string{
+		icd11Header,
+		icd11Row(fChX, lin+"9", "", "", `"Extension Codes"`, "chapter", "1", "False", "X", "False", "", ""),
+		icd11Row("http://id.who.int/icd/entity/20", lin+"2144513044", "", "", `"- WHODAS 2.0 36-item version"`, "block", "1", "False", "X", "False", "", fChX),
+		icd11Row("http://id.who.int/icd/entity/21", lin+"21", "XA0002", "", `"- - Cognition"`, "category", "1", "False", "X", "True", "", "http://id.who.int/icd/entity/20"),
+	}, "\n")
+	res, err := ParseICD11(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseICD11: %v", err)
+	}
+	byCode := map[string]Concept{}
+	for _, c := range res.Concepts {
+		byCode[c.Code] = c
+	}
+	blk, ok := byCode["BLK-2144513044"]
+	if !ok {
+		t.Fatalf("synthetic block code missing; got %+v", res.Concepts)
+	}
+	if blk.Selectable || blk.Properties["synthetic_code"] != true || blk.Display != "WHODAS 2.0 36-item version" {
+		t.Fatalf("synthetic block = %+v", blk)
+	}
+	if _, ok := byCode["X"].Properties["synthetic_code"]; ok {
+		t.Fatal("only synthetic codes carry synthetic_code")
+	}
+	edges := map[Edge]bool{}
+	for _, e := range res.Edges {
+		edges[e] = true
+	}
+	if !edges[Edge{"X", "BLK-2144513044"}] || !edges[Edge{"BLK-2144513044", "XA0002"}] || len(res.Skipped) != 0 {
+		t.Fatalf("edges = %+v skipped = %v", res.Edges, res.Skipped)
+	}
+}

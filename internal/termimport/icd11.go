@@ -42,6 +42,7 @@ const icd11EntryStart = "http://id.who.int/icd/release/11/"
 // icd11Entry holds one raw multi-line entry's fields.
 type icd11Entry struct {
 	found, lin, code, block, title, kind, depth, residual, chapter, leaf, note, parent string
+	synthetic                                                                          bool
 }
 
 // ParseICD11 parses the SimpleTabulation ICD-11 MMS release format (§4.1).
@@ -124,13 +125,19 @@ func ParseICD11(r io.Reader) (ParseResult, error) {
 			en.code = en.chapter
 		case "block":
 			en.code = en.block
+			if en.code == "" {
+				// Chapters V and X group categories under blocks without a BlockId
+				// (572 in release 2026-01); key them by their linearization id.
+				en.code = "BLK-" + en.lin[strings.LastIndex(en.lin, "/")+1:]
+				en.synthetic = true
+			}
 		case "category":
 			// en.code stays
 		default:
 			return ParseResult{}, fmt.Errorf("entry %d: unknown ClassKind %q", i+1, en.kind)
 		}
 		if en.code == "" {
-			return ParseResult{}, fmt.Errorf("entry %d: empty code", i+1)
+			return ParseResult{}, fmt.Errorf("entry %d (%s %q): empty code", i+1, en.kind, en.title)
 		}
 		if seen[en.code] {
 			return ParseResult{}, fmt.Errorf("entry %d: duplicate code %s", i+1, en.code)
@@ -163,6 +170,9 @@ func ParseICD11(r io.Reader) (ParseResult, error) {
 		}
 		if en.note != "" {
 			props["coding_note"] = en.note
+		}
+		if en.synthetic {
+			props["synthetic_code"] = true
 		}
 		res.Concepts = append(res.Concepts, Concept{
 			Code:       en.code,
