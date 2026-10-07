@@ -353,6 +353,25 @@ definitions:
     - phone
     - username
     type: object
+  server.createPriceListRequest:
+    properties:
+      adjustment_percent:
+        type: string
+      base_price_list_id:
+        type: string
+      code:
+        type: string
+      merchant_id:
+        type: string
+      name:
+        type: string
+      rounding_unit:
+        type: string
+    required:
+    - code
+    - merchant_id
+    - name
+    type: object
   server.createQueueFlowFromPresetRequest:
     properties:
       merchant_id:
@@ -425,35 +444,13 @@ definitions:
         type: string
       name:
         type: string
+      procedure_concept_id:
+        type: string
     required:
     - code
     - item_type
     - merchant_id
     - name
-    type: object
-  server.createServiceRateRequest:
-    properties:
-      amount:
-        type: string
-      effective_from:
-        type: string
-      effective_to:
-        type: string
-      merchant_id:
-        type: string
-      payer_class:
-        type: string
-      rate_component_id:
-        type: string
-      service_item_id:
-        type: string
-    required:
-    - amount
-    - effective_from
-    - merchant_id
-    - payer_class
-    - rate_component_id
-    - service_item_id
     type: object
   server.departmentCodeMapItem:
     properties:
@@ -733,6 +730,35 @@ definitions:
     - enrollment_token
     - secret
     type: object
+  server.priceComponentInput:
+    properties:
+      amount:
+        type: string
+      rate_component_id:
+        type: string
+    required:
+    - amount
+    - rate_component_id
+    type: object
+  server.priceListAdjustmentInput:
+    properties:
+      adjustment_percent:
+        type: string
+      item_type:
+        type: string
+    required:
+    - adjustment_percent
+    - item_type
+    type: object
+  server.putPriceListAdjustmentsRequest:
+    properties:
+      adjustments:
+        items:
+          $ref: '#/definitions/server.priceListAdjustmentInput'
+        type: array
+    required:
+    - adjustments
+    type: object
   server.registerRequest:
     properties:
       company_name:
@@ -848,6 +874,19 @@ definitions:
     required:
     - merchant_id
     - selection_token
+    type: object
+  server.setPriceListPriceRequest:
+    properties:
+      components:
+        items:
+          $ref: '#/definitions/server.priceComponentInput'
+        minItems: 1
+        type: array
+      effective_from:
+        type: string
+    required:
+    - components
+    - effective_from
     type: object
   server.stageInput:
     properties:
@@ -1064,6 +1103,21 @@ definitions:
     - end_time
     - start_time
     type: object
+  server.updatePriceListRequest:
+    properties:
+      adjustment_percent:
+        type: string
+      base_price_list_id:
+        type: string
+      is_active:
+        type: boolean
+      name:
+        type: string
+      rounding_unit:
+        type: string
+    required:
+    - name
+    type: object
   server.updateQueueFlowRequest:
     properties:
       is_active:
@@ -1123,18 +1177,11 @@ definitions:
         type: string
       name:
         type: string
+      procedure_concept_id:
+        type: string
     required:
     - item_type
     - name
-    type: object
-  server.updateServiceRateRequest:
-    properties:
-      amount:
-        type: string
-      effective_to:
-        type: string
-    required:
-    - amount
     type: object
   server.upsertScheduleSessionRequest:
     properties:
@@ -3692,6 +3739,26 @@ paths:
       summary: List physicians under a merchant
       tags:
       - physician
+  /merchants/{id}/price-lists:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List price lists under a merchant
+      tags:
+      - tariff
   /merchants/{id}/queue-flows:
     get:
       parameters:
@@ -3730,6 +3797,26 @@ paths:
       security:
       - BearerAuth: []
       summary: List rate components under a merchant
+      tags:
+      - tariff
+  /merchants/{id}/rate-components/defaults:
+    post:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Create the standard rate components for a merchant if missing
       tags:
       - tariff
   /merchants/{id}/schedule/calendar:
@@ -5121,6 +5208,286 @@ paths:
       summary: List platform-admin roles
       tags:
       - platform
+  /price-lists:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Price list data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createPriceListRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a price list
+      tags:
+      - tariff
+  /price-lists/{id}:
+    delete:
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a price list
+      tags:
+      - tariff
+    get:
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a price list by id
+      tags:
+      - tariff
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Price list data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updatePriceListRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a price list
+      tags:
+      - tariff
+  /price-lists/{id}/adjustments:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Category adjustments
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putPriceListAdjustmentsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the category adjustments of a derived price list
+      tags:
+      - tariff
+  /price-lists/{id}/items:
+    get:
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Date (YYYY-MM-DD), default today
+        in: query
+        name: date
+        type: string
+      - description: Filter by item type
+        in: query
+        name: item_type
+        type: string
+      - description: Filter by code or name
+        in: query
+        name: q
+        type: string
+      - description: Page size
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: 'Price grid: resolve every item of a list on a date'
+      tags:
+      - tariff
+  /price-lists/{id}/items/{item_id}/price:
+    delete:
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Service item UUID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      - description: Version start date (YYYY-MM-DD)
+        in: query
+        name: effective_from
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a future price version of an item in a list
+      tags:
+      - tariff
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Service item UUID
+        in: path
+        name: item_id
+        required: true
+        type: string
+      - description: Price components
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.setPriceListPriceRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Set (or supersede) the manual price versions of an item in a list
+      tags:
+      - tariff
+  /price-lists/{id}/resolve:
+    get:
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Service item UUID
+        in: query
+        name: item_id
+        required: true
+        type: string
+      - description: Date (YYYY-MM-DD), default today
+        in: query
+        name: date
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Resolve the price of one item on a date
+      tags:
+      - tariff
   /queue:
     get:
       parameters:
@@ -6266,109 +6633,6 @@ paths:
       security:
       - BearerAuth: []
       summary: List rates for a service item
-      tags:
-      - tariff
-  /service-rates:
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: Service rate data
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/server.createServiceRateRequest'
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            $ref: '#/definitions/server.apiResponse'
-        "403":
-          description: Forbidden
-          schema:
-            $ref: '#/definitions/server.apiErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Create a service rate
-      tags:
-      - tariff
-  /service-rates/{id}:
-    delete:
-      parameters:
-      - description: Service rate UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "204":
-          description: No Content
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/server.apiErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Soft-delete a service rate
-      tags:
-      - tariff
-    get:
-      parameters:
-      - description: Service rate UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/server.apiResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/server.apiErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Get a service rate by id
-      tags:
-      - tariff
-    patch:
-      consumes:
-      - application/json
-      parameters:
-      - description: Service rate UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: Service rate data
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/server.updateServiceRateRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/server.apiResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/server.apiErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Update a service rate
       tags:
       - tariff
   /settings/security:

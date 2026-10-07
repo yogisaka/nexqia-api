@@ -35,6 +35,18 @@ func RegisterTariffRoutes(rg *gin.RouterGroup) {
 	rg.DELETE("/rate-components/:id", DeleteRateComponentHandler)
 
 	rg.GET("/service-items/:id/rates", ListServiceRatesHandler)
+
+	rg.POST("/price-lists", CreatePriceListHandler)
+	rg.GET("/merchants/:id/price-lists", ListPriceListsHandler)
+	rg.GET("/price-lists/:id", GetPriceListHandler)
+	rg.PATCH("/price-lists/:id", UpdatePriceListHandler)
+	rg.DELETE("/price-lists/:id", DeletePriceListHandler)
+	rg.PUT("/price-lists/:id/adjustments", PutPriceListAdjustmentsHandler)
+	rg.PUT("/price-lists/:id/items/:item_id/price", SetPriceListPriceHandler)
+	rg.DELETE("/price-lists/:id/items/:item_id/price", DeletePriceListPriceHandler)
+	rg.GET("/price-lists/:id/resolve", ResolvePriceListHandler)
+	rg.GET("/price-lists/:id/items", ListPriceListItemsHandler)
+	rg.POST("/merchants/:id/rate-components/defaults", CreateRateComponentDefaultsHandler)
 }
 
 // --- service_item ---

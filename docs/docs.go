@@ -3936,6 +3936,39 @@ const docTemplate = `{
                 }
             }
         },
+        "/merchants/{id}/price-lists": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "List price lists under a merchant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/merchants/{id}/queue-flows": {
             "get": {
                 "security": [
@@ -3983,6 +4016,39 @@ const docTemplate = `{
                     "tariff"
                 ],
                 "summary": "List rate components under a merchant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/rate-components/defaults": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Create the standard rate components for a merchant if missing",
                 "parameters": [
                     {
                         "type": "string",
@@ -6181,6 +6247,450 @@ const docTemplate = `{
                 }
             }
         },
+        "/price-lists": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Create a price list",
+                "parameters": [
+                    {
+                        "description": "Price list data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createPriceListRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/price-lists/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Get a price list by id",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Price list UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Soft-delete a price list",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Price list UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Update a price list",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Price list UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Price list data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updatePriceListRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/price-lists/{id}/adjustments": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Replace the category adjustments of a derived price list",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Price list UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Category adjustments",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.putPriceListAdjustmentsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/price-lists/{id}/items": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Price grid: resolve every item of a list on a date",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Price list UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date (YYYY-MM-DD), default today",
+                        "name": "date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by item type",
+                        "name": "item_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by code or name",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/price-lists/{id}/items/{item_id}/price": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Set (or supersede) the manual price versions of an item in a list",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Price list UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Service item UUID",
+                        "name": "item_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Price components",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.setPriceListPriceRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Delete a future price version of an item in a list",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Price list UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Service item UUID",
+                        "name": "item_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Version start date (YYYY-MM-DD)",
+                        "name": "effective_from",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/price-lists/{id}/resolve": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tariff"
+                ],
+                "summary": "Resolve the price of one item on a date",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Price list UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Service item UUID",
+                        "name": "item_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Date (YYYY-MM-DD), default today",
+                        "name": "date",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/queue": {
             "get": {
                 "security": [
@@ -7965,172 +8475,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/service-rates": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tariff"
-                ],
-                "summary": "Create a service rate",
-                "parameters": [
-                    {
-                        "description": "Service rate data",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/server.createServiceRateRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/server.apiResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/server.apiErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/service-rates/{id}": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tariff"
-                ],
-                "summary": "Get a service rate by id",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Service rate UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/server.apiResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/server.apiErrorResponse"
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tariff"
-                ],
-                "summary": "Soft-delete a service rate",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Service rate UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content"
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/server.apiErrorResponse"
-                        }
-                    }
-                }
-            },
-            "patch": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "tariff"
-                ],
-                "summary": "Update a service rate",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Service rate UUID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Service rate data",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/server.updateServiceRateRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/server.apiResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/server.apiErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/settings/security": {
             "get": {
                 "security": [
@@ -9475,6 +9819,34 @@ const docTemplate = `{
                 }
             }
         },
+        "server.createPriceListRequest": {
+            "type": "object",
+            "required": [
+                "code",
+                "merchant_id",
+                "name"
+            ],
+            "properties": {
+                "adjustment_percent": {
+                    "type": "string"
+                },
+                "base_price_list_id": {
+                    "type": "string"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "merchant_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "rounding_unit": {
+                    "type": "string"
+                }
+            }
+        },
         "server.createQueueFlowFromPresetRequest": {
             "type": "object",
             "required": [
@@ -9588,39 +9960,8 @@ const docTemplate = `{
                 },
                 "name": {
                     "type": "string"
-                }
-            }
-        },
-        "server.createServiceRateRequest": {
-            "type": "object",
-            "required": [
-                "amount",
-                "effective_from",
-                "merchant_id",
-                "payer_class",
-                "rate_component_id",
-                "service_item_id"
-            ],
-            "properties": {
-                "amount": {
-                    "type": "string"
                 },
-                "effective_from": {
-                    "type": "string"
-                },
-                "effective_to": {
-                    "type": "string"
-                },
-                "merchant_id": {
-                    "type": "string"
-                },
-                "payer_class": {
-                    "type": "string"
-                },
-                "rate_component_id": {
-                    "type": "string"
-                },
-                "service_item_id": {
+                "procedure_concept_id": {
                     "type": "string"
                 }
             }
@@ -10043,6 +10384,50 @@ const docTemplate = `{
                 }
             }
         },
+        "server.priceComponentInput": {
+            "type": "object",
+            "required": [
+                "amount",
+                "rate_component_id"
+            ],
+            "properties": {
+                "amount": {
+                    "type": "string"
+                },
+                "rate_component_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.priceListAdjustmentInput": {
+            "type": "object",
+            "required": [
+                "adjustment_percent",
+                "item_type"
+            ],
+            "properties": {
+                "adjustment_percent": {
+                    "type": "string"
+                },
+                "item_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.putPriceListAdjustmentsRequest": {
+            "type": "object",
+            "required": [
+                "adjustments"
+            ],
+            "properties": {
+                "adjustments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.priceListAdjustmentInput"
+                    }
+                }
+            }
+        },
         "server.registerRequest": {
             "type": "object",
             "required": [
@@ -10210,6 +10595,25 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "selection_token": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.setPriceListPriceRequest": {
+            "type": "object",
+            "required": [
+                "components",
+                "effective_from"
+            ],
+            "properties": {
+                "components": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/server.priceComponentInput"
+                    }
+                },
+                "effective_from": {
                     "type": "string"
                 }
             }
@@ -10541,6 +10945,29 @@ const docTemplate = `{
                 }
             }
         },
+        "server.updatePriceListRequest": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "adjustment_percent": {
+                    "type": "string"
+                },
+                "base_price_list_id": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "rounding_unit": {
+                    "type": "string"
+                }
+            }
+        },
         "server.updateQueueFlowRequest": {
             "type": "object",
             "properties": {
@@ -10632,19 +11059,8 @@ const docTemplate = `{
                 },
                 "name": {
                     "type": "string"
-                }
-            }
-        },
-        "server.updateServiceRateRequest": {
-            "type": "object",
-            "required": [
-                "amount"
-            ],
-            "properties": {
-                "amount": {
-                    "type": "string"
                 },
-                "effective_to": {
+                "procedure_concept_id": {
                     "type": "string"
                 }
             }
