@@ -656,6 +656,19 @@ func SetPriceListPriceHandler(c *gin.Context) {
 	}
 	effDate := pgtype.Date{Time: effFrom, Valid: true}
 	q := sqlcgen.New(TxFromContext(c))
+	// No new price version may start in the merchant's past (review fix, Task 4).
+	loc, err := merchantLocation(c.Request.Context(), q, list.MerchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	// Compare as calendar dates: parseAPIDate yields UTC midnight while
+	// localDayStart is midnight in the merchant zone.
+	today := localDayStart(time.Now(), loc)
+	if effFrom.Format("2006-01-02") < today.Format("2006-01-02") {
+		c.JSON(http.StatusConflict, gin.H{"error": "effective_from cannot be in the past"})
+		return
+	}
 	seen := make(map[string]bool, len(req.Components))
 	rows := make([]sqlcgen.InsertPriceRowParams, 0, len(req.Components))
 	resolved := make([]rateRow, 0, len(req.Components))

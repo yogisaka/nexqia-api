@@ -155,3 +155,20 @@ LIMIT $2 OFFSET $3;
 INSERT INTO core.rate_component (company_id, merchant_id, code, name, created_by, updated_by)
 VALUES ($1, $2, $3, $4, $5, $5)
 ON CONFLICT (merchant_id, code) DO NOTHING;
+
+-- Platform price templates (spec 2026-10-07-tariff-price-lists §6). RLS
+-- filters template scope; platform rows are visible to every tenant.
+
+-- name: ListPriceTemplates :many
+SELECT * FROM core.template WHERE kind = 'price_list' AND is_active ORDER BY name;
+
+-- name: ListTemplatePriceItems :many
+SELECT * FROM core.template_price_item WHERE template_id = $1 ORDER BY sort_order;
+
+-- name: GetServiceItemByMerchantCode :one
+SELECT * FROM core.service_item WHERE merchant_id = $1 AND code = $2 AND deleted_at IS NULL;
+
+-- name: InsertTemplateApplication :exec
+INSERT INTO core.template_application
+    (company_id, template_id, template_version, applied_by, roles_created, roles_skipped)
+VALUES ($1, $2, $3, $4, $5, $6);

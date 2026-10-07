@@ -47,6 +47,9 @@ func RegisterTariffRoutes(rg *gin.RouterGroup) {
 	rg.GET("/price-lists/:id/resolve", ResolvePriceListHandler)
 	rg.GET("/price-lists/:id/items", ListPriceListItemsHandler)
 	rg.POST("/merchants/:id/rate-components/defaults", CreateRateComponentDefaultsHandler)
+
+	rg.GET("/price-list-templates", ListPriceTemplatesHandler)
+	rg.POST("/price-list-templates/:id/apply", ApplyPriceListTemplateHandler)
 }
 
 // --- service_item ---

@@ -34,6 +34,29 @@ definitions:
           type: string
         type: array
     type: object
+  server.applyPriceTemplateRequest:
+    properties:
+      effective_from:
+        type: string
+      merchant_id:
+        type: string
+      price_list_code:
+        type: string
+      price_list_name:
+        type: string
+      scope:
+        type: string
+      values:
+        additionalProperties:
+          type: string
+        type: object
+    required:
+    - effective_from
+    - merchant_id
+    - price_list_code
+    - price_list_name
+    - scope
+    type: object
   server.applyRoleTemplateRequest:
     properties:
       role_ids:
@@ -5208,6 +5231,64 @@ paths:
       summary: List platform-admin roles
       tags:
       - platform
+  /price-list-templates:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List active price-list templates with their items
+      tags:
+      - tariff
+  /price-list-templates/{id}/apply:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Template ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Apply parameters
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.applyPriceTemplateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Apply a price-list template into a standalone merchant price list
+      tags:
+      - tariff
   /price-lists:
     post:
       consumes:

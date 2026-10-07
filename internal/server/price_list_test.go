@@ -290,6 +290,40 @@ func TestPriceList_SetPriceVersioning(t *testing.T) {
 	}
 }
 
+// TestPriceList_RejectsPastEffectiveFrom — setting a price that starts in the
+// merchant's past is a 409 with no new service_rate row; today is allowed.
+func TestPriceList_RejectsPastEffectiveFrom(t *testing.T) {
+	env := plNewEnv(t, "pastdate")
+	ctx := context.Background()
+	itemID := plCreateItem(t, env, "PAST-ITEM", "consultation")
+	compID := plCreateComponent(t, env, "PAST-COMP")
+	listID := plCreateList(t, env, "umum-past", "", "", "")
+
+	countRates := func() int {
+		t.Helper()
+		var n int
+		if err := env.pool.QueryRow(ctx,
+			"SELECT count(*) FROM core.service_rate WHERE price_list_id=$1 AND service_item_id=$2 AND deleted_at IS NULL",
+			listID, itemID).Scan(&n); err != nil {
+			t.Fatalf("count rates: %v", err)
+		}
+		return n
+	}
+
+	before := countRates()
+	status, out := plSetPrice(t, env, listID, itemID, plToday(env, -1), map[string]string{compID: "50000.00"})
+	if status != http.StatusConflict || plErrorMsg(out) != "effective_from cannot be in the past" {
+		t.Fatalf("past effective_from = %d %v, want 409 'effective_from cannot be in the past'", status, out)
+	}
+	if n := countRates(); n != before {
+		t.Fatalf("service_rate count = %d after 409, want %d", n, before)
+	}
+	status, out = plSetPrice(t, env, listID, itemID, plToday(env, 0), map[string]string{compID: "50000.00"})
+	if status != http.StatusOK {
+		t.Fatalf("today effective_from = %d %v, want 200", status, out)
+	}
+}
+
 // TestPriceList_ConcurrentSetPrice — concurrent sets of the same item/list
 // serialize on the advisory lock: exactly one open version, no overlaps.
 func TestPriceList_ConcurrentSetPrice(t *testing.T) {
