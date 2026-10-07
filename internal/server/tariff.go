@@ -34,20 +34,58 @@ func RegisterTariffRoutes(rg *gin.RouterGroup) {
 	rg.PATCH("/rate-components/:id", UpdateRateComponentHandler)
 	rg.DELETE("/rate-components/:id", DeleteRateComponentHandler)
 
-	rg.POST("/service-rates", CreateServiceRateHandler)
 	rg.GET("/service-items/:id/rates", ListServiceRatesHandler)
-	rg.GET("/service-rates/:id", GetServiceRateHandler)
-	rg.PATCH("/service-rates/:id", UpdateServiceRateHandler)
-	rg.DELETE("/service-rates/:id", DeleteServiceRateHandler)
 }
 
 // --- service_item ---
 
+// serviceItemTypes mirrors the 9 values of the service_item_item_type_check
+// constraint (migration 000063, spec 2026-10-07-tariff-price-lists §3.1).
+var serviceItemTypes = map[string]bool{
+	"consultation": true, "procedure": true, "administration": true, "room": true,
+	"package": true, "pharmacy_fee": true, "drug": true, "medical_device": true,
+	"material": true,
+}
+
+// icd9cmSystemURI is the FHIR system URI for ICD-9-CM procedures
+// (spec 2026-10-07-tariff-price-lists §4.2 / terminology spec 2026-10-01).
+const icd9cmSystemURI = "http://hl7.org/fhir/sid/icd-9-cm"
+
+// validateProcedureConceptID parses an optional UUID string and checks the
+// concept is active, selectable, and belongs to the ICD-9-CM code system.
+func validateProcedureConceptID(c *gin.Context, raw string) (pgtype.UUID, bool) {
+	var conceptID pgtype.UUID
+	if raw == "" {
+		return conceptID, true
+	}
+	id, ok := parseUUID(raw)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid procedure_concept_id"})
+		return conceptID, false
+	}
+	var exists bool
+	err := TxFromContext(c).QueryRow(c.Request.Context(), `
+		SELECT EXISTS(SELECT 1 FROM terminology.concept ct
+		JOIN terminology.code_system cs ON cs.id = ct.code_system_id
+		WHERE ct.id = $1 AND ct.is_active AND ct.is_selectable AND cs.system_uri = $2)`,
+		id, icd9cmSystemURI).Scan(&exists)
+	if err != nil {
+		respondInternalError(c, err)
+		return conceptID, false
+	}
+	if !exists {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "procedure_concept_id must be an active ICD-9-CM concept"})
+		return conceptID, false
+	}
+	return id, true
+}
+
 type createServiceItemRequest struct {
-	MerchantID string `json:"merchant_id" binding:"required"`
-	Code       string `json:"code" binding:"required"`
-	Name       string `json:"name" binding:"required"`
-	ItemType   string `json:"item_type" binding:"required"`
+	MerchantID         string `json:"merchant_id" binding:"required"`
+	Code               string `json:"code" binding:"required"`
+	Name               string `json:"name" binding:"required"`
+	ItemType           string `json:"item_type" binding:"required"`
+	ProcedureConceptID string `json:"procedure_concept_id"`
 }
 
 // CreateServiceItemHandler godoc
@@ -78,14 +116,23 @@ func CreateServiceItemHandler(c *gin.Context) {
 	if !RequirePermissionForMerchant(c, PermTariffManage, merchantID) {
 		return
 	}
+	if !serviceItemTypes[req.ItemType] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid item_type"})
+		return
+	}
+	procedureConceptID, ok := validateProcedureConceptID(c, req.ProcedureConceptID)
+	if !ok {
+		return
+	}
 	q := sqlcgen.New(TxFromContext(c))
 	item, err := q.CreateServiceItem(c.Request.Context(), sqlcgen.CreateServiceItemParams{
-		CompanyID:  AuthCompanyID(c),
-		MerchantID: merchantID,
-		Code:       req.Code,
-		Name:       req.Name,
-		ItemType:   req.ItemType,
-		CreatedBy:  AuthUserID(c),
+		CompanyID:          AuthCompanyID(c),
+		MerchantID:         merchantID,
+		Code:               req.Code,
+		Name:               req.Name,
+		ItemType:           req.ItemType,
+		CreatedBy:          AuthUserID(c),
+		ProcedureConceptID: procedureConceptID,
 	})
 	if err != nil {
 		respondInternalError(c, err)
@@ -157,9 +204,10 @@ func GetServiceItemHandler(c *gin.Context) {
 }
 
 type updateServiceItemRequest struct {
-	Name     string `json:"name" binding:"required"`
-	ItemType string `json:"item_type" binding:"required"`
-	IsActive bool   `json:"is_active"`
+	Name               string `json:"name" binding:"required"`
+	ItemType           string `json:"item_type" binding:"required"`
+	IsActive           bool   `json:"is_active"`
+	ProcedureConceptID string `json:"procedure_concept_id"`
 }
 
 // UpdateServiceItemHandler godoc
@@ -197,8 +245,17 @@ func UpdateServiceItemHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if !serviceItemTypes[req.ItemType] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid item_type"})
+		return
+	}
+	procedureConceptID, ok := validateProcedureConceptID(c, req.ProcedureConceptID)
+	if !ok {
+		return
+	}
 	item, err := q.UpdateServiceItem(c.Request.Context(), sqlcgen.UpdateServiceItemParams{
-		ID: id, Name: req.Name, ItemType: req.ItemType, IsActive: req.IsActive, UpdatedBy: AuthUserID(c),
+		ID: id, Name: req.Name, ItemType: req.ItemType, ProcedureConceptID: procedureConceptID,
+		IsActive: req.IsActive, UpdatedBy: AuthUserID(c),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "service item not found"})
@@ -440,88 +497,6 @@ func DeleteRateComponentHandler(c *gin.Context) {
 
 // --- service_rate ---
 
-type createServiceRateRequest struct {
-	MerchantID      string `json:"merchant_id" binding:"required"`
-	ServiceItemID   string `json:"service_item_id" binding:"required"`
-	RateComponentID string `json:"rate_component_id" binding:"required"`
-	PayerClass      string `json:"payer_class" binding:"required"`
-	Amount          string `json:"amount" binding:"required"`
-	EffectiveFrom   string `json:"effective_from" binding:"required"`
-	EffectiveTo     string `json:"effective_to"`
-}
-
-// CreateServiceRateHandler godoc
-// @Summary Create a service rate
-// @Tags tariff
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param request body createServiceRateRequest true "Service rate data"
-// @Success 201 {object} apiResponse
-// @Failure 403 {object} apiErrorResponse
-// @Router /service-rates [post]
-func CreateServiceRateHandler(c *gin.Context) {
-	var req createServiceRateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	merchantID, ok := parseUUID(req.MerchantID)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid merchant_id"})
-		return
-	}
-	// Check permission against the body's merchant_id, not X-Merchant-ID —
-	// they can differ, and creating under a merchant the caller only declared
-	// in a header (without holding the permission there) is a cross-tenant
-	// IDOR.
-	if !RequirePermissionForMerchant(c, PermTariffManage, merchantID) {
-		return
-	}
-	serviceItemID, ok := parseUUID(req.ServiceItemID)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid service_item_id"})
-		return
-	}
-	rateComponentID, ok := parseUUID(req.RateComponentID)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid rate_component_id"})
-		return
-	}
-	var amount pgtype.Numeric
-	if err := amount.Scan(req.Amount); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount"})
-		return
-	}
-	effectiveFrom, err := optDate(req.EffectiveFrom)
-	if err != nil || !effectiveFrom.Valid {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_from, expected YYYY-MM-DD"})
-		return
-	}
-	effectiveTo, err := optDate(req.EffectiveTo)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_to, expected YYYY-MM-DD"})
-		return
-	}
-	q := sqlcgen.New(TxFromContext(c))
-	rate, err := q.CreateServiceRate(c.Request.Context(), sqlcgen.CreateServiceRateParams{
-		CompanyID:       AuthCompanyID(c),
-		MerchantID:      merchantID,
-		ServiceItemID:   serviceItemID,
-		RateComponentID: rateComponentID,
-		PayerClass:      req.PayerClass,
-		Amount:          amount,
-		EffectiveFrom:   effectiveFrom,
-		EffectiveTo:     effectiveTo,
-		CreatedBy:       AuthUserID(c),
-	})
-	if err != nil {
-		respondInternalError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"data": rate, "meta": gin.H{}})
-}
-
 // ListServiceRatesHandler godoc
 // @Summary List rates for a service item
 // @Tags tariff
@@ -558,134 +533,4 @@ func ListServiceRatesHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": rates, "meta": gin.H{}})
-}
-
-// GetServiceRateHandler godoc
-// @Summary Get a service rate by id
-// @Tags tariff
-// @Produce json
-// @Security BearerAuth
-// @Param id path string true "Service rate UUID"
-// @Success 200 {object} apiResponse
-// @Failure 404 {object} apiErrorResponse
-// @Router /service-rates/{id} [get]
-func GetServiceRateHandler(c *gin.Context) {
-	id, ok := parseUUID(c.Param("id"))
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-		return
-	}
-	q := sqlcgen.New(TxFromContext(c))
-	rate, err := q.GetServiceRateByID(c.Request.Context(), id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "service rate not found"})
-		return
-	}
-	if err != nil {
-		respondInternalError(c, err)
-		return
-	}
-	if !RequirePermissionForMerchant(c, PermTariffManage, rate.MerchantID) {
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": rate, "meta": gin.H{}})
-}
-
-type updateServiceRateRequest struct {
-	Amount      string `json:"amount" binding:"required"`
-	EffectiveTo string `json:"effective_to"`
-}
-
-// UpdateServiceRateHandler godoc
-// @Summary Update a service rate
-// @Tags tariff
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param id path string true "Service rate UUID"
-// @Param request body updateServiceRateRequest true "Service rate data"
-// @Success 200 {object} apiResponse
-// @Failure 404 {object} apiErrorResponse
-// @Router /service-rates/{id} [patch]
-func UpdateServiceRateHandler(c *gin.Context) {
-	id, ok := parseUUID(c.Param("id"))
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-		return
-	}
-	q := sqlcgen.New(TxFromContext(c))
-	existing, err := q.GetServiceRateByID(c.Request.Context(), id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "service rate not found"})
-		return
-	}
-	if err != nil {
-		respondInternalError(c, err)
-		return
-	}
-	if !RequirePermissionForMerchant(c, PermTariffManage, existing.MerchantID) {
-		return
-	}
-	var req updateServiceRateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	var amount pgtype.Numeric
-	if err := amount.Scan(req.Amount); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount"})
-		return
-	}
-	effectiveTo, err := optDate(req.EffectiveTo)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_to, expected YYYY-MM-DD"})
-		return
-	}
-	rate, err := q.UpdateServiceRate(c.Request.Context(), sqlcgen.UpdateServiceRateParams{
-		ID: id, Amount: amount, EffectiveTo: effectiveTo, UpdatedBy: AuthUserID(c),
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "service rate not found"})
-		return
-	}
-	if err != nil {
-		respondInternalError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": rate, "meta": gin.H{}})
-}
-
-// DeleteServiceRateHandler godoc
-// @Summary Soft-delete a service rate
-// @Tags tariff
-// @Produce json
-// @Security BearerAuth
-// @Param id path string true "Service rate UUID"
-// @Success 204 "No Content"
-// @Failure 404 {object} apiErrorResponse
-// @Router /service-rates/{id} [delete]
-func DeleteServiceRateHandler(c *gin.Context) {
-	id, ok := parseUUID(c.Param("id"))
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-		return
-	}
-	q := sqlcgen.New(TxFromContext(c))
-	existing, err := q.GetServiceRateByID(c.Request.Context(), id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "service rate not found"})
-		return
-	}
-	if err != nil {
-		respondInternalError(c, err)
-		return
-	}
-	if !RequirePermissionForMerchant(c, PermTariffManage, existing.MerchantID) {
-		return
-	}
-	if err := q.SoftDeleteServiceRate(c.Request.Context(), sqlcgen.SoftDeleteServiceRateParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
-		respondInternalError(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
 }
