@@ -4712,6 +4712,213 @@ const docTemplate = `{
                 }
             }
         },
+        "/persons/duplicates": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Scored pairs of possibly-duplicate medical records; dismissed/merged pairs are hidden, requested pairs sort first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person"
+                ],
+                "summary": "List duplicate person candidate pairs",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 50, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person"
+                ],
+                "summary": "Request a merge of a duplicate pair",
+                "parameters": [
+                    {
+                        "description": "Pair ids and note",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.duplicatePairRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/persons/duplicates/check": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Scores existing live records against the registration form values before creating a new person.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person"
+                ],
+                "summary": "Check a prospective patient for duplicates",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Candidate full name",
+                        "name": "full_name",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Birth date (YYYY-MM-DD)",
+                        "name": "birth_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Gender",
+                        "name": "gender",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Phone",
+                        "name": "phone",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/persons/duplicates/dismiss": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person"
+                ],
+                "summary": "Dismiss a duplicate pair",
+                "parameters": [
+                    {
+                        "description": "Pair ids and note",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.duplicatePairRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/persons/merge": {
             "post": {
                 "security": [
@@ -10418,6 +10625,20 @@ const docTemplate = `{
                     }
                 },
                 "voice": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.duplicatePairRequest": {
+            "type": "object",
+            "properties": {
+                "note": {
+                    "type": "string"
+                },
+                "person_a_id": {
+                    "type": "string"
+                },
+                "person_b_id": {
                     "type": "string"
                 }
             }

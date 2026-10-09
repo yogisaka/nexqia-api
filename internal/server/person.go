@@ -34,6 +34,8 @@ func RegisterPersonRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	// Static /persons/merge* routes must come before /persons/:id (see
 	// registerPersonMergeRoutes).
 	registerPersonMergeRoutes(rg, cfg)
+	// Static /persons/duplicates* routes must also come before /persons/:id.
+	registerPersonDuplicateRoutes(rg)
 	rg.GET("/persons/:id", AccessLog("person", "view", "id"), GetPersonHandler(cfg))
 	rg.PATCH("/persons/:id", UpdatePersonHandler(cfg))
 	rg.DELETE("/persons/:id", DeletePersonHandler)

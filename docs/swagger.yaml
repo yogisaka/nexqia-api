@@ -523,6 +523,15 @@ definitions:
     required:
     - name
     type: object
+  server.duplicatePairRequest:
+    properties:
+      note:
+        type: string
+      person_a_id:
+        type: string
+      person_b_id:
+        type: string
+    type: object
   server.duplicateRoleRequest:
     properties:
       name:
@@ -4475,6 +4484,138 @@ paths:
       security:
       - BearerAuth: []
       summary: List merge logs involving one person
+      tags:
+      - person
+  /persons/duplicates:
+    get:
+      description: Scored pairs of possibly-duplicate medical records; dismissed/merged
+        pairs are hidden, requested pairs sort first.
+      parameters:
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List duplicate person candidate pairs
+      tags:
+      - person
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Pair ids and note
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.duplicatePairRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Request a merge of a duplicate pair
+      tags:
+      - person
+  /persons/duplicates/check:
+    get:
+      description: Scores existing live records against the registration form values
+        before creating a new person.
+      parameters:
+      - description: Candidate full name
+        in: query
+        name: full_name
+        required: true
+        type: string
+      - description: Birth date (YYYY-MM-DD)
+        in: query
+        name: birth_date
+        type: string
+      - description: Gender
+        in: query
+        name: gender
+        type: string
+      - description: Phone
+        in: query
+        name: phone
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Check a prospective patient for duplicates
+      tags:
+      - person
+  /persons/duplicates/dismiss:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Pair ids and note
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.duplicatePairRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Dismiss a duplicate pair
       tags:
       - person
   /persons/merge:
