@@ -554,6 +554,34 @@ definitions:
     - password
     - username
     type: object
+  server.mergeExpectedRowVersions:
+    properties:
+      merged:
+        type: integer
+      survivor:
+        type: integer
+    type: object
+  server.mergePersonRequest:
+    properties:
+      confirm_mrn:
+        type: string
+      expected_row_versions:
+        $ref: '#/definitions/server.mergeExpectedRowVersions'
+      field_choices:
+        additionalProperties:
+          type: string
+        type: object
+      merged_id:
+        type: string
+      reason:
+        type: string
+      survivor_id:
+        type: string
+      verified_documents:
+        items:
+          type: string
+        type: array
+    type: object
   server.mfaConfirmRequest:
     properties:
       code:
@@ -949,6 +977,11 @@ definitions:
         type: string
     required:
     - role_id
+    type: object
+  server.unmergePersonRequest:
+    properties:
+      reason:
+        type: string
     type: object
   server.updateAdmissionRequest:
     properties:
@@ -4420,6 +4453,172 @@ paths:
       summary: Add a family member to a person
       tags:
       - person-family
+  /persons/{id}/merge-logs:
+    get:
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List merge logs involving one person
+      tags:
+      - person
+  /persons/merge:
+    post:
+      consumes:
+      - application/json
+      description: 'Executes the merge in one transaction: identity + survivorship
+        + blocker checks, row move, soft-delete of the merged record, merge log.'
+      parameters:
+      - description: Merge request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.mergePersonRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Merge two duplicate persons
+      tags:
+      - person
+  /persons/merge-logs:
+    get:
+      parameters:
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List person merge/unmerge logs
+      tags:
+      - person
+  /persons/merge-logs/{id}/unmerge:
+    post:
+      consumes:
+      - application/json
+      description: Restores the merged record from the merge log snapshot. The survivor's
+        identity is returned to the snapshot values first (unique NIK index), and
+        for a same_identity merge the merged record's NIK is cleared.
+      parameters:
+      - description: Merge log UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Unmerge reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.unmergePersonRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Undo a person merge
+      tags:
+      - person
+  /persons/merge-preview:
+    get:
+      description: 'Compares two duplicate records: identity check, conflicting fields,
+        autofill, moved-row counts and blockers.'
+      parameters:
+      - description: Survivor person UUID
+        in: query
+        name: survivor_id
+        required: true
+        type: string
+      - description: Merged person UUID
+        in: query
+        name: merged_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Preview a person merge
+      tags:
+      - person
   /persons/search:
     get:
       description: |-
