@@ -4,7 +4,7 @@
 
 -- name: ListDuplicateCandidates :many
 WITH live AS (
-    SELECT p.id, p.medical_record_no, p.full_name, p.birth_date, p.gender, p.phone, p.address, p.nik_search_hash
+    SELECT p.id, p.medical_record_no, p.full_name, p.birth_date, p.gender, p.phone, p.address, p.nik_search_hash, p.created_at
     FROM core.person p WHERE p.company_id = sqlc.arg('company_id')::uuid AND p.deleted_at IS NULL
 ), pairs AS (
     SELECT a.id AS a_id, b.id AS b_id,
@@ -25,8 +25,8 @@ WITH live AS (
 )
 SELECT p.a_id, p.b_id, p.score, p.reason,
        COALESCE(d.status, '')::text AS status, COALESCE(d.note, '')::text AS note,
-       a.medical_record_no AS a_mrn, a.full_name AS a_name, a.birth_date AS a_birth_date, a.gender AS a_gender,
-       b.medical_record_no AS b_mrn, b.full_name AS b_name, b.birth_date AS b_birth_date, b.gender AS b_gender
+       a.medical_record_no AS a_mrn, a.full_name AS a_name, a.birth_date AS a_birth_date, a.gender AS a_gender, a.created_at AS a_created_at,
+       b.medical_record_no AS b_mrn, b.full_name AS b_name, b.birth_date AS b_birth_date, b.gender AS b_gender, b.created_at AS b_created_at
 FROM pairs p
 JOIN live a ON a.id = p.a_id
 JOIN live b ON b.id = p.b_id

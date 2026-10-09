@@ -25,14 +25,15 @@ func registerPersonDuplicateRoutes(rg *gin.RouterGroup) {
 }
 
 // dupPersonSide renders one side of a candidate pair
-// {id, mrn, name, birth_date, gender}.
-func dupPersonSide(id pgtype.UUID, mrn pgtype.Text, name string, birthDate pgtype.Date, gender pgtype.Text) gin.H {
+// {id, mrn, name, birth_date, gender, created_at}.
+func dupPersonSide(id pgtype.UUID, mrn pgtype.Text, name string, birthDate pgtype.Date, gender pgtype.Text, createdAt pgtype.Timestamptz) gin.H {
 	return gin.H{
 		"id":         id,
 		"mrn":        mrn,
 		"name":       name,
 		"birth_date": birthDate,
 		"gender":     gender,
+		"created_at": createdAt,
 	}
 }
 
@@ -64,8 +65,8 @@ func ListDuplicateCandidatesHandler(c *gin.Context) {
 		score, _ := r.Score.(int32)
 		reason, _ := r.Reason.(string)
 		items = append(items, gin.H{
-			"person_a": dupPersonSide(r.AID, r.AMrn, r.AName, r.ABirthDate, r.AGender),
-			"person_b": dupPersonSide(r.BID, r.BMrn, r.BName, r.BBirthDate, r.BGender),
+			"person_a": dupPersonSide(r.AID, r.AMrn, r.AName, r.ABirthDate, r.AGender, r.ACreatedAt),
+			"person_b": dupPersonSide(r.BID, r.BMrn, r.BName, r.BBirthDate, r.BGender, r.BCreatedAt),
 			"score":    score,
 			"reason":   reason,
 			"status":   r.Status,

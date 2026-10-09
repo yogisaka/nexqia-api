@@ -100,6 +100,17 @@ func TestPersonDuplicate_Candidates(t *testing.T) {
 	if pairs[0]["reason"] != "same_nik" {
 		t.Fatalf("top pair reason = %v, want same_nik first", pairs[0]["reason"])
 	}
+
+	// Both sides carry created_at (RFC3339) so the FE can suggest the
+	// oldest record as the survivor.
+	for _, p := range pairs {
+		for _, side := range []string{"person_a", "person_b"} {
+			createdAt, _ := p[side].(map[string]any)["created_at"].(string)
+			if createdAt == "" {
+				t.Fatalf("pair side %s missing created_at: %v", side, p[side])
+			}
+		}
+	}
 }
 
 // TestPersonDuplicate_RequestAndDismiss — spec §8.4: a merge request sorts
