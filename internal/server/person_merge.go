@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -704,6 +705,37 @@ func UnmergePersonHandler(c *gin.Context) {
 		return
 	}
 
+	identityCleared := logRow.IdentityCheck.String == "same_identity"
+
+	// 1b. NIK collision pre-check: the restore below writes snapshot NIK
+	// hashes back onto live rows. If another live record has since taken
+	// one of those hashes (uq_person_nik_hash), refuse BEFORE any write
+	// with a 409 naming the colliding medical record number.
+	exclude := []pgtype.UUID{logRow.SurvivingPersonID, logRow.MergedPersonID}
+	checkNIKHash := func(hash string) bool {
+		if hash == "" {
+			return true
+		}
+		dup, err := q.FindPersonByNIKHashNotIn(ctx, sqlcgen.FindPersonByNIKHashNotInParams{
+			CompanyID: AuthCompanyID(c), NikSearchHash: optText(hash), ExcludeIds: exclude,
+		})
+		if err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("nik already registered to medical record %s", dup.MedicalRecordNo)})
+			return false
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			respondInternalError(c, err)
+			return false
+		}
+		return true
+	}
+	if !identityCleared && !checkNIKHash(snapStr(snapMerged, "nik_search_hash")) {
+		return
+	}
+	if !checkNIKHash(snapStr(snapSurvivor, "nik_search_hash")) {
+		return
+	}
+
 	// 2. Identity of the survivor FIRST: if the survivor received the merged
 	// record's identity during the merge, give it back the snapshot values so
 	// the unique NIK index never sees two live rows with the same hash.
@@ -717,6 +749,11 @@ func UnmergePersonHandler(c *gin.Context) {
 		cur["nik_search_hash"] = snapStr(snapSurvivor, "nik_search_hash")
 		cur["identity_type_concept_id"] = snapStr(snapSurvivor, "identity_type_concept_id")
 		if err := q.ApplyMergeFields(ctx, mergeFieldParams(cur, AuthUserID(c), logRow.SurvivingPersonID)); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_person_nik_hash" {
+				c.JSON(http.StatusConflict, gin.H{"error": "nik already registered to another medical record"})
+				return
+			}
 			respondInternalError(c, err)
 			return
 		}
@@ -731,13 +768,17 @@ func UnmergePersonHandler(c *gin.Context) {
 	for k := range snapMerged {
 		mergedValues[k] = snapStr(snapMerged, k)
 	}
-	identityCleared := logRow.IdentityCheck.String == "same_identity"
 	if identityCleared {
 		// The same NIK must not live on two records: the merged record is
 		// restored without its identity number.
 		mergedValues["nik"], mergedValues["nik_search_hash"], mergedValues["identity_type_concept_id"] = "", "", ""
 	}
 	if err := q.ApplyMergeFields(ctx, mergeFieldParams(mergedValues, AuthUserID(c), logRow.MergedPersonID)); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_person_nik_hash" {
+			c.JSON(http.StatusConflict, gin.H{"error": "nik already registered to another medical record"})
+			return
+		}
 		respondInternalError(c, err)
 		return
 	}

@@ -513,6 +513,82 @@ func TestPersonMerge_Unmerge(t *testing.T) {
 	}
 }
 
+// TestPersonMerge_UnmergeNikConflict — after a merge, if another live record
+// takes over the merged record's NIK, unmerge refuses with a 409 naming the
+// colliding MRN and changes nothing; clearing the NIK lets the unmerge pass.
+func TestPersonMerge_UnmergeNikConflict(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := mergeTestRouter(t, ctx, pool)
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "mergeconf.owner", "081234601007")
+
+	// B with NIK (merged), A without NIK (survivor).
+	bID, bMRN := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge Conf Beta", "gender": "female", "birth_date": "1980-01-01",
+		"nik": "3201010101800031",
+	})
+	aID, _ := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge Conf Alpha", "gender": "female", "birth_date": "1980-01-01",
+	})
+	preview := mergePreview(t, router, token, companyID, merchantID, aID, bID)
+	mergeRec := mergeExec(t, router, token, companyID, merchantID, map[string]any{
+		"survivor_id": aID, "merged_id": bID, "reason": "duplikat",
+		"expected_row_versions": map[string]any{
+			"survivor": mergeSide(t, preview, "survivor")["row_version"],
+			"merged":   mergeSide(t, preview, "merged")["row_version"],
+		},
+		"field_choices": map[string]string{"phone": "survivor", "full_name": "survivor"},
+		"confirm_mrn":   bMRN,
+	})
+	if mergeRec.Code != http.StatusOK {
+		t.Fatalf("merge expected 200, got %d: %s", mergeRec.Code, mergeRec.Body.String())
+	}
+	logID := mergeRespData(t, mergeRec)["log_id"].(string)
+
+	if _, err := pool.Exec(ctx, "UPDATE core.person SET nik = NULL, nik_search_hash = NULL WHERE id = $1", aID); err != nil {
+		t.Fatalf("clear survivor nik: %v", err)
+	}
+
+	// Z takes over B's NIK while B is merged away.
+	zID, zMRN := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge Conf Zeta", "gender": "female", "birth_date": "1980-01-01",
+		"nik": "3201010101800031",
+	})
+	if zMRN == "" {
+		t.Fatalf("Z person must resolve to an MRN")
+	}
+
+	// Unmerge → 409 naming the colliding medical record number.
+	rec := mergeUnmerge(t, router, token, companyID, merchantID, logID, "salah gabung")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "nik already registered to medical record") || !strings.Contains(rec.Body.String(), zMRN) {
+		t.Fatalf("unmerge with NIK conflict expected 409 naming MRN %s, got %d: %s", zMRN, rec.Code, rec.Body.String())
+	}
+
+	// Nothing changed: B still merged away, log still open, Z keeps its hash.
+	var bDeleted bool
+	if err := pool.QueryRow(ctx, "SELECT deleted_at IS NOT NULL FROM core.person WHERE id = $1", bID).Scan(&bDeleted); err != nil || !bDeleted {
+		t.Fatalf("B deleted_at not null = %v (%v), want true", bDeleted, err)
+	}
+	var logOpen bool
+	if err := pool.QueryRow(ctx, "SELECT reverted_at IS NULL FROM core.person_merge_log WHERE id = $1", logID).Scan(&logOpen); err != nil || !logOpen {
+		t.Fatalf("log reverted_at null = %v (%v), want true", logOpen, err)
+	}
+	var zHashed bool
+	if err := pool.QueryRow(ctx, "SELECT nik_search_hash IS NOT NULL FROM core.person WHERE id = $1", zID).Scan(&zHashed); err != nil || !zHashed {
+		t.Fatalf("Z nik_search_hash not null = %v (%v), want true", zHashed, err)
+	}
+
+	// Clear Z's NIK → the unmerge succeeds.
+	if _, err := pool.Exec(ctx, "UPDATE core.person SET nik = NULL, nik_search_hash = NULL WHERE id = $1", zID); err != nil {
+		t.Fatalf("clear Z nik: %v", err)
+	}
+	rec = mergeUnmerge(t, router, token, companyID, merchantID, logID, "nik sudah dikosongkan")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unmerge after clearing Z nik expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestPersonMerge_UnmergeSameIdentity — a same-NIK merge (both rows carry the
 // same hash, e.g. legacy data) unmerges with identity_cleared: the merged
 // record comes back WITHOUT a NIK, the survivor keeps its own.

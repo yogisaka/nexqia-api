@@ -116,6 +116,12 @@ SELECT id, COALESCE(medical_record_no, '')::text AS medical_record_no FROM core.
 WHERE company_id = $1 AND nik_search_hash = $2 AND deleted_at IS NULL AND id <> sqlc.arg('exclude_id')::uuid
 LIMIT 1;
 
+-- name: FindPersonByNIKHashNotIn :one
+SELECT id, COALESCE(medical_record_no, '')::text AS medical_record_no FROM core.person
+WHERE company_id = $1 AND nik_search_hash = $2 AND deleted_at IS NULL
+  AND NOT (id = ANY(sqlc.arg('exclude_ids')::uuid[]))
+LIMIT 1;
+
 -- name: GetMergedPersonTarget :one
 SELECT merged_into_person_id FROM core.person WHERE id = $1 AND merged_into_person_id IS NOT NULL;
 
