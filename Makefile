@@ -1,10 +1,13 @@
-.PHONY: migrate-up migrate-down sync-runtime-password seed import-terminology bootstrap-platform-admin test test-integration lint fmt run dev sqlc-generate swag-generate
+.PHONY: migrate-up migrate-down migrate-force sync-runtime-password seed import-terminology bootstrap-platform-admin test test-integration lint fmt run dev sqlc-generate swag-generate
 
 migrate-up:
 	set -a && . ./.env && set +a && $$(go env GOPATH)/bin/migrate -path migrations -database "$$DATABASE_URL" up
 
 migrate-down:
 	set -a && . ./.env && set +a && $$(go env GOPATH)/bin/migrate -path migrations -database "$$DATABASE_URL" down 1
+
+migrate-force:
+	set -a && . ./.env && set +a && $$(go env GOPATH)/bin/migrate -path migrations -database "$$DATABASE_URL" force $(VERSION)
 
 # app_runtime's password can't be set via migration (golang-migrate has no :var
 # substitution) — run this once after migrate-up, and again whenever APP_RUNTIME_PASSWORD

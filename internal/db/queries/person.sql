@@ -39,12 +39,13 @@ ORDER BY full_name
 LIMIT $2 OFFSET $3;
 
 -- name: SearchPersonsByName :many
-SELECT * FROM core.person
-WHERE company_id = $1 AND deleted_at IS NULL AND (
-    full_name ILIKE '%' || $2 || '%'
-    OR medical_record_no ILIKE '%' || $2 || '%'
-    OR phone ILIKE '%' || $2 || '%'
-    OR nik_search_hash = $3
+SELECT p.* FROM core.person p
+WHERE p.company_id = $1 AND p.deleted_at IS NULL AND (
+    p.full_name ILIKE '%' || $2 || '%'
+    OR p.medical_record_no ILIKE '%' || $2 || '%'
+    OR p.phone ILIKE '%' || $2 || '%'
+    OR p.nik_search_hash = $3
+    OR id IN (SELECT m.merged_into_person_id FROM core.person m WHERE m.company_id = $1 AND m.merged_into_person_id IS NOT NULL AND m.medical_record_no ILIKE '%' || $2 || '%')
 )
 ORDER BY full_name
 LIMIT $4;
@@ -109,3 +110,15 @@ ORDER BY merged_at DESC;
 
 -- name: UpdatePersonFullName :exec
 UPDATE core.person SET full_name = $2, updated_by = $3 WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: FindPersonByNIKHash :one
+SELECT id, COALESCE(medical_record_no, '')::text AS medical_record_no FROM core.person
+WHERE company_id = $1 AND nik_search_hash = $2 AND deleted_at IS NULL AND id <> sqlc.arg('exclude_id')::uuid
+LIMIT 1;
+
+-- name: GetMergedPersonTarget :one
+SELECT merged_into_person_id FROM core.person WHERE id = $1 AND merged_into_person_id IS NOT NULL;
+
+-- name: MergedMRNsBySurvivor :many
+SELECT merged_into_person_id AS survivor_id, medical_record_no FROM core.person
+WHERE merged_into_person_id = ANY(sqlc.arg('ids')::uuid[]) ORDER BY medical_record_no;

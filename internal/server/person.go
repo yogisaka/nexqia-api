@@ -4,11 +4,13 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/config"
@@ -82,6 +84,15 @@ func optDate(s string) (pgtype.Date, error) {
 		return pgtype.Date{}, err
 	}
 	return pgtype.Date{Time: t, Valid: true}, nil
+}
+
+// uuidMustParse parses a compile-time constant UUID literal (panics on typo).
+func uuidMustParse(s string) pgtype.UUID {
+	var u pgtype.UUID
+	if err := u.Scan(s); err != nil {
+		panic("uuidMustParse: " + err.Error())
+	}
+	return u
 }
 
 // encryptNIK returns the pgcrypto ciphertext (base64) for a plaintext NIK, or an
@@ -175,6 +186,23 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 				return
 			}
 		}
+		if hash != "" {
+			// Spec §4.7: NIK uniqueness enforced per company via the deterministic
+			// HMAC hash (unique index uq_person_nik_hash) — pre-check here to give
+			// a 409 naming the colliding MRN instead of a bare constraint error.
+			dup, err := q.FindPersonByNIKHash(c.Request.Context(), sqlcgen.FindPersonByNIKHashParams{
+				CompanyID: AuthCompanyID(c), NikSearchHash: optText(hash),
+				ExcludeID: uuidMustParse("00000000-0000-0000-0000-000000000000"),
+			})
+			if err == nil {
+				c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("nik already registered to medical record %s", dup.MedicalRecordNo)})
+				return
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				respondInternalError(c, err)
+				return
+			}
+		}
 		person, err := q.CreatePerson(c.Request.Context(), sqlcgen.CreatePersonParams{
 			CompanyID:              AuthCompanyID(c),
 			Nik:                    nik,
@@ -202,6 +230,11 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			CreatedBy:              AuthUserID(c),
 		})
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_person_nik_hash" {
+				c.JSON(http.StatusConflict, gin.H{"error": "nik already registered"})
+				return
+			}
 			respondInternalError(c, err)
 			return
 		}
@@ -279,8 +312,42 @@ func SearchPersonsHandler(cfg config.Config) gin.HandlerFunc {
 		for i := range persons {
 			persons[i].Nik = pgtype.Text{}
 		}
-		c.JSON(http.StatusOK, gin.H{"data": persons, "meta": gin.H{}})
+		// Spec §8.6: surface the medical record numbers of merged (absorbed)
+		// persons on the survivor so searches for the old MRN still resolve.
+		ids := make([]pgtype.UUID, len(persons))
+		for i := range persons {
+			ids[i] = persons[i].ID
+		}
+		mergedRows, err := q.MergedMRNsBySurvivor(c.Request.Context(), ids)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		mergedBySurvivor := map[pgtype.UUID][]string{}
+		for _, row := range mergedRows {
+			mrn := ""
+			if row.MedicalRecordNo.Valid {
+				mrn = row.MedicalRecordNo.String
+			}
+			mergedBySurvivor[row.SurvivorID] = append(mergedBySurvivor[row.SurvivorID], mrn)
+		}
+		items := make([]personSearchItem, len(persons))
+		for i := range persons {
+			mrnList := mergedBySurvivor[persons[i].ID]
+			if mrnList == nil {
+				mrnList = []string{}
+			}
+			items[i] = personSearchItem{CorePerson: persons[i], MergedFromMRN: mrnList}
+		}
+		c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{}})
 	}
+}
+
+// personSearchItem wraps a CorePerson row with the MRNs of persons merged into
+// it (spec §8.6) — all other fields keep the existing serialization shape.
+type personSearchItem struct {
+	sqlcgen.CorePerson
+	MergedFromMRN []string `json:"merged_from_mrn"`
 }
 
 // GetPersonHandler godoc
@@ -307,6 +374,12 @@ func GetPersonHandler(cfg config.Config) gin.HandlerFunc {
 		q := sqlcgen.New(tx)
 		person, err := q.GetPersonByID(c.Request.Context(), id)
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Spec §8.6: a merged person no longer resolves directly — point the
+			// caller at the surviving record instead.
+			if target, mErr := q.GetMergedPersonTarget(c.Request.Context(), id); mErr == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "person merged", "merged_into_person_id": target.String()})
+				return
+			}
 			c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
 			return
 		}
@@ -384,6 +457,21 @@ func UpdatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			respondInternalError(c, err)
 			return
 		}
+		if hash != "" {
+			// Spec §4.7: block re-pointing this person's NIK at another live
+			// record's NIK (exclude self so a no-op update passes).
+			dup, err := q.FindPersonByNIKHash(c.Request.Context(), sqlcgen.FindPersonByNIKHashParams{
+				CompanyID: AuthCompanyID(c), NikSearchHash: optText(hash), ExcludeID: id,
+			})
+			if err == nil {
+				c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("nik already registered to medical record %s", dup.MedicalRecordNo)})
+				return
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				respondInternalError(c, err)
+				return
+			}
+		}
 		person, err := q.UpdatePerson(c.Request.Context(), sqlcgen.UpdatePersonParams{
 			ID:                     id,
 			Nik:                    nik,
@@ -415,6 +503,11 @@ func UpdatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_person_nik_hash" {
+				c.JSON(http.StatusConflict, gin.H{"error": "nik already registered"})
+				return
+			}
 			respondInternalError(c, err)
 			return
 		}
