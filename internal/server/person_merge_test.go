@@ -422,6 +422,15 @@ func TestPersonMerge_Unmerge(t *testing.T) {
 	if data := mergeRespData(t, rec); data["identity_cleared"] != false {
 		t.Fatalf("identity_cleared = %v, want false", data["identity_cleared"])
 	}
+	// survivor_snapshot is projected to the compared fields only — the raw
+	// snapshot (encrypted NIK ciphertext) must never come back.
+	snap := mergeRespData(t, rec)["survivor_snapshot"].(map[string]any)
+	if snap["full_name"] != "Merge Un Alpha" {
+		t.Fatalf("survivor_snapshot.full_name = %v, want Merge Un Alpha", snap["full_name"])
+	}
+	if _, has := snap["nik"]; has {
+		t.Fatalf("survivor_snapshot must not expose the raw snapshot: %v", snap)
+	}
 
 	// B alive again with its own NIK; A back without NIK.
 	getNIK := func(personID string) string {
@@ -622,5 +631,67 @@ func TestPersonMerge_RequiresPermission(t *testing.T) {
 	// unmerge permission, not a broken token).
 	if rec := accountRequest(router, http.MethodGet, "/api/v1/persons/merge-preview?survivor_id="+xID+"&merged_id="+yID, mergeOnly, companyID, merchantID, nil); rec.Code != http.StatusOK {
 		t.Fatalf("preview with merge permission expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPersonMerge_PreviewNotLive — merge-preview refuses a soft-deleted
+// or already-merged side (spec 2026-10-10-merge-review-fixes §1): a
+// stale URL must 404 instead of rendering a full preview.
+func TestPersonMerge_PreviewNotLive(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := mergeTestRouter(t, ctx, pool)
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "mprevlive.owner", "081234601006")
+
+	// Soft-deleted side (stale merge URL).
+	aID, _ := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge Prev Alpha", "gender": "female", "birth_date": "1980-01-01",
+	})
+	bID, _ := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge Prev Beta", "gender": "female", "birth_date": "1980-01-01",
+	})
+	if _, err := pool.Exec(ctx,
+		"UPDATE core.person SET deleted_at = now(), deleted_by = gen_random_uuid() WHERE id = $1", bID); err != nil {
+		t.Fatalf("soft-delete person: %v", err)
+	}
+	for _, pair := range [][2]string{{aID, bID}, {bID, aID}} {
+		rec := accountRequest(router, http.MethodGet,
+			"/api/v1/persons/merge-preview?survivor_id="+pair[0]+"&merged_id="+pair[1], token, companyID, merchantID, nil)
+		if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "person not found") {
+			t.Fatalf("preview with soft-deleted side (%s,%s) expected 404 person not found, got %d: %s",
+				pair[0], pair[1], rec.Code, rec.Body.String())
+		}
+	}
+
+	// Already-merged side: a real merge first, then the old pair 404s.
+	cID, cMRN := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge Prev Ceta", "gender": "female", "birth_date": "1980-01-01",
+		"nik": "3201010101800031", "phone": "081111110031",
+	})
+	dID, _ := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge Prev Delta", "gender": "female", "birth_date": "1980-01-01",
+		"phone": "082222220031",
+	})
+	preview := mergePreview(t, router, token, companyID, merchantID, dID, cID)
+	mergeRec := mergeExec(t, router, token, companyID, merchantID, map[string]any{
+		"survivor_id": dID, "merged_id": cID, "reason": "duplikat",
+		"expected_row_versions": map[string]any{
+			"survivor": mergeSide(t, preview, "survivor")["row_version"],
+			"merged":   mergeSide(t, preview, "merged")["row_version"],
+		},
+		"field_choices": map[string]string{"phone": "merged", "full_name": "survivor"},
+		"confirm_mrn":   cMRN,
+	})
+	if mergeRec.Code != http.StatusOK {
+		t.Fatalf("merge expected 200, got %d: %s", mergeRec.Code, mergeRec.Body.String())
+	}
+	for _, pair := range [][2]string{{dID, cID}, {cID, dID}} {
+		rec := accountRequest(router, http.MethodGet,
+			"/api/v1/persons/merge-preview?survivor_id="+pair[0]+"&merged_id="+pair[1], token, companyID, merchantID, nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("preview with merged side (%s,%s) expected 404, got %d: %s",
+				pair[0], pair[1], rec.Code, rec.Body.String())
+		}
 	}
 }

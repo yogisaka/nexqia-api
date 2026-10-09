@@ -63,8 +63,10 @@ func identityKey(v map[string]string) string { return v["nik_search_hash"] }
 // resolveSurvivorship returns the final survivor values, the applied choice
 // per field (survivor|merged|autofill) and the conflicting fields missing a
 // choice (sorted). Inputs hold every mergeFields column plus nik,
-// nik_search_hash and identity_type_concept_id; "" means empty.
-func resolveSurvivorship(s, m, choices map[string]string, survivorID string) (map[string]string, map[string]string, []string) {
+// nik_search_hash and identity_type_concept_id; "" means empty. A final
+// family_id pointing at either merge participant is cleared: the merged
+// record is soft-deleted, so it must not stay referenced.
+func resolveSurvivorship(s, m, choices map[string]string, survivorID, mergedID string) (map[string]string, map[string]string, []string) {
 	final := map[string]string{}
 	for k, v := range s {
 		final[k] = v
@@ -102,7 +104,7 @@ func resolveSurvivorship(s, m, choices map[string]string, survivorID string) (ma
 			final[f] = mv
 		}
 	}
-	if final["family_id"] == survivorID {
+	if final["family_id"] == survivorID || final["family_id"] == mergedID {
 		final["family_id"] = ""
 	}
 	sort.Strings(missing)

@@ -32,7 +32,7 @@ SELECT id, company_id, row_version, created_at, updated_at,
        COALESCE(nik, '')::text AS nik,
        COALESCE(nik_search_hash, '')::text AS nik_search_hash,
        COALESCE(identity_type_concept_id::text, '')::text AS identity_type_concept_id
-FROM core.person WHERE id = $1;
+FROM core.person WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: PersonSnapshot :one
 SELECT to_jsonb(p)::jsonb AS snapshot FROM core.person p WHERE p.id = $1;

@@ -39,12 +39,12 @@ func TestResolveSurvivorship(t *testing.T) {
 	s := map[string]string{"full_name": "Siti Aminah", "phone": "0812", "email": "", "address": "Lama", "family_id": "", "nik": "", "nik_search_hash": "", "identity_type_concept_id": ""}
 	m := map[string]string{"full_name": "Siti Aminah S", "phone": "0857", "email": "s@x.id", "address": "Lama", "family_id": "SURV", "nik": "enc", "nik_search_hash": "h1", "identity_type_concept_id": "ktp"}
 
-	_, _, missing := resolveSurvivorship(s, m, map[string]string{}, "SURV")
+	_, _, missing := resolveSurvivorship(s, m, map[string]string{}, "SURV", "MRGD")
 	if !reflect.DeepEqual(missing, []string{"full_name", "phone"}) {
 		t.Fatalf("missing = %v, want [full_name phone]", missing)
 	}
 
-	final, applied, missing := resolveSurvivorship(s, m, map[string]string{"full_name": "survivor", "phone": "merged"}, "SURV")
+	final, applied, missing := resolveSurvivorship(s, m, map[string]string{"full_name": "survivor", "phone": "merged"}, "SURV", "MRGD")
 	if len(missing) != 0 {
 		t.Fatalf("missing = %v", missing)
 	}
@@ -60,5 +60,14 @@ func TestResolveSurvivorship(t *testing.T) {
 	}
 	if final["family_id"] != "" {
 		t.Fatalf("family_id pointing at the survivor must become empty, got %q", final["family_id"])
+	}
+
+	// A survivor family_id pointing at the merged record is cleared too.
+	finalMerged, _, _ := resolveSurvivorship(
+		map[string]string{"full_name": "A", "family_id": "MRGD"},
+		map[string]string{"full_name": "B"},
+		map[string]string{"full_name": "survivor"}, "SURV", "MRGD")
+	if finalMerged["family_id"] != "" {
+		t.Fatalf("family_id pointing at the merged record must become empty, got %q", finalMerged["family_id"])
 	}
 }

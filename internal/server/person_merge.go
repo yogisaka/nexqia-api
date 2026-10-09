@@ -386,7 +386,7 @@ func MergePersonsHandler(cfg config.Config) gin.HandlerFunc {
 		}
 
 		// 4. Survivorship (spec §6).
-		final, applied, missing := resolveSurvivorship(sMap, mMap, req.FieldChoices, survivorID.String())
+		final, applied, missing := resolveSurvivorship(sMap, mMap, req.FieldChoices, survivorID.String(), mergedID.String())
 		if len(missing) > 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "field choices required", "fields": missing})
 			return
@@ -770,11 +770,24 @@ func UnmergePersonHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Only the fields the history screen compares are echoed back; the raw
+	// snapshot (encrypted NIK ciphertext) is never returned — same rule as
+	// mergeLogJSON.
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"log_id":                 unmergeLog.ID,
 		"result":                 json.RawMessage(result),
 		"identity_cleared":       identityCleared,
 		"admissions_after_merge": admissions,
-		"survivor_snapshot":      json.RawMessage(snapshot["survivor"]),
+		"survivor_snapshot": gin.H{
+			"full_name":      snapStr(snapSurvivor, "full_name"),
+			"birth_date":     snapStr(snapSurvivor, "birth_date"),
+			"birth_place":    snapStr(snapSurvivor, "birth_place"),
+			"gender":         snapStr(snapSurvivor, "gender"),
+			"blood_type":     snapStr(snapSurvivor, "blood_type"),
+			"marital_status": snapStr(snapSurvivor, "marital_status"),
+			"phone":          snapStr(snapSurvivor, "phone"),
+			"email":          snapStr(snapSurvivor, "email"),
+			"address":        snapStr(snapSurvivor, "address"),
+		},
 	}})
 }
