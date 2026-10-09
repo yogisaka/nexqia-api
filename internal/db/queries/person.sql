@@ -125,6 +125,11 @@ LIMIT 1;
 -- name: GetMergedPersonTarget :one
 SELECT merged_into_person_id FROM core.person WHERE id = $1 AND merged_into_person_id IS NOT NULL;
 
+-- name: GetMergedPersonTargetMRN :one
+SELECT p.merged_into_person_id, COALESCE(s.medical_record_no, '')::text AS target_mrn
+FROM core.person p LEFT JOIN core.person s ON s.id = p.merged_into_person_id AND s.deleted_at IS NULL
+WHERE p.id = $1 AND p.merged_into_person_id IS NOT NULL;
+
 -- name: MergedMRNsBySurvivor :many
 SELECT merged_into_person_id AS survivor_id, medical_record_no FROM core.person
 WHERE merged_into_person_id = ANY(sqlc.arg('ids')::uuid[]) ORDER BY medical_record_no;

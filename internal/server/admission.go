@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
@@ -199,6 +200,26 @@ func CreateAdmissionHandler(c *gin.Context) {
 	ctx := c.Request.Context()
 	q := sqlcgen.New(TxFromContext(c))
 
+	// A merged person must not get new admissions (trg_person_not_merged
+	// would abort the insert with a bare 500): resolve the live person
+	// first and point the caller at the surviving record.
+	if _, err := q.GetPersonByID(ctx, personID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			if target, mErr := q.GetMergedPersonTargetMRN(ctx, personID); mErr == nil {
+				msg := "person merged"
+				if target.TargetMrn != "" {
+					msg = fmt.Sprintf("person merged into medical record %s", target.TargetMrn)
+				}
+				c.JSON(http.StatusConflict, gin.H{"error": msg, "merged_into_person_id": target.MergedIntoPersonID.String()})
+				return
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+			return
+		}
+		respondInternalError(c, err)
+		return
+	}
+
 	// Optional session pick (spec 2026-10-01-b §4): validate the schedule
 	// pattern, replace the physician with the substitute when the session was
 	// substituted, and enforce the payer quota. The pattern row is locked
@@ -341,6 +362,11 @@ func CreateAdmissionHandler(c *gin.Context) {
 		CreatedBy: AuthUserID(c), ScheduleID: admissionScheduleID,
 	})
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+			c.JSON(http.StatusConflict, gin.H{"error": "person merged"})
+			return
+		}
 		respondInternalError(c, err)
 		return
 	}

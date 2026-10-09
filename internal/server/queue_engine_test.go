@@ -317,6 +317,53 @@ func TestQueueEngine_DefaultFlowAutoCreatedOnce(t *testing.T) {
 	}
 }
 
+// TestAdmission_MergedPersonRejected — a merged (soft-deleted) person cannot
+// get a new admission: the handler answers 409 pointing at the surviving
+// record (instead of a trigger 500), an unknown person answers 404, and the
+// surviving person still admits normally.
+func TestAdmission_MergedPersonRejected(t *testing.T) {
+	env := qeNewEnv(t, "mergedperson")
+	dept := env.seedDepartment(t, "MP1")
+	survivor := env.seedPerson(t, "Merged Target")
+	merged := env.seedPerson(t, "Merged Old")
+
+	ctx := t.Context()
+	if _, err := env.pool.Exec(ctx,
+		"UPDATE core.person SET medical_record_no = 'MP-TARGET' WHERE id = $1", survivor); err != nil {
+		t.Fatalf("set survivor MRN: %v", err)
+	}
+	var ownerID string
+	if err := env.pool.QueryRow(ctx,
+		"SELECT id FROM core.app_user WHERE company_id = $1 LIMIT 1", env.companyID).Scan(&ownerID); err != nil {
+		t.Fatalf("find company owner: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx,
+		"UPDATE core.person SET merged_into_person_id = $1, deleted_at = now(), deleted_by = $2 WHERE id = $3",
+		survivor, ownerID, merged); err != nil {
+		t.Fatalf("merge person: %v", err)
+	}
+
+	code, resp := qeRequest(t, env, http.MethodPost, "/api/v1/admissions",
+		map[string]string{"person_id": merged, "department_id": dept})
+	if code != http.StatusConflict {
+		t.Fatalf("merged person: expected 409, got %d %v", code, resp)
+	}
+	if msg, _ := resp["error"].(string); !strings.Contains(msg, "person merged into medical record MP-TARGET") {
+		t.Fatalf("merged person: expected MRN message, got %v", resp)
+	}
+	if resp["merged_into_person_id"] != survivor {
+		t.Fatalf("merged person: expected merged_into_person_id %s, got %v", survivor, resp)
+	}
+
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/admissions",
+		map[string]string{"person_id": "11111111-1111-1111-1111-111111111111", "department_id": dept})
+	if code != http.StatusNotFound || resp["error"] != "person not found" {
+		t.Fatalf("unknown person: expected 404 'person not found', got %d %v", code, resp)
+	}
+
+	env.qeAdmit(t, dept, survivor, "", "", http.StatusCreated)
+}
+
 // TestQueueEngine_ThreeStageJourney — the default flow advances
 // pendaftaran → perawat → dokter and completes the journey after the last
 // stage (no fourth ticket).
