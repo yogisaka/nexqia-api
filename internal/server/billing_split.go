@@ -164,6 +164,9 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 			}
 
 			// Private payer: sequential cut from the remainder.
+			if p.HasPlan && !p.HasPlanRule {
+				continue // plan without a rule for this care type bears nothing (spec §3.4)
+			}
 			if p.Blacklist[ch.ItemID] {
 				continue
 			}

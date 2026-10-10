@@ -392,6 +392,7 @@ func recomputeAccount(c *gin.Context, q *sqlcgen.Queries, account sqlcgen.Operat
 				return out, err
 			}
 			if err == nil && plan.IsActive && plan.PayerID == payer.ID {
+				sp.HasPlan = true
 				rules, err := q.ListPlanRules(ctx, plan.ID)
 				if err != nil {
 					return out, err
