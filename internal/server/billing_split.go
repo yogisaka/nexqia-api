@@ -29,7 +29,8 @@ type splitPayer struct {
 	Blacklist                       map[string]bool
 	DiscountBP                      map[string]int64
 	DiscountCents                   map[string]int64
-	HasPlanRule                     bool
+	HasPlan                         bool  // an active, payer-matched plan is attached
+	HasPlanRule                     bool  // ...and it has a rule for the visit's care type
 	CopayBP, CopayMaxCents          int64 // CopayMaxCents: -1 = none
 	DeductibleCents                 int64
 	VisitLimitCents                 int64 // -1 / 0 = none

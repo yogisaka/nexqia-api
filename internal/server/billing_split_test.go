@@ -269,6 +269,26 @@ func TestSplitAccount(t *testing.T) {
 			},
 		},
 		{
+			name:    "plan_without_rule_skipped",
+			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 1000, ServiceDate: day}},
+			payers: []splitPayer{
+				{PayerID: "a", PayerType: "private", PriceListID: "def", HasPlan: true, AnnualRemainingCents: -1},
+			},
+			price: map[string]int64{"def|it": 100000},
+			check: func(t *testing.T, res splitResult, err error) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.PayerCents != 0 || res.PatientCents != 100000 {
+					t.Fatalf("payer=%d patient=%d, want 0/100000", res.PayerCents, res.PatientCents)
+				}
+				parts := res.ByCharge["c1"]
+				if len(parts) != 1 || parts[0].Party != "patient" || parts[0].Coverage != "" || parts[0].AmountCents != 100000 {
+					t.Fatalf("parts=%+v", parts)
+				}
+			},
+		},
+		{
 			name:    "gl_missing",
 			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 1000, ServiceDate: day}},
 			payers: []splitPayer{

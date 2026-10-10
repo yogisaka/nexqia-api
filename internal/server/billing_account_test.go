@@ -657,3 +657,53 @@ func TestBilling_AnnualUsageServiceYear(t *testing.T) {
 		t.Fatalf("service-year totals = %v, want payer 50000.00 patient 0.00", totals)
 	}
 }
+
+// TestBilling_PlanWithoutCareTypeRule — a plan whose rules have no row for
+// the visit's care type bears NOTHING (spec b1 §3.4): the patient pays in
+// full even though the plan's annual limit would cover the whole charge.
+func TestBilling_PlanWithoutCareTypeRule(t *testing.T) {
+	env := payNewEnv(t, "bil.norule")
+	_, admissionID := bilNewPersonAndVisit(t, env, "BILN", "Pasien Plan Tanpa Aturan")
+	_, itemID := bilDefaultList(t, env, "NORULE", "10000.00")
+	privID := pcCreatePayer(t, env, "BILN-PRV", "Asuransi Tanpa Aturan", "private_insurance")
+	status, out := qeRequest(t, env, http.MethodPost, "/api/v1/payers/"+privID+"/plans",
+		map[string]any{"code": "BILN-PLAN", "name": "Plan Tanpa Aturan", "annual_limit": "62500.00"})
+	planID, _ := payMapData(t, status, out, http.StatusCreated)["id"].(string)
+	// Rules exist only for inpatient; the visit is outpatient.
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/payer-plans/"+planID+"/rules",
+		map[string]any{"rules": []map[string]any{{
+			"care_type": "inpatient", "copay_percent": "0.00", "deductible_per_claim": "0.00",
+		}}})
+	if status != http.StatusOK {
+		t.Fatalf("put rules = %d %v", status, out)
+	}
+	bilPutGuarantor(t, env, admissionID, privID, planID)
+
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	data := payMapData(t, status, out, http.StatusCreated)
+	totals, _ := data["totals"].(map[string]any)
+	if totals["payer"] != "0.00" || totals["patient"] != "10000.00" {
+		t.Fatalf("plan-skip totals = %v, want payer 0.00 patient 10000.00", totals)
+	}
+	charges, _ := data["charges"].([]any)
+	ch, _ := charges[0].(map[string]any)
+	splits, _ := ch["splits"].([]any)
+	if len(splits) != 1 {
+		t.Fatalf("splits = %v", ch)
+	}
+	sp0, _ := splits[0].(map[string]any)
+	if sp0["party"] != "patient" || sp0["coverage"] != "uncovered" || sp0["amount"] != "10000.00" {
+		t.Fatalf("patient split = %v", sp0)
+	}
+	if needs, _ := data["needs_consent"].([]any); len(needs) != 0 {
+		t.Fatalf("needs_consent = %v", data)
+	}
+
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/billing/finalize", nil)
+	data = payMapData(t, status, out, http.StatusOK)
+	acct, _ := data["account"].(map[string]any)
+	if acct["status"] != "finalized" || acct["patient_total"] != "10000.00" || acct["payer_total"] != "0.00" {
+		t.Fatalf("finalized account = %v", acct)
+	}
+}
