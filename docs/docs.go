@@ -246,6 +246,132 @@ const docTemplate = `{
                 }
             }
         },
+        "/admissions/{id}/guarantee-letters": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admission"
+                ],
+                "summary": "Replace the guarantee letters (surat jaminan) of a visit",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Admission UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Guarantee letter list",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.putGuaranteeLettersRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/admissions/{id}/guarantors": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admission"
+                ],
+                "summary": "Replace the guarantors of a visit (BPJS is moved to sequence 1)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Admission UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Guarantor list",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.putGuarantorsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/audit/access-logs": {
             "get": {
                 "security": [
@@ -5366,6 +5492,63 @@ const docTemplate = `{
                 }
             }
         },
+        "/patient-coverages/{id}": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "patient-coverage"
+                ],
+                "summary": "Update a patient coverage (optimistic locking)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Patient coverage UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Coverage data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updatePatientCoverageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/payer-plans/{id}": {
             "delete": {
                 "security": [
@@ -6807,6 +6990,106 @@ const docTemplate = `{
                         "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/persons/{id}/coverages": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "patient-coverage"
+                ],
+                "summary": "List the coverage memberships (kepesertaan) of a person",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "patient-coverage"
+                ],
+                "summary": "Register a coverage membership (kepesertaan) for a person",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Coverage data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.coverageInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
                         }
                     }
                 }
@@ -11656,6 +11939,39 @@ const docTemplate = `{
                 }
             }
         },
+        "server.coverageInput": {
+            "type": "object",
+            "required": [
+                "member_number",
+                "payer_id"
+            ],
+            "properties": {
+                "bpjs_class": {
+                    "type": "string"
+                },
+                "member_number": {
+                    "type": "string"
+                },
+                "payer_id": {
+                    "type": "string"
+                },
+                "plan_id": {
+                    "type": "string"
+                },
+                "tpa_remaining_annual": {
+                    "type": "string"
+                },
+                "tpa_remaining_as_of": {
+                    "type": "string"
+                },
+                "valid_from": {
+                    "type": "string"
+                },
+                "valid_to": {
+                    "type": "string"
+                }
+            }
+        },
         "server.coverageRuleInput": {
             "type": "object",
             "required": [
@@ -12483,6 +12799,58 @@ const docTemplate = `{
                 }
             }
         },
+        "server.guaranteeLetterInput": {
+            "type": "object",
+            "required": [
+                "amount_limit",
+                "gl_number",
+                "payer_id",
+                "valid_from"
+            ],
+            "properties": {
+                "amount_limit": {
+                    "type": "string"
+                },
+                "gl_number": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "payer_id": {
+                    "type": "string"
+                },
+                "valid_from": {
+                    "type": "string"
+                },
+                "valid_to": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.guarantorInput": {
+            "type": "object",
+            "required": [
+                "payer_id"
+            ],
+            "properties": {
+                "coverage_id": {
+                    "type": "string"
+                },
+                "guarantor_name": {
+                    "type": "string"
+                },
+                "payer_id": {
+                    "type": "string"
+                },
+                "plan_id": {
+                    "type": "string"
+                },
+                "policy_number": {
+                    "type": "string"
+                }
+            }
+        },
         "server.impersonateRequest": {
             "type": "object",
             "required": [
@@ -13000,6 +13368,28 @@ const docTemplate = `{
                 },
                 "item_type": {
                     "type": "string"
+                }
+            }
+        },
+        "server.putGuaranteeLettersRequest": {
+            "type": "object",
+            "properties": {
+                "letters": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.guaranteeLetterInput"
+                    }
+                }
+            }
+        },
+        "server.putGuarantorsRequest": {
+            "type": "object",
+            "properties": {
+                "guarantors": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.guarantorInput"
+                    }
                 }
             }
         },
@@ -13715,6 +14105,44 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "severity": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.updatePatientCoverageRequest": {
+            "type": "object",
+            "required": [
+                "row_version"
+            ],
+            "properties": {
+                "bpjs_class": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "member_number": {
+                    "type": "string"
+                },
+                "payer_id": {
+                    "type": "string"
+                },
+                "plan_id": {
+                    "type": "string"
+                },
+                "row_version": {
+                    "type": "integer"
+                },
+                "tpa_remaining_annual": {
+                    "type": "string"
+                },
+                "tpa_remaining_as_of": {
+                    "type": "string"
+                },
+                "valid_from": {
+                    "type": "string"
+                },
+                "valid_to": {
                     "type": "string"
                 }
             }

@@ -38,6 +38,14 @@ func RegisterPayerRoutes(rg *gin.RouterGroup) {
 	rg.PUT("/payers/:id/item-coverage", PutPayerItemCoverageHandler)
 	rg.POST("/payers/:id/item-coverage/from-template", PostPayerItemCoverageFromTemplateHandler)
 	rg.PATCH("/merchants/:id/billing-profile", UpdateMerchantBillingProfileHandler)
+	// Kepesertaan pasien (core.person.manage), visit guarantors and guarantee
+	// letters (operations.visit.manage or billing.invoice.create) — handlers
+	// live in patient_coverage.go.
+	rg.GET("/persons/:id/coverages", AccessLog("patient_coverage", "list", "id"), ListPatientCoveragesHandler)
+	rg.POST("/persons/:id/coverages", CreatePatientCoverageHandler)
+	rg.PATCH("/patient-coverages/:id", UpdatePatientCoverageHandler)
+	rg.PUT("/admissions/:id/guarantors", PutAdmissionGuarantorsHandler)
+	rg.PUT("/admissions/:id/guarantee-letters", PutAdmissionGuaranteeLettersHandler)
 }
 
 // ListPayersHandler godoc

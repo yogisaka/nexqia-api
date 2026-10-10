@@ -140,3 +140,74 @@ UPDATE core.merchant
 SET facility_type = $2, bpjs_cooperation = $3, bpjs_network_parent = $4, default_price_list_id = $5
 WHERE id = $1
 RETURNING *;
+
+-- Patient coverage (kepesertaan, 000068 §3.7).
+
+-- name: ListPatientCoveragesByPerson :many
+SELECT pc.*, p.code AS payer_code, p.name AS payer_name, p.payer_type
+FROM core.patient_coverage pc
+JOIN core.payer p ON p.id = pc.payer_id
+WHERE pc.person_id = $1 AND pc.deleted_at IS NULL
+ORDER BY pc.created_at, pc.id;
+
+-- name: GetPatientCoverageByID :one
+SELECT * FROM core.patient_coverage WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: GetPatientCoverageDetail :one
+SELECT pc.*, p.code AS payer_code, p.name AS payer_name, p.payer_type
+FROM core.patient_coverage pc
+JOIN core.payer p ON p.id = pc.payer_id
+WHERE pc.id = $1 AND pc.deleted_at IS NULL;
+
+-- name: CreatePatientCoverage :one
+INSERT INTO core.patient_coverage
+    (company_id, merchant_id, person_id, payer_id, plan_id, member_number, bpjs_class,
+     valid_from, valid_to, tpa_remaining_annual, tpa_remaining_as_of, created_by, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+RETURNING *;
+
+-- name: UpdatePatientCoverage :one
+UPDATE core.patient_coverage
+SET payer_id = $2, plan_id = $3, member_number = $4, bpjs_class = $5,
+    valid_from = $6, valid_to = $7, tpa_remaining_annual = $8, tpa_remaining_as_of = $9,
+    is_active = $10, updated_by = $11
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
+-- Visit guarantors (full-set replace, spec §6).
+
+-- name: ListAdmissionGuarantors :many
+SELECT * FROM operations.admission_guarantor WHERE admission_id = $1 ORDER BY sequence;
+
+-- name: DeleteAdmissionGuarantors :exec
+DELETE FROM operations.admission_guarantor WHERE admission_id = $1;
+
+-- name: InsertAdmissionGuarantor :exec
+INSERT INTO operations.admission_guarantor
+    (admission_id, payer_id, coverage_id, plan_id, policy_number, guarantor_name, sequence, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: SetAdmissionPrimaryPayer :exec
+UPDATE operations.admission SET primary_payer_id = $2, updated_by = $3 WHERE id = $1;
+
+-- Billing account (admission-scoped, 000068 §3.10).
+
+-- name: GetBillingAccountByAdmission :one
+SELECT * FROM operations.billing_account WHERE admission_id = $1;
+
+-- Guarantee letters (full-set soft replace, spec §3.9/§6).
+
+-- name: ListGuaranteeLetters :many
+SELECT * FROM operations.guarantee_letter
+WHERE admission_id = $1 AND deleted_at IS NULL
+ORDER BY created_at, id;
+
+-- name: SoftDeleteGuaranteeLetters :exec
+UPDATE operations.guarantee_letter SET deleted_at = now(), deleted_by = $2
+WHERE admission_id = $1 AND deleted_at IS NULL;
+
+-- name: InsertGuaranteeLetter :exec
+INSERT INTO operations.guarantee_letter
+    (company_id, merchant_id, admission_id, payer_id, gl_number, amount_limit,
+     valid_from, valid_to, note, created_by, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10);

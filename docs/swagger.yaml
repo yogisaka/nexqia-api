@@ -105,6 +105,28 @@ definitions:
     - from_week_start
     - to_week_start
     type: object
+  server.coverageInput:
+    properties:
+      bpjs_class:
+        type: string
+      member_number:
+        type: string
+      payer_id:
+        type: string
+      plan_id:
+        type: string
+      tpa_remaining_annual:
+        type: string
+      tpa_remaining_as_of:
+        type: string
+      valid_from:
+        type: string
+      valid_to:
+        type: string
+    required:
+    - member_number
+    - payer_id
+    type: object
   server.coverageRuleInput:
     properties:
       claim_type:
@@ -665,6 +687,41 @@ definitions:
       name:
         type: string
     type: object
+  server.guaranteeLetterInput:
+    properties:
+      amount_limit:
+        type: string
+      gl_number:
+        type: string
+      note:
+        type: string
+      payer_id:
+        type: string
+      valid_from:
+        type: string
+      valid_to:
+        type: string
+    required:
+    - amount_limit
+    - gl_number
+    - payer_id
+    - valid_from
+    type: object
+  server.guarantorInput:
+    properties:
+      coverage_id:
+        type: string
+      guarantor_name:
+        type: string
+      payer_id:
+        type: string
+      plan_id:
+        type: string
+      policy_number:
+        type: string
+    required:
+    - payer_id
+    type: object
   server.impersonateRequest:
     properties:
       company_id:
@@ -1010,6 +1067,20 @@ definitions:
     required:
     - adjustment_percent
     - item_type
+    type: object
+  server.putGuaranteeLettersRequest:
+    properties:
+      letters:
+        items:
+          $ref: '#/definitions/server.guaranteeLetterInput'
+        type: array
+    type: object
+  server.putGuarantorsRequest:
+    properties:
+      guarantors:
+        items:
+          $ref: '#/definitions/server.guarantorInput'
+        type: array
     type: object
   server.putInventoryItemIngredientsRequest:
     properties:
@@ -1483,6 +1554,31 @@ definitions:
       severity:
         type: string
     type: object
+  server.updatePatientCoverageRequest:
+    properties:
+      bpjs_class:
+        type: string
+      is_active:
+        type: boolean
+      member_number:
+        type: string
+      payer_id:
+        type: string
+      plan_id:
+        type: string
+      row_version:
+        type: integer
+      tpa_remaining_annual:
+        type: string
+      tpa_remaining_as_of:
+        type: string
+      valid_from:
+        type: string
+      valid_to:
+        type: string
+    required:
+    - row_version
+    type: object
   server.updatePayerPlanRequest:
     properties:
       annual_limit:
@@ -1791,6 +1887,86 @@ paths:
       security:
       - BearerAuth: []
       summary: Update an admission
+      tags:
+      - admission
+  /admissions/{id}/guarantee-letters:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Guarantee letter list
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putGuaranteeLettersRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the guarantee letters (surat jaminan) of a visit
+      tags:
+      - admission
+  /admissions/{id}/guarantors:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Guarantor list
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putGuarantorsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the guarantors of a visit (BPJS is moved to sequence 1)
       tags:
       - admission
   /admissions/payer-summary:
@@ -5096,6 +5272,42 @@ paths:
       summary: Update an allergy record
       tags:
       - patient-allergy
+  /patient-coverages/{id}:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Patient coverage UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Coverage data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updatePatientCoverageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a patient coverage (optimistic locking)
+      tags:
+      - patient-coverage
   /payer-plans/{id}:
     delete:
       description: Rejected with 409 while active patient coverages point at the plan.
@@ -5716,6 +5928,69 @@ paths:
       summary: Record an allergy for a person
       tags:
       - patient-allergy
+  /persons/{id}/coverages:
+    get:
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List the coverage memberships (kepesertaan) of a person
+      tags:
+      - patient-coverage
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Coverage data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.coverageInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Register a coverage membership (kepesertaan) for a person
+      tags:
+      - patient-coverage
   /persons/{id}/families:
     get:
       parameters:
