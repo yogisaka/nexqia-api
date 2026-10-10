@@ -452,9 +452,9 @@ func recomputeAccount(c *gin.Context, q *sqlcgen.Queries, account sqlcgen.Operat
 					start, end := planYearWindow(nowLocal, plan.PlanYearStartMonth)
 					row, err := q.SumPayerAnnualUsage(ctx, sqlcgen.SumPayerAnnualUsageParams{
 						PayerID: payer.ID, PersonID: adm.PersonID, AdmissionID: locked.AdmissionID,
-						ComputedAt:   pgtype.Timestamptz{Time: start, Valid: true},
-						ComputedAt_2: pgtype.Timestamptz{Time: end, Valid: true},
-						PlanID:       plan.ID,
+						ServiceDate:   pgtype.Date{Time: start, Valid: true},
+						ServiceDate_2: pgtype.Date{Time: end, Valid: true},
+						PlanID:        plan.ID,
 					})
 					if err != nil {
 						return out, err

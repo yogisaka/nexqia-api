@@ -297,9 +297,11 @@ WHERE admission_id = $1 AND status = 'active';
 -- name: SumPayerAnnualUsage :one
 -- Payer-side amounts already frozen into OTHER finalized accounts of the same
 -- person under the SAME plan within the plan's running year (window computed
--- in Go from plan_year_start_month). The guarantor row of the past visit must
--- carry the same plan_id, so usage of another plan of the same payer never
--- eats this plan's annual limit.
+-- in Go from plan_year_start_month and matched against each charge's
+-- service_date — the plan year the SERVICE belongs to, not the year the
+-- split was computed/finalized in). The guarantor row of the past visit
+-- must carry the same plan_id, so usage of another plan of the same payer
+-- never eats this plan's annual limit.
 SELECT COALESCE(sum(cs.amount), 0)::numeric AS used
 FROM operations.charge_split cs
 JOIN operations.charge ch ON ch.id = cs.charge_id
@@ -308,7 +310,7 @@ JOIN operations.admission a ON a.id = ba.admission_id
 WHERE cs.party = 'payer' AND cs.payer_id = $1
   AND a.person_id = $2 AND ba.admission_id <> $3
   AND ba.status = 'finalized' AND ch.status = 'active'
-  AND cs.computed_at >= $4 AND cs.computed_at < $5
+  AND ch.service_date >= $4 AND ch.service_date < $5
   AND EXISTS (
       SELECT 1 FROM operations.admission_guarantor ag
       WHERE ag.admission_id = a.id AND ag.payer_id = cs.payer_id AND ag.plan_id = $6);

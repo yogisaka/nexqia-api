@@ -579,3 +579,56 @@ func TestBilling_AnnualUsageTwoPlans(t *testing.T) {
 		t.Fatalf("plan B totals = %v, want payer 50000.00 patient 0", totals)
 	}
 }
+
+// TestBilling_AnnualUsageServiceYear — annual usage keys on the charge's
+// service_date, not computed_at: a finalized visit whose service_date lies
+// outside the plan's current running year must NOT eat this year's limit.
+func TestBilling_AnnualUsageServiceYear(t *testing.T) {
+	env := payNewEnv(t, "bil.annual3")
+	personID, admissionA := bilNewPersonAndVisit(t, env, "BIL3A", "Pasien Tahun Layanan")
+	_, itemID := bilDefaultList(t, env, "ANNUAL3", "50000.00")
+	privID := pcCreatePayer(t, env, "BIL3-PRV", "Asuransi Tahun Layanan", "private_insurance")
+	status, out := qeRequest(t, env, http.MethodPost, "/api/v1/payers/"+privID+"/plans",
+		map[string]any{"code": "BIL3-PLAN", "name": "Plan Tahun Layanan", "annual_limit": "62500.00"})
+	planID, _ := payMapData(t, status, out, http.StatusCreated)["id"].(string)
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/payer-plans/"+planID+"/rules",
+		map[string]any{"rules": []map[string]any{{
+			"care_type": "outpatient", "copay_percent": "0.00", "deductible_per_claim": "0.00",
+		}}})
+	if status != http.StatusOK {
+		t.Fatalf("put rules = %d %v", status, out)
+	}
+	bilPutGuarantor(t, env, admissionA, privID, planID)
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionA+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	payMapData(t, status, out, http.StatusCreated)
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionA+"/billing/finalize", nil)
+	payMapData(t, status, out, http.StatusOK)
+
+	// Move the finalized visit's charge two years back — computed_at stays
+	// now, but the service_date leaves the current plan-year window.
+	ctx := context.Background()
+	if _, err := env.pool.Exec(ctx,
+		"UPDATE operations.charge SET service_date = $1 WHERE admission_id = $2",
+		plToday(env, -730), admissionA); err != nil {
+		t.Fatalf("backdate charge: %v", err)
+	}
+
+	// Second visit, same person and plan, charged today: the full annual
+	// limit is available again (service-year basis).
+	mergeSeedAdmission(t, ctx, env.pool, env.companyID, env.merchantID, personID, "BIL3B")
+	var admissionB string
+	if err := env.pool.QueryRow(ctx,
+		"SELECT id::text FROM operations.admission WHERE merchant_id = $1 AND person_id = $2 ORDER BY created_at DESC LIMIT 1",
+		env.merchantID, personID).Scan(&admissionB); err != nil {
+		t.Fatalf("find admission B: %v", err)
+	}
+	bilPutGuarantor(t, env, admissionB, privID, planID)
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionB+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	data := payMapData(t, status, out, http.StatusCreated)
+	totals, _ := data["totals"].(map[string]any)
+	if totals["payer"] != "50000.00" || totals["patient"] != "0.00" {
+		t.Fatalf("service-year totals = %v, want payer 50000.00 patient 0.00", totals)
+	}
+}
