@@ -107,13 +107,6 @@ func formularyRowJSON(row sqlcgen.GetMerchantFormularyRowRow) gin.H {
 	}
 }
 
-// regenerateProposals recomputes sell-price proposals after a change
-// (spec §4.2.3). Task 4 replaces this with the proposal engine.
-func regenerateProposals(c *gin.Context, q *sqlcgen.Queries, mi sqlcgen.InventoryMerchantItem, reason string) error {
-	// Task 4 replaces this with the proposal engine
-	return nil
-}
-
 // ListMerchantFormularyHandler godoc
 // @Summary List a merchant's formulary with reference prices
 // @Tags inventory

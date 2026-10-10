@@ -678,6 +678,20 @@ definitions:
     - password
     - username
     type: object
+  server.marginRuleInput:
+    properties:
+      auto_approve:
+        type: boolean
+      margin_percent:
+        type: string
+      pricing_category:
+        type: string
+      rounding_unit:
+        type: string
+    required:
+    - margin_percent
+    - pricing_category
+    type: object
   server.mergeExpectedRowVersions:
     properties:
       merged:
@@ -933,6 +947,15 @@ definitions:
         type: array
     required:
     - ingredients
+    type: object
+  server.putMarginRulesRequest:
+    properties:
+      rules:
+        items:
+          $ref: '#/definitions/server.marginRuleInput'
+        type: array
+    required:
+    - rules
     type: object
   server.putPriceListAdjustmentsRequest:
     properties:
@@ -4451,6 +4474,54 @@ paths:
       summary: List price lists under a merchant
       tags:
       - tariff
+  /merchants/{id}/price-proposals:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by status (default pending)
+        in: query
+        name: status
+        type: string
+      - description: Filter by price list
+        in: query
+        name: price_list_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the price proposals of a merchant
+      tags:
+      - tariff
+  /merchants/{id}/price-proposals/refresh:
+    post:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Regenerate price proposals for all formulary items of a merchant
+      tags:
+      - tariff
   /merchants/{id}/queue-flows:
     get:
       parameters:
@@ -6503,6 +6574,85 @@ paths:
       summary: Set (or supersede) the manual price versions of an item in a list
       tags:
       - tariff
+  /price-lists/{id}/margin-rules:
+    get:
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the margin rules of a price list
+      tags:
+      - tariff
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Margin rules
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putMarginRulesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the margin rules of a base/standalone price list
+      tags:
+      - tariff
+  /price-lists/{id}/margin-rules/defaults:
+    post:
+      parameters:
+      - description: Price list UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Fill the default margin rules (20%, oncology 2%) of a list
+      tags:
+      - tariff
   /price-lists/{id}/resolve:
     get:
       parameters:
@@ -6534,6 +6684,54 @@ paths:
       security:
       - BearerAuth: []
       summary: Resolve the price of one item on a date
+      tags:
+      - tariff
+  /price-proposals/{id}/approve:
+    post:
+      parameters:
+      - description: Proposal UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Approve a pending price proposal
+      tags:
+      - tariff
+  /price-proposals/{id}/reject:
+    post:
+      parameters:
+      - description: Proposal UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Reject a pending price proposal
       tags:
       - tariff
   /queue:

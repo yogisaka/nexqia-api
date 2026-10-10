@@ -214,3 +214,88 @@ UPDATE core.service_item s SET
     is_active = sqlc.arg('is_active')::boolean,
     updated_by = sqlc.arg('updated_by')::uuid
 WHERE s.id = sqlc.arg('service_item_id')::uuid AND s.deleted_at IS NULL;
+
+-- §4.2 margin rules per price list × pricing category (spec
+-- 2026-10-07-tariff-c-drug-master-pricing §3.7).
+
+-- name: ListMarginRules :many
+SELECT * FROM inventory.margin_rule WHERE price_list_id = $1 ORDER BY pricing_category;
+
+-- name: DeleteMarginRules :exec
+DELETE FROM inventory.margin_rule WHERE price_list_id = $1;
+
+-- name: InsertMarginRule :exec
+INSERT INTO inventory.margin_rule (
+    company_id, merchant_id, price_list_id, pricing_category,
+    margin_percent, rounding_unit, auto_approve, created_by
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: ListMarginRulesForItem :many
+-- Margin rules of one merchant matching the item category, on live, active,
+-- non-derived lists only (derived lists adjust the base price instead).
+SELECT mr.* FROM inventory.margin_rule mr
+JOIN core.price_list pl ON pl.id = mr.price_list_id
+WHERE mr.merchant_id = $1 AND mr.pricing_category = $2
+  AND pl.deleted_at IS NULL AND pl.is_active AND pl.base_price_list_id IS NULL;
+
+-- name: GetItemPricingInfo :one
+SELECT pricing_category, het_amount, het_effective_from
+FROM inventory.item WHERE id = $1;
+
+-- name: ListActiveMerchantItemsWithReference :many
+SELECT * FROM inventory.merchant_item
+WHERE merchant_id = $1 AND is_active AND deleted_at IS NULL
+  AND reference_amount IS NOT NULL;
+
+-- §4.2 sell price proposals (spec §3.8).
+
+-- name: SupersedePendingProposals :exec
+UPDATE inventory.price_proposal SET status = 'superseded'
+WHERE merchant_item_id = $1 AND price_list_id = $2 AND status = 'pending';
+
+-- name: InsertPriceProposal :one
+INSERT INTO inventory.price_proposal (
+    company_id, merchant_id, merchant_item_id, price_list_id, reason,
+    current_amount, proposed_amount, het_capped, status, created_by
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING *;
+
+-- name: DecidePriceProposal :exec
+UPDATE inventory.price_proposal SET
+    status = sqlc.arg('status')::text,
+    effective_from = sqlc.arg('effective_from')::date,
+    decided_by = sqlc.arg('decided_by'),
+    decided_at = now()
+WHERE id = sqlc.arg('id')::uuid;
+
+-- name: GetPriceProposalByID :one
+SELECT * FROM inventory.price_proposal WHERE id = $1;
+
+-- name: GetPriceProposalDetail :one
+SELECT p.*, si.code AS item_code, si.name AS item_name,
+       pl.code AS list_code, pl.name AS list_name
+FROM inventory.price_proposal p
+JOIN inventory.merchant_item mi ON mi.id = p.merchant_item_id
+JOIN core.service_item si ON si.id = mi.service_item_id
+JOIN core.price_list pl ON pl.id = p.price_list_id
+WHERE p.id = $1;
+
+-- name: ListPriceProposals :many
+SELECT p.*, si.code AS item_code, si.name AS item_name,
+       pl.code AS list_code, pl.name AS list_name
+FROM inventory.price_proposal p
+JOIN inventory.merchant_item mi ON mi.id = p.merchant_item_id
+JOIN core.service_item si ON si.id = mi.service_item_id
+JOIN core.price_list pl ON pl.id = p.price_list_id
+WHERE p.merchant_id = $1
+  AND (sqlc.narg('status')::text IS NULL OR p.status = sqlc.narg('status')::text)
+  AND (sqlc.narg('price_list_id')::uuid IS NULL OR p.price_list_id = sqlc.narg('price_list_id')::uuid)
+ORDER BY p.created_at DESC
+LIMIT 500;
+
+-- name: CountPendingPriceProposals :one
+SELECT count(*) FROM inventory.price_proposal
+WHERE merchant_id = $1 AND status = 'pending';
+
+-- name: GetRateComponentByMerchantCode :one
+SELECT * FROM core.rate_component WHERE merchant_id = $1 AND code = $2 AND deleted_at IS NULL;

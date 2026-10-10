@@ -419,6 +419,13 @@ func RegisterInventoryRoutes(rg *gin.RouterGroup) {
 	rg.POST("/merchants/:id/formulary", AddMerchantFormularyHandler)
 	rg.PATCH("/formulary/:id", UpdateFormularyHandler)
 	rg.PUT("/formulary/:id/reference-price", SetFormularyReferencePriceHandler)
+	rg.GET("/price-lists/:id/margin-rules", ListMarginRulesHandler)
+	rg.PUT("/price-lists/:id/margin-rules", PutMarginRulesHandler)
+	rg.POST("/price-lists/:id/margin-rules/defaults", PutDefaultMarginRulesHandler)
+	rg.GET("/merchants/:id/price-proposals", ListPriceProposalsHandler)
+	rg.POST("/merchants/:id/price-proposals/refresh", RefreshPriceProposalsHandler)
+	rg.POST("/price-proposals/:id/approve", ApprovePriceProposalHandler)
+	rg.POST("/price-proposals/:id/reject", RejectPriceProposalHandler)
 }
 
 // ListInventoryUnitsHandler godoc
