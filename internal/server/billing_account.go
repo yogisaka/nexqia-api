@@ -485,17 +485,17 @@ func recomputeAccount(c *gin.Context, q *sqlcgen.Queries, account sqlcgen.Operat
 		day        string
 	}
 	cache := map[priceKey]int64{}
-	priceFn := func(listID, itemID string, on time.Time) (int64, bool) {
+	priceFn := func(listID, itemID string, on time.Time) (int64, bool, error) {
 		key := priceKey{listID, itemID, on.Format("2006-01-02")}
 		if cents, ok := cache[key]; ok {
-			return cents, true
+			return cents, true, nil
 		}
 		cents, ok, err := priceForBilling(c, q, listID, items[itemID], pgtype.Date{Time: on, Valid: true})
 		if err != nil || !ok {
-			return 0, false
+			return 0, false, err
 		}
 		cache[key] = cents
-		return cents, true
+		return cents, true, nil
 	}
 
 	res, err := splitAccount(engineCharges, payers, defaultList, priceFn)
@@ -874,6 +874,9 @@ func GetAdmissionBillingHandler(c *gin.Context) {
 		// An open account is always shown with the freshest split (spec §5.3).
 		if acct.Status == "open" {
 			if _, err := recomputeAccount(c, q, acct); err != nil {
+				if errors.Is(err, errAlreadyResponded) {
+					return
+				}
 				if errors.Is(err, errPriceMissing) {
 					c.JSON(http.StatusConflict, gin.H{"error": "price_missing"})
 					return
@@ -992,6 +995,9 @@ func CreateChargeHandler(c *gin.Context) {
 		return
 	}
 	if _, err := recomputeAccount(c, q, acct); err != nil {
+		if errors.Is(err, errAlreadyResponded) {
+			return
+		}
 		if errors.Is(err, errPriceMissing) {
 			c.JSON(http.StatusConflict, gin.H{"error": "price_missing", "service_item_id": req.ServiceItemID})
 			return
@@ -1066,6 +1072,9 @@ func VoidChargeHandler(c *gin.Context) {
 		return
 	}
 	if _, err := recomputeAccount(c, q, acct); err != nil {
+		if errors.Is(err, errAlreadyResponded) {
+			return
+		}
 		if errors.Is(err, errPriceMissing) {
 			c.JSON(http.StatusConflict, gin.H{"error": "price_missing"})
 			return
@@ -1203,6 +1212,9 @@ func FinalizeBillingHandler(c *gin.Context) {
 	}
 	rec, err := recomputeAccount(c, q, acct)
 	if err != nil {
+		if errors.Is(err, errAlreadyResponded) {
+			return
+		}
 		if errors.Is(err, errPriceMissing) {
 			c.JSON(http.StatusConflict, gin.H{"error": "price_missing"})
 			return

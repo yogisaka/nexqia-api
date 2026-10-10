@@ -18,8 +18,9 @@ type splitCharge struct {
 }
 
 // splitPrice returns the unit price (cents) on the given price list that is
-// valid at time `on` (the charge's ServiceDate), already HET-capped.
-type splitPrice func(priceListID, itemID string, on time.Time) (unitCents int64, ok bool)
+// valid at time `on` (the charge's ServiceDate), already HET-capped. A
+// non-nil error (anything but a missing price) is propagated by the engine.
+type splitPrice func(priceListID, itemID string, on time.Time) (int64, bool, error)
 
 type splitPayer struct {
 	PayerID, PayerType, PriceListID string // PriceListID resolved (payer list or merchant default)
@@ -99,7 +100,10 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 		unit, gross, list := int64(0), int64(0), defaultListID
 
 		grossAt := func(listID string) (int64, int64, error) {
-			u, ok := price(listID, ch.ItemID, ch.ServiceDate)
+			u, ok, err := price(listID, ch.ItemID, ch.ServiceDate)
+			if err != nil {
+				return 0, 0, err
+			}
 			if !ok {
 				return 0, 0, fmt.Errorf("%w: charge %s (list %s, item %s)", errPriceMissing, ch.ID, listID, ch.ItemID)
 			}

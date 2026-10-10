@@ -8,11 +8,13 @@ import (
 
 // splitTestPrice builds a splitPrice from list|item → cents.
 func splitTestPrice(m map[string]int64) splitPrice {
-	return func(listID, itemID string, on time.Time) (int64, bool) {
+	return func(listID, itemID string, on time.Time) (int64, bool, error) {
 		c, ok := m[listID+"|"+itemID]
-		return c, ok
+		return c, ok, nil
 	}
 }
+
+var errSplitPriceBoom = errors.New("split price boom")
 
 func TestSplitAccount(t *testing.T) {
 	day := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
@@ -26,6 +28,7 @@ func TestSplitAccount(t *testing.T) {
 		charges []splitCharge
 		payers  []splitPayer
 		price   map[string]int64
+		priceFn splitPrice
 		check   func(t *testing.T, res splitResult, err error)
 	}{
 		{
@@ -403,11 +406,30 @@ func TestSplitAccount(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:    "price_error_propagates",
+			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 1000, ServiceDate: day}},
+			payers: []splitPayer{
+				{PayerID: "bpjs", PayerType: "bpjs", PriceListID: "bpjs-list", DefaultCoverage: "excluded"},
+			},
+			priceFn: func(listID, itemID string, on time.Time) (int64, bool, error) {
+				return 0, false, errSplitPriceBoom
+			},
+			check: func(t *testing.T, res splitResult, err error) {
+				if !errors.Is(err, errSplitPriceBoom) {
+					t.Fatalf("err = %v, want errSplitPriceBoom", err)
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := splitAccount(tc.charges, tc.payers, "def", splitTestPrice(tc.price))
+			fn := tc.priceFn
+			if fn == nil {
+				fn = splitTestPrice(tc.price)
+			}
+			res, err := splitAccount(tc.charges, tc.payers, "def", fn)
 			tc.check(t, res, err)
 		})
 	}
