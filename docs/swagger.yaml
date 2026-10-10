@@ -105,6 +105,19 @@ definitions:
     - from_week_start
     - to_week_start
     type: object
+  server.coverageRuleInput:
+    properties:
+      claim_type:
+        type: string
+      coverage:
+        type: string
+      item_type:
+        type: string
+      service_item_id:
+        type: string
+    required:
+    - coverage
+    type: object
   server.createAccessReviewRequest:
     properties:
       from:
@@ -351,6 +364,21 @@ definitions:
     - company_id
     - name
     - timezone
+    type: object
+  server.createPayerRequest:
+    properties:
+      code:
+        type: string
+      name:
+        type: string
+      payer_type:
+        type: string
+      price_list_id:
+        type: string
+    required:
+    - code
+    - name
+    - payer_type
     type: object
   server.createPhysicianLeaveRequest:
     properties:
@@ -881,6 +909,50 @@ definitions:
     required:
     - pin
     type: object
+  server.planInput:
+    properties:
+      annual_limit:
+        type: string
+      code:
+        type: string
+      is_active:
+        type: boolean
+      name:
+        type: string
+      plan_year_start_month:
+        type: integer
+      requires_gl:
+        type: boolean
+    required:
+    - code
+    - name
+    type: object
+  server.planLimitInput:
+    properties:
+      item_type:
+        type: string
+      limit_per_visit:
+        type: string
+    required:
+    - item_type
+    - limit_per_visit
+    type: object
+  server.planRuleInput:
+    properties:
+      care_type:
+        type: string
+      copay_max_per_claim:
+        type: string
+      copay_percent:
+        type: string
+      deductible_per_claim:
+        type: string
+      visit_limit:
+        type: string
+    required:
+    - care_type
+    - copay_percent
+    type: object
   server.platformAdminLoginRequest:
     properties:
       password:
@@ -948,6 +1020,13 @@ definitions:
     required:
     - ingredients
     type: object
+  server.putItemCoverageRequest:
+    properties:
+      rules:
+        items:
+          $ref: '#/definitions/server.coverageRuleInput'
+        type: array
+    type: object
   server.putMarginRulesRequest:
     properties:
       rules:
@@ -957,6 +1036,20 @@ definitions:
     required:
     - rules
     type: object
+  server.putPlanLimitsRequest:
+    properties:
+      limits:
+        items:
+          $ref: '#/definitions/server.planLimitInput'
+        type: array
+    type: object
+  server.putPlanRulesRequest:
+    properties:
+      rules:
+        items:
+          $ref: '#/definitions/server.planRuleInput'
+        type: array
+    type: object
   server.putPriceListAdjustmentsRequest:
     properties:
       adjustments:
@@ -965,6 +1058,13 @@ definitions:
         type: array
     required:
     - adjustments
+    type: object
+  server.putServiceRulesRequest:
+    properties:
+      rules:
+        items:
+          $ref: '#/definitions/server.serviceRuleInput'
+        type: array
     type: object
   server.registerRequest:
     properties:
@@ -1082,6 +1182,20 @@ definitions:
     - merchant_id
     - selection_token
     type: object
+  server.serviceRuleInput:
+    properties:
+      discount_amount:
+        type: string
+      discount_percent:
+        type: string
+      rule_type:
+        type: string
+      service_item_id:
+        type: string
+    required:
+    - rule_type
+    - service_item_id
+    type: object
   server.setPriceListPriceRequest:
     properties:
       components:
@@ -1178,6 +1292,17 @@ definitions:
         type: string
     required:
     - person_id
+    type: object
+  server.updateBillingProfileRequest:
+    properties:
+      bpjs_cooperation:
+        type: string
+      bpjs_network_parent:
+        type: string
+      default_price_list_id:
+        type: string
+      facility_type:
+        type: string
     type: object
   server.updateCompanyRequest:
     properties:
@@ -1357,6 +1482,38 @@ definitions:
         type: string
       severity:
         type: string
+    type: object
+  server.updatePayerPlanRequest:
+    properties:
+      annual_limit:
+        type: string
+      code:
+        type: string
+      is_active:
+        type: boolean
+      name:
+        type: string
+      plan_year_start_month:
+        type: integer
+      requires_gl:
+        type: boolean
+      row_version:
+        type: integer
+    required:
+    - row_version
+    type: object
+  server.updatePayerRequest:
+    properties:
+      is_active:
+        type: boolean
+      name:
+        type: string
+      price_list_id:
+        type: string
+      row_version:
+        type: integer
+    required:
+    - row_version
     type: object
   server.updatePhysicianRequest:
     properties:
@@ -4056,6 +4213,42 @@ paths:
       summary: Update a merchant
       tags:
       - tenancy
+  /merchants/{id}/billing-profile:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Billing profile
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateBillingProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update the facility / BPJS billing profile of a merchant
+      tags:
+      - payer
   /merchants/{id}/counters:
     get:
       parameters:
@@ -4396,6 +4589,41 @@ paths:
       security:
       - BearerAuth: []
       summary: List payers (penjamin) under a merchant
+      tags:
+      - payer
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Payer data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createPayerRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a payer (penjamin) under a merchant
       tags:
       - payer
   /merchants/{id}/physician-schedules:
@@ -4868,6 +5096,381 @@ paths:
       summary: Update an allergy record
       tags:
       - patient-allergy
+  /payer-plans/{id}:
+    delete:
+      description: Rejected with 409 while active patient coverages point at the plan.
+      parameters:
+      - description: Payer plan UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a payer plan
+      tags:
+      - payer
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer plan UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Plan data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updatePayerPlanRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a payer plan
+      tags:
+      - payer
+  /payer-plans/{id}/limits:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer plan UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Inner limits
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putPlanLimitsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the per-visit item limits of a payer plan
+      tags:
+      - payer
+  /payer-plans/{id}/rules:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer plan UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Care rules
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putPlanRulesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the care-type rules of a payer plan
+      tags:
+      - payer
+  /payers/{id}:
+    delete:
+      description: Rejected with 409 while the payer guarantees a visit that is not
+        discharged/cancelled.
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a payer
+      tags:
+      - payer
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Payer data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updatePayerRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a payer (name, active flag, price list)
+      tags:
+      - payer
+  /payers/{id}/item-coverage:
+    get:
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List the BPJS item coverage of a payer
+      tags:
+      - payer
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Coverage rules
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putItemCoverageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the full BPJS item-coverage set of a payer
+      tags:
+      - payer
+  /payers/{id}/item-coverage/from-template:
+    post:
+      description: |-
+        For every merchant service item whose code exists in the
+        bpjs_nonkapitasi_2023 template, insert a claim rule with the
+        claim type derived from the code prefix; items that already
+        have a coverage rule are skipped.
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Seed BPJS claim coverage rules from the non-capitation template
+      tags:
+      - payer
+  /payers/{id}/plans:
+    get:
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List the plans of a payer (with rules and limits)
+      tags:
+      - payer
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Plan data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.planInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a plan under a payer
+      tags:
+      - payer
+  /payers/{id}/service-rules:
+    get:
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the blacklist/discount rules of a payer
+      tags:
+      - payer
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Service rules
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putServiceRulesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the full service-rule set of a payer
+      tags:
+      - payer
   /permissions:
     get:
       description: Not company-scoped, no elevated permission required (read-only).

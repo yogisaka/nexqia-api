@@ -3957,6 +3957,63 @@ const docTemplate = `{
                 }
             }
         },
+        "/merchants/{id}/billing-profile": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Update the facility / BPJS billing profile of a merchant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Billing profile",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updateBillingProfileRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/merchants/{id}/counters": {
             "get": {
                 "security": [
@@ -4497,6 +4554,61 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Create a payer (penjamin) under a merchant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Payer data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createPayerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
                         }
                     }
                 }
@@ -5247,6 +5359,596 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/payer-plans/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Rejected with 409 while active patient coverages point at the plan.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Soft-delete a payer plan",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer plan UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Update a payer plan",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer plan UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Plan data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updatePayerPlanRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/payer-plans/{id}/limits": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Replace the per-visit item limits of a payer plan",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer plan UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Inner limits",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.putPlanLimitsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/payer-plans/{id}/rules": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Replace the care-type rules of a payer plan",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer plan UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Care rules",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.putPlanRulesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/payers/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Rejected with 409 while the payer guarantees a visit that is not discharged/cancelled.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Soft-delete a payer",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Update a payer (name, active flag, price list)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Payer data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updatePayerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/payers/{id}/item-coverage": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "List the BPJS item coverage of a payer",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Replace the full BPJS item-coverage set of a payer",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Coverage rules",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.putItemCoverageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/payers/{id}/item-coverage/from-template": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "For every merchant service item whose code exists in the\nbpjs_nonkapitasi_2023 template, insert a claim rule with the\nclaim type derived from the code prefix; items that already\nhave a coverage rule are skipped.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Seed BPJS claim coverage rules from the non-capitation template",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/payers/{id}/plans": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "List the plans of a payer (with rules and limits)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Create a plan under a payer",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Plan data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.planInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/payers/{id}/service-rules": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "List the blacklist/discount rules of a payer",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "payer"
+                ],
+                "summary": "Replace the full service-rule set of a payer",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Payer UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Service rules",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.putServiceRulesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -10954,6 +11656,26 @@ const docTemplate = `{
                 }
             }
         },
+        "server.coverageRuleInput": {
+            "type": "object",
+            "required": [
+                "coverage"
+            ],
+            "properties": {
+                "claim_type": {
+                    "type": "string"
+                },
+                "coverage": {
+                    "type": "string"
+                },
+                "item_type": {
+                    "type": "string"
+                },
+                "service_item_id": {
+                    "type": "string"
+                }
+            }
+        },
         "server.createAccessReviewRequest": {
             "type": "object",
             "properties": {
@@ -11316,6 +12038,28 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "timezone": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.createPayerRequest": {
+            "type": "object",
+            "required": [
+                "code",
+                "name",
+                "payer_type"
+            ],
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "payer_type": {
+                    "type": "string"
+                },
+                "price_list_id": {
                     "type": "string"
                 }
             }
@@ -12107,6 +12851,72 @@ const docTemplate = `{
                 }
             }
         },
+        "server.planInput": {
+            "type": "object",
+            "required": [
+                "code",
+                "name"
+            ],
+            "properties": {
+                "annual_limit": {
+                    "type": "string"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "plan_year_start_month": {
+                    "type": "integer"
+                },
+                "requires_gl": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "server.planLimitInput": {
+            "type": "object",
+            "required": [
+                "item_type",
+                "limit_per_visit"
+            ],
+            "properties": {
+                "item_type": {
+                    "type": "string"
+                },
+                "limit_per_visit": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.planRuleInput": {
+            "type": "object",
+            "required": [
+                "care_type",
+                "copay_percent"
+            ],
+            "properties": {
+                "care_type": {
+                    "type": "string"
+                },
+                "copay_max_per_claim": {
+                    "type": "string"
+                },
+                "copay_percent": {
+                    "type": "string"
+                },
+                "deductible_per_claim": {
+                    "type": "string"
+                },
+                "visit_limit": {
+                    "type": "string"
+                }
+            }
+        },
         "server.platformAdminLoginRequest": {
             "type": "object",
             "required": [
@@ -12207,6 +13017,17 @@ const docTemplate = `{
                 }
             }
         },
+        "server.putItemCoverageRequest": {
+            "type": "object",
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.coverageRuleInput"
+                    }
+                }
+            }
+        },
         "server.putMarginRulesRequest": {
             "type": "object",
             "required": [
@@ -12221,6 +13042,28 @@ const docTemplate = `{
                 }
             }
         },
+        "server.putPlanLimitsRequest": {
+            "type": "object",
+            "properties": {
+                "limits": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.planLimitInput"
+                    }
+                }
+            }
+        },
+        "server.putPlanRulesRequest": {
+            "type": "object",
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.planRuleInput"
+                    }
+                }
+            }
+        },
         "server.putPriceListAdjustmentsRequest": {
             "type": "object",
             "required": [
@@ -12231,6 +13074,17 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/server.priceListAdjustmentInput"
+                    }
+                }
+            }
+        },
+        "server.putServiceRulesRequest": {
+            "type": "object",
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.serviceRuleInput"
                     }
                 }
             }
@@ -12406,6 +13260,27 @@ const docTemplate = `{
                 }
             }
         },
+        "server.serviceRuleInput": {
+            "type": "object",
+            "required": [
+                "rule_type",
+                "service_item_id"
+            ],
+            "properties": {
+                "discount_amount": {
+                    "type": "string"
+                },
+                "discount_percent": {
+                    "type": "string"
+                },
+                "rule_type": {
+                    "type": "string"
+                },
+                "service_item_id": {
+                    "type": "string"
+                }
+            }
+        },
         "server.setPriceListPriceRequest": {
             "type": "object",
             "required": [
@@ -12550,6 +13425,23 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "person_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.updateBillingProfileRequest": {
+            "type": "object",
+            "properties": {
+                "bpjs_cooperation": {
+                    "type": "string"
+                },
+                "bpjs_network_parent": {
+                    "type": "string"
+                },
+                "default_price_list_id": {
+                    "type": "string"
+                },
+                "facility_type": {
                     "type": "string"
                 }
             }
@@ -12824,6 +13716,55 @@ const docTemplate = `{
                 },
                 "severity": {
                     "type": "string"
+                }
+            }
+        },
+        "server.updatePayerPlanRequest": {
+            "type": "object",
+            "required": [
+                "row_version"
+            ],
+            "properties": {
+                "annual_limit": {
+                    "type": "string"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "plan_year_start_month": {
+                    "type": "integer"
+                },
+                "requires_gl": {
+                    "type": "boolean"
+                },
+                "row_version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "server.updatePayerRequest": {
+            "type": "object",
+            "required": [
+                "row_version"
+            ],
+            "properties": {
+                "is_active": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "price_list_id": {
+                    "type": "string"
+                },
+                "row_version": {
+                    "type": "integer"
                 }
             }
         },
