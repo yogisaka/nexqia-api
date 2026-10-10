@@ -137,3 +137,80 @@ UPDATE inventory.item_unit iu SET
     kfa_packaging_code = COALESCE(sqlc.narg('kfa_packaging_code')::text, iu.kfa_packaging_code)
 WHERE iu.id = sqlc.arg('item_unit_id')::uuid
 RETURNING iu.*;
+
+-- §3.6 per-merchant formulary (spec §4.1). Every column of the multi-table
+-- row queries is aliased and qualified.
+-- name: ListMerchantFormulary :many
+SELECT mi.id, mi.service_item_id, mi.default_location_id, mi.is_active,
+       mi.reference_amount, mi.reference_item_unit_id, mi.reference_factor,
+       mi.reference_updated_at, mi.row_version,
+       i.id AS item_id, i.code AS item_code, i.name AS item_name,
+       i.item_kind AS item_kind, i.pricing_category AS item_pricing_category,
+       i.drug_class AS item_drug_class, i.het_amount AS item_het_amount,
+       u.code AS base_unit_code, ru.code AS reference_unit_code
+FROM inventory.merchant_item mi
+JOIN inventory.item i ON i.id = mi.item_id
+JOIN inventory.unit u ON u.id = i.base_unit_id
+LEFT JOIN inventory.item_unit riu ON riu.id = mi.reference_item_unit_id
+LEFT JOIN inventory.unit ru ON ru.id = riu.unit_id
+WHERE mi.merchant_id = sqlc.arg('merchant_id')::uuid AND mi.deleted_at IS NULL
+  AND (sqlc.narg('q')::text IS NULL OR i.code ILIKE '%' || sqlc.narg('q')::text || '%' OR i.name ILIKE '%' || sqlc.narg('q')::text || '%')
+  AND (sqlc.narg('is_active')::boolean IS NULL OR mi.is_active = sqlc.narg('is_active')::boolean)
+ORDER BY i.name;
+
+-- name: GetMerchantFormularyRow :one
+SELECT mi.id, mi.service_item_id, mi.default_location_id, mi.is_active,
+       mi.reference_amount, mi.reference_item_unit_id, mi.reference_factor,
+       mi.reference_updated_at, mi.row_version,
+       i.id AS item_id, i.code AS item_code, i.name AS item_name,
+       i.item_kind AS item_kind, i.pricing_category AS item_pricing_category,
+       i.drug_class AS item_drug_class, i.het_amount AS item_het_amount,
+       u.code AS base_unit_code, ru.code AS reference_unit_code
+FROM inventory.merchant_item mi
+JOIN inventory.item i ON i.id = mi.item_id
+JOIN inventory.unit u ON u.id = i.base_unit_id
+LEFT JOIN inventory.item_unit riu ON riu.id = mi.reference_item_unit_id
+LEFT JOIN inventory.unit ru ON ru.id = riu.unit_id
+WHERE mi.id = $1 AND mi.deleted_at IS NULL;
+
+-- name: GetMerchantItemByID :one
+SELECT mi.* FROM inventory.merchant_item mi
+WHERE mi.id = $1 AND mi.deleted_at IS NULL;
+
+-- name: GetMerchantItemByMerchantItem :one
+SELECT mi.* FROM inventory.merchant_item mi
+WHERE mi.merchant_id = $1 AND mi.item_id = $2 AND mi.deleted_at IS NULL;
+
+-- name: InsertMerchantItem :one
+INSERT INTO inventory.merchant_item (
+    company_id, merchant_id, item_id, service_item_id, default_location_id,
+    is_active, created_by
+) VALUES ($1, $2, $3, $4, $5, TRUE, $6)
+RETURNING *;
+
+-- name: UpdateMerchantItem :one
+UPDATE inventory.merchant_item mi SET
+    is_active = COALESCE(sqlc.narg('is_active')::boolean, mi.is_active),
+    default_location_id = COALESCE(sqlc.narg('default_location_id')::uuid, mi.default_location_id),
+    updated_by = sqlc.arg('updated_by')::uuid
+WHERE mi.id = sqlc.arg('merchant_item_id')::uuid
+  AND mi.row_version = sqlc.arg('expected_row_version')::integer
+  AND mi.deleted_at IS NULL
+RETURNING mi.*;
+
+-- name: SetMerchantItemReference :one
+UPDATE inventory.merchant_item mi SET
+    reference_amount = sqlc.arg('reference_amount')::numeric,
+    reference_item_unit_id = sqlc.arg('reference_item_unit_id')::uuid,
+    reference_factor = sqlc.arg('reference_factor')::numeric,
+    reference_updated_at = now(),
+    reference_updated_by = sqlc.arg('reference_updated_by')::uuid,
+    updated_by = sqlc.arg('reference_updated_by')::uuid
+WHERE mi.id = sqlc.arg('merchant_item_id')::uuid AND mi.deleted_at IS NULL
+RETURNING mi.*;
+
+-- name: SetServiceItemActive :execrows
+UPDATE core.service_item s SET
+    is_active = sqlc.arg('is_active')::boolean,
+    updated_by = sqlc.arg('updated_by')::uuid
+WHERE s.id = sqlc.arg('service_item_id')::uuid AND s.deleted_at IS NULL;
