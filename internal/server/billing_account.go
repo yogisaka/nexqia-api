@@ -1027,9 +1027,7 @@ func CreateChargeHandler(c *gin.Context) {
 // @Failure 409 {object} apiErrorResponse
 // @Router /charges/{id}/void [post]
 func VoidChargeHandler(c *gin.Context) {
-	var req struct {
-		Reason string `json:"reason" binding:"required"`
-	}
+	var req voidChargeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
 		return
@@ -1091,7 +1089,7 @@ func VoidChargeHandler(c *gin.Context) {
 }
 
 type voidChargeRequest struct {
-	Reason string `json:"reason"`
+	Reason string `json:"reason" binding:"required"`
 }
 
 type billingConsentRequest struct {
