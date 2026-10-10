@@ -206,6 +206,113 @@ ORDER BY created_at, id;
 UPDATE operations.guarantee_letter SET deleted_at = now(), deleted_by = $2
 WHERE admission_id = $1 AND deleted_at IS NULL;
 
+-- Billing account API (spec §5): account rows, charges, splits, consents and
+-- the annual-usage sum feeding the split engine.
+
+-- name: InsertBillingAccountIfAbsent :exec
+-- Two concurrent first charges on a new visit: the loser of the race inserts
+-- nothing and reads the winner's row FOR UPDATE below.
+INSERT INTO operations.billing_account (company_id, merchant_id, admission_id)
+VALUES ($1, $2, $3)
+ON CONFLICT (admission_id) DO NOTHING;
+
+-- name: GetBillingAccountForUpdate :one
+SELECT * FROM operations.billing_account WHERE id = $1 FOR UPDATE;
+
+-- name: ListActiveChargesByAccount :many
+SELECT * FROM operations.charge
+WHERE account_id = $1 AND status = 'active'
+ORDER BY service_date, created_at, id;
+
+-- name: ListChargesForAdmission :many
+SELECT ch.*, si.code AS item_code, si.name AS item_name, si.item_type AS item_type
+FROM operations.charge ch
+JOIN core.service_item si ON si.id = ch.service_item_id
+WHERE ch.admission_id = $1
+ORDER BY ch.service_date, ch.created_at, ch.id;
+
+-- name: ListSplitsForAdmission :many
+SELECT cs.* FROM operations.charge_split cs
+JOIN operations.charge ch ON ch.id = cs.charge_id
+WHERE ch.admission_id = $1
+ORDER BY cs.charge_id, cs.seq;
+
+-- name: GetChargeByID :one
+SELECT * FROM operations.charge WHERE id = $1;
+
+-- name: InsertCharge :one
+INSERT INTO operations.charge
+    (company_id, merchant_id, account_id, admission_id, service_item_id, quantity, service_date, source, note, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'manual', $8, $9)
+RETURNING *;
+
+-- name: VoidCharge :one
+UPDATE operations.charge
+SET status = 'void', void_reason = $2, voided_by = $3, voided_at = now(), updated_by = $3
+WHERE id = $1 AND status = 'active'
+RETURNING *;
+
+-- name: DeleteChargeSplitsByAccount :exec
+DELETE FROM operations.charge_split cs
+USING operations.charge ch
+WHERE cs.charge_id = ch.id AND ch.account_id = $1;
+
+-- name: InsertChargeSplit :exec
+INSERT INTO operations.charge_split
+    (company_id, merchant_id, charge_id, seq, party, payer_id, coverage, claim_type,
+     price_list_id, unit_amount, gross_amount, discount_amount, amount, shadow_amount, note)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
+
+-- name: FinalizeBillingAccount :one
+UPDATE operations.billing_account
+SET status = 'finalized', finalized_at = now(), finalized_by = $2,
+    patient_total = $3, payer_total = $4, updated_by = $2
+WHERE id = $1 AND status = 'open'
+RETURNING *;
+
+-- name: ReopenBillingAccount :one
+-- Totals and finalized_* MUST be nulled: chk_billing_account_final.
+UPDATE operations.billing_account
+SET status = 'open', finalized_at = NULL, finalized_by = NULL,
+    patient_total = NULL, payer_total = NULL,
+    reopened_count = reopened_count + 1, last_reopen_reason = $2, updated_by = $3
+WHERE id = $1 AND status = 'finalized'
+RETURNING *;
+
+-- name: ListBillingConsentsByAdmission :many
+SELECT * FROM operations.billing_consent
+WHERE admission_id = $1
+ORDER BY recorded_at, id;
+
+-- name: InsertBillingConsent :one
+INSERT INTO operations.billing_consent
+    (company_id, merchant_id, admission_id, charge_id, kind, consented_by_name, relation, recorded_by)
+VALUES ($1, $2, $3, $4, 'bpjs_excluded', $5, $6, $7)
+RETURNING *;
+
+-- name: CountActiveChargesByAdmission :one
+SELECT count(*) FROM operations.charge
+WHERE admission_id = $1 AND status = 'active';
+
+-- name: SumPayerAnnualUsage :one
+-- Payer-side amounts already frozen into OTHER finalized accounts of the same
+-- person under the SAME plan within the plan's running year (window computed
+-- in Go from plan_year_start_month). The guarantor row of the past visit must
+-- carry the same plan_id, so usage of another plan of the same payer never
+-- eats this plan's annual limit.
+SELECT COALESCE(sum(cs.amount), 0)::numeric AS used
+FROM operations.charge_split cs
+JOIN operations.charge ch ON ch.id = cs.charge_id
+JOIN operations.billing_account ba ON ba.id = ch.account_id
+JOIN operations.admission a ON a.id = ba.admission_id
+WHERE cs.party = 'payer' AND cs.payer_id = $1
+  AND a.person_id = $2 AND ba.admission_id <> $3
+  AND ba.status = 'finalized' AND ch.status = 'active'
+  AND cs.computed_at >= $4 AND cs.computed_at < $5
+  AND EXISTS (
+      SELECT 1 FROM operations.admission_guarantor ag
+      WHERE ag.admission_id = a.id AND ag.payer_id = cs.payer_id AND ag.plan_id = $6);
+
 -- name: InsertGuaranteeLetter :exec
 INSERT INTO operations.guarantee_letter
     (company_id, merchant_id, admission_id, payer_id, gl_number, amount_limit,

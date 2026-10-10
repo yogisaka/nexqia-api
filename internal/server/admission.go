@@ -569,6 +569,20 @@ func UpdateAdmissionHandler(c *gin.Context) {
 		}
 		dischargeAt = pgtype.Timestamptz{Time: t, Valid: true}
 	}
+	// Cancelling a visit with active charge rows is refused (spec
+	// 2026-10-07-tariff-b1-billing-core §5.6).
+	if req.Status == "cancelled" && existing.Status != "cancelled" {
+		q2 := sqlcgen.New(TxFromContext(c))
+		active, err := q2.CountActiveChargesByAdmission(c.Request.Context(), id)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if active > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "admission has active charges"})
+			return
+		}
+	}
 	admission, err := q.UpdateAdmission(c.Request.Context(), sqlcgen.UpdateAdmissionParams{
 		ID: id, PhysicianID: optUUID(req.PhysicianID), Status: req.Status, DischargeAt: dischargeAt, UpdatedBy: AuthUserID(c),
 	})

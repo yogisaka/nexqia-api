@@ -73,6 +73,18 @@ definitions:
           type: string
         type: array
     type: object
+  server.billingConsentRequest:
+    properties:
+      charge_id:
+        type: string
+      consented_by_name:
+        type: string
+      relation:
+        type: string
+    required:
+    - consented_by_name
+    - relation
+    type: object
   server.changePasswordRequest:
     properties:
       current_password:
@@ -207,6 +219,20 @@ definitions:
     - password
     - person_id
     - username
+    type: object
+  server.createChargeRequest:
+    properties:
+      note:
+        type: string
+      quantity:
+        type: string
+      service_date:
+        type: string
+      service_item_id:
+        type: string
+    required:
+    - quantity
+    - service_item_id
     type: object
   server.createCounterRequest:
     properties:
@@ -1164,6 +1190,13 @@ definitions:
     - phone
     - username
     type: object
+  server.reopenBillingRequest:
+    properties:
+      reason:
+        type: string
+    required:
+    - reason
+    type: object
   server.replaceDepartmentCodeMapsRequest:
     properties:
       items:
@@ -1754,6 +1787,11 @@ definitions:
       start_time:
         type: string
     type: object
+  server.voidChargeRequest:
+    properties:
+      reason:
+        type: string
+    type: object
 info:
   contact: {}
   description: 'Backend service for the NEXQIA Healthcare Operating Platform. All
@@ -1889,6 +1927,182 @@ paths:
       summary: Update an admission
       tags:
       - admission
+  /admissions/{id}/billing:
+    get:
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get the billing account of a visit (recomputed when open)
+      tags:
+      - billing
+  /admissions/{id}/billing/consents:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Consent data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.billingConsentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Record an out-of-benefit consent (bpjs_excluded)
+      tags:
+      - billing
+  /admissions/{id}/billing/finalize:
+    post:
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Finalize the billing account (freezes the splits and totals)
+      tags:
+      - billing
+  /admissions/{id}/billing/reopen:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Reopen reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.reopenBillingRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Reopen a finalized billing account (billing.account.reopen)
+      tags:
+      - billing
+  /admissions/{id}/charges:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Charge data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createChargeRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Add a charge row to a visit (recomputes the billing account)
+      tags:
+      - billing
   /admissions/{id}/guarantee-letters:
     put:
       consumes:
@@ -3001,6 +3215,46 @@ paths:
       summary: Switch active role
       tags:
       - auth
+  /charges/{id}/void:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Charge UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Void reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.voidChargeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Void an active charge row (recomputes the billing account)
+      tags:
+      - billing
   /companies/{id}:
     delete:
       parameters:
