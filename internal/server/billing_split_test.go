@@ -155,6 +155,33 @@ func TestSplitAccount(t *testing.T) {
 			},
 		},
 		{
+			name:    "excluded_partial_private",
+			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 1000, ServiceDate: day}},
+			payers: []splitPayer{
+				{PayerID: "bpjs", PayerType: "bpjs", PriceListID: "bpjs-list", DefaultCoverage: "excluded"},
+				{PayerID: "swasta", PayerType: "private", PriceListID: "def", AnnualRemainingCents: 62500},
+			},
+			price: map[string]int64{"def|it": 120000},
+			check: func(t *testing.T, res splitResult, err error) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.PayerCents != 62500 || res.PatientCents != 57500 {
+					t.Fatalf("payer=%d patient=%d, want 62500/57500", res.PayerCents, res.PatientCents)
+				}
+				parts := res.ByCharge["c1"]
+				if len(parts) != 2 || parts[0].PayerID != "swasta" || parts[0].AmountCents != 62500 || parts[0].Note != "annual limit" {
+					t.Fatalf("parts=%+v", parts)
+				}
+				if parts[1].Party != "patient" || parts[1].Coverage != "excluded" || parts[1].AmountCents != 57500 {
+					t.Fatalf("parts=%+v", parts)
+				}
+				if len(res.NeedsConsent) != 0 {
+					t.Fatalf("NeedsConsent=%v", res.NeedsConsent)
+				}
+			},
+		},
+		{
 			name:    "blacklist_next_payer",
 			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 1000, ServiceDate: day}},
 			payers: []splitPayer{

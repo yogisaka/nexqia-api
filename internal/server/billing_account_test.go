@@ -243,6 +243,73 @@ func TestBilling_ExcludedNeedsConsent(t *testing.T) {
 	}
 }
 
+// TestBilling_ExcludedPartialPrivate — fktp_network profile: BPJS excludes
+// the item, a private plan's annual limit covers part of it; the remainder
+// stays with the patient (coverage "excluded") but NO consent is required.
+func TestBilling_ExcludedPartialPrivate(t *testing.T) {
+	env := payNewEnv(t, "bil.excp")
+	_, admissionID := bilNewPersonAndVisit(t, env, "BIXP", "Pasien Excluded Parsial")
+	_, itemID := bilDefaultList(t, env, "EXCP", "10000.00")
+	status, out := qeRequest(t, env, http.MethodPatch, "/api/v1/merchants/"+env.merchantID+"/billing-profile",
+		map[string]any{"bpjs_cooperation": "fktp_network", "bpjs_network_parent": "FKTP Induk"})
+	payMapData(t, status, out, http.StatusOK)
+	bpjsID := pcCreatePayer(t, env, "BIXP-BPJS", "BPJS Excluded Parsial", "bpjs")
+	bilPutGuarantor(t, env, admissionID, bpjsID, "")
+	privID := pcCreatePayer(t, env, "BIXP-PRV", "Asuransi Parsial", "private_insurance")
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/payers/"+privID+"/plans",
+		map[string]any{"code": "BIXP-PLAN", "name": "Plan Parsial", "annual_limit": "6000.00"})
+	planID, _ := payMapData(t, status, out, http.StatusCreated)["id"].(string)
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/payer-plans/"+planID+"/rules",
+		map[string]any{"rules": []map[string]any{{
+			"care_type": "outpatient", "copay_percent": "0.00", "deductible_per_claim": "0.00",
+		}}})
+	if status != http.StatusOK {
+		t.Fatalf("put rules = %d %v", status, out)
+	}
+	// bilPutGuarantor replaces the whole set, so both guarantors go in one PUT.
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/admissions/"+admissionID+"/guarantors",
+		map[string]any{"guarantors": []map[string]any{
+			{"payer_id": bpjsID},
+			{"payer_id": privID, "plan_id": planID},
+		}})
+	if status != http.StatusOK {
+		t.Fatalf("put guarantors = %d %v", status, out)
+	}
+
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	data := payMapData(t, status, out, http.StatusCreated)
+	totals, _ := data["totals"].(map[string]any)
+	if totals["payer"] != "6000.00" || totals["patient"] != "4000.00" {
+		t.Fatalf("partial totals = %v", totals)
+	}
+	charges, _ := data["charges"].([]any)
+	ch, _ := charges[0].(map[string]any)
+	splits, _ := ch["splits"].([]any)
+	if len(splits) != 2 {
+		t.Fatalf("splits = %v", ch)
+	}
+	sp0, _ := splits[0].(map[string]any)
+	sp1, _ := splits[1].(map[string]any)
+	if sp0["party"] != "payer" || sp0["amount"] != "6000.00" || sp0["note"] != "annual limit" {
+		t.Fatalf("payer split = %v", sp0)
+	}
+	if sp1["party"] != "patient" || sp1["coverage"] != "excluded" || sp1["amount"] != "4000.00" {
+		t.Fatalf("patient split = %v", sp1)
+	}
+	if needs, _ := data["needs_consent"].([]any); len(needs) != 0 {
+		t.Fatalf("needs_consent = %v", data)
+	}
+
+	// Finalize without any consent — allowed: the exclusion is partially covered.
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/billing/finalize", nil)
+	data = payMapData(t, status, out, http.StatusOK)
+	acct, _ := data["account"].(map[string]any)
+	if acct["status"] != "finalized" || acct["patient_total"] != "4000.00" || acct["payer_total"] != "6000.00" {
+		t.Fatalf("finalized account = %v", acct)
+	}
+}
+
 // TestBilling_GLRequired — a requires_gl plan that covers the visit needs a
 // valid guarantee letter before finalize.
 func TestBilling_GLRequired(t *testing.T) {

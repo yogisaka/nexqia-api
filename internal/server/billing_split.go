@@ -95,6 +95,7 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 		remaining := int64(0)
 		locked := false   // BPJS fully covers (capitation/claim/package): stop here
 		excluded := false // remainder originates from BPJS exclusion
+		carried := false  // a private payer covered part of the excluded remainder
 		unit, gross, list := int64(0), int64(0), defaultListID
 
 		grossAt := func(listID string) (int64, int64, error) {
@@ -284,6 +285,9 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 				// Contractual discount is waived (absorbed by the facility),
 				// not passed on to the next payer or the patient.
 				remaining -= cover + discount
+				if cover > 0 {
+					carried = true
+				}
 			}
 		}
 
@@ -301,7 +305,9 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 				cov = "uncovered"
 			case excluded:
 				cov = "excluded"
-				res.NeedsConsent = append(res.NeedsConsent, ch.ID)
+				if !carried {
+					res.NeedsConsent = append(res.NeedsConsent, ch.ID)
+				}
 			}
 			parts = append(parts, splitPart{
 				Party: "patient", Coverage: cov, PriceListID: list,

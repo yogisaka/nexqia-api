@@ -676,7 +676,8 @@ func billingPayload(c *gin.Context, q *sqlcgen.Queries, admissionID pgtype.UUID,
 	splitsByCharge := map[string][]gin.H{}
 	payerTotals := map[string]int64{}
 	var patientTotal, payerTotal int64
-	var excludedCharges []string
+	excludedCandidate := map[string]bool{}
+	payerCarried := map[string]bool{}
 	for _, s := range splits {
 		var payer any
 		if s.PayerID.Valid {
@@ -706,13 +707,23 @@ func billingPayload(c *gin.Context, q *sqlcgen.Queries, admissionID pgtype.UUID,
 		if s.Party == "patient" {
 			patientTotal += cents
 			if s.Coverage == "excluded" {
-				excludedCharges = append(excludedCharges, s.ChargeID.String())
+				excludedCandidate[s.ChargeID.String()] = true
 			}
 		} else {
 			payerTotal += cents
+			if cents > 0 {
+				payerCarried[s.ChargeID.String()] = true
+			}
 			if s.PayerID.Valid {
 				payerTotals[s.PayerID.String()] += cents
 			}
+		}
+	}
+
+	var excludedCharges []string
+	for _, ch := range charges {
+		if excludedCandidate[ch.ID.String()] && !payerCarried[ch.ID.String()] {
+			excludedCharges = append(excludedCharges, ch.ID.String())
 		}
 	}
 
