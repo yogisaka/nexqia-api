@@ -416,7 +416,7 @@ func SetFormularyReferencePriceHandler(c *gin.Context) {
 		return
 	}
 	if err := regenerateProposals(c, q, updated, "reference_changed"); err != nil {
-		respondInternalError(c, err)
+		respondRegenerateError(c, err)
 		return
 	}
 	row, err := q.GetMerchantFormularyRow(c.Request.Context(), mi.ID)
