@@ -291,7 +291,7 @@ func TestBilling_ExcludedPartialPrivate(t *testing.T) {
 	}
 	sp0, _ := splits[0].(map[string]any)
 	sp1, _ := splits[1].(map[string]any)
-	if sp0["party"] != "payer" || sp0["amount"] != "6000.00" || sp0["note"] != "annual limit" {
+	if sp0["party"] != "payer" || sp0["coverage"] != "plan" || sp0["amount"] != "6000.00" || sp0["note"] != "annual limit" {
 		t.Fatalf("payer split = %v", sp0)
 	}
 	if sp1["party"] != "patient" || sp1["coverage"] != "excluded" || sp1["amount"] != "4000.00" {
@@ -520,7 +520,7 @@ func TestBilling_AnnualUsage(t *testing.T) {
 		t.Fatalf("splits = %v", ch)
 	}
 	sp0, _ := splits[0].(map[string]any)
-	if sp0["party"] != "payer" || sp0["amount"] != "12500.00" || sp0["note"] != "annual limit" {
+	if sp0["party"] != "payer" || sp0["coverage"] != "plan" || sp0["amount"] != "12500.00" || sp0["note"] != "annual limit" {
 		t.Fatalf("payer split = %v", sp0)
 	}
 }

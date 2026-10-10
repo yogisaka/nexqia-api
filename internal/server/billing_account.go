@@ -530,12 +530,16 @@ func recomputeAccount(c *gin.Context, q *sqlcgen.Queries, account sqlcgen.Operat
 			if part.HasShadow {
 				shadow = centsNum(part.ShadowCents)
 			}
-			// The engine leaves the patient remainder's coverage empty when a
-			// guarantor exists but does not bear the remainder; the DB enum
-			// (and spec §4) names that case "uncovered".
+			// The engine leaves coverage empty where the DB enum has a sharper
+			// name: a private payer's part is borne by the plan ("plan"); a
+			// patient remainder no payer bears is "uncovered" (spec b1 §3.12).
 			coverage := part.Coverage
 			if coverage == "" {
-				coverage = "uncovered"
+				if part.Party == "payer" {
+					coverage = "plan"
+				} else {
+					coverage = "uncovered"
+				}
 			}
 			if err := q.InsertChargeSplit(ctx, sqlcgen.InsertChargeSplitParams{
 				CompanyID: locked.CompanyID, MerchantID: locked.MerchantID, ChargeID: chargeUUID,
