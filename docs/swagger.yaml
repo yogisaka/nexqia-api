@@ -201,6 +201,97 @@ definitions:
     - merchant_id
     - name
     type: object
+  server.createInventoryItemRequest:
+    properties:
+      base_unit_id:
+        type: string
+      bud_after_open_hours:
+        type: integer
+      bud_after_reconstitution_hours:
+        type: integer
+      code:
+        type: string
+      dosage_form:
+        type: string
+      drug_class:
+        type: string
+      fornas_period:
+        type: string
+      het_amount:
+        type: string
+      het_effective_from:
+        type: string
+      ingredients:
+        items:
+          $ref: '#/definitions/server.itemIngredientInput'
+        type: array
+      is_active:
+        type: boolean
+      is_fornas:
+        type: boolean
+      is_generic:
+        type: boolean
+      is_high_alert:
+        type: boolean
+      is_lasa:
+        type: boolean
+      is_oot:
+        type: boolean
+      is_single_dose:
+        type: boolean
+      item_kind:
+        type: string
+      kfa_code:
+        type: string
+      kfa_pov_code:
+        type: string
+      lasa_note:
+        type: string
+      manufacturer:
+        type: string
+      min_fraction:
+        type: string
+      name:
+        type: string
+      nie:
+        type: string
+      no_crush:
+        type: boolean
+      non_kfa:
+        type: boolean
+      non_kfa_reason:
+        type: string
+      pricing_category:
+        type: string
+      storage_temp:
+        type: string
+      track_batch:
+        type: boolean
+      track_expiry:
+        type: boolean
+    required:
+    - base_unit_id
+    - code
+    - item_kind
+    - name
+    - pricing_category
+    type: object
+  server.createInventoryItemUnitRequest:
+    properties:
+      factor:
+        type: string
+      is_default_issue:
+        type: boolean
+      is_default_purchase:
+        type: boolean
+      kfa_packaging_code:
+        type: string
+      unit_id:
+        type: string
+    required:
+    - factor
+    - unit_id
+    type: object
   server.createLocationRequest:
     properties:
       capacity:
@@ -551,6 +642,21 @@ definitions:
     - reason
     - username
     type: object
+  server.itemIngredientInput:
+    properties:
+      ingredient_code:
+        type: string
+      ingredient_name:
+        type: string
+      per_quantity:
+        type: string
+      per_unit:
+        type: string
+      strength:
+        type: string
+      strength_unit:
+        type: string
+    type: object
   server.loginRequest:
     properties:
       password:
@@ -810,6 +916,15 @@ definitions:
     - adjustment_percent
     - item_type
     type: object
+  server.putInventoryItemIngredientsRequest:
+    properties:
+      ingredients:
+        items:
+          $ref: '#/definitions/server.itemIngredientInput'
+        type: array
+    required:
+    - ingredients
+    type: object
   server.putPriceListAdjustmentsRequest:
     properties:
       adjustments:
@@ -1058,6 +1173,78 @@ definitions:
         type: string
     required:
     - name
+    type: object
+  server.updateInventoryItemRequest:
+    properties:
+      base_unit_id:
+        type: string
+      bud_after_open_hours:
+        type: integer
+      bud_after_reconstitution_hours:
+        type: integer
+      dosage_form:
+        type: string
+      drug_class:
+        type: string
+      fornas_period:
+        type: string
+      het_amount:
+        type: string
+      het_effective_from:
+        type: string
+      is_active:
+        type: boolean
+      is_fornas:
+        type: boolean
+      is_generic:
+        type: boolean
+      is_high_alert:
+        type: boolean
+      is_lasa:
+        type: boolean
+      is_oot:
+        type: boolean
+      is_single_dose:
+        type: boolean
+      kfa_code:
+        type: string
+      kfa_pov_code:
+        type: string
+      lasa_note:
+        type: string
+      manufacturer:
+        type: string
+      min_fraction:
+        type: string
+      name:
+        type: string
+      nie:
+        type: string
+      no_crush:
+        type: boolean
+      non_kfa:
+        type: boolean
+      non_kfa_reason:
+        type: string
+      row_version:
+        type: integer
+      storage_temp:
+        type: string
+      track_batch:
+        type: boolean
+      track_expiry:
+        type: boolean
+    type: object
+  server.updateInventoryItemUnitRequest:
+    properties:
+      is_active:
+        type: boolean
+      is_default_issue:
+        type: boolean
+      is_default_purchase:
+        type: boolean
+      kfa_packaging_code:
+        type: string
     type: object
   server.updateLocationRequest:
     properties:
@@ -3209,6 +3396,283 @@ paths:
       summary: Liveness check
       tags:
       - system
+  /inventory/item-units/{id}:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Item unit UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Unit fields
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateInventoryItemUnitRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a packaging unit's flags
+      tags:
+      - inventory
+  /inventory/items:
+    get:
+      parameters:
+      - description: Filter by code or name
+        in: query
+        name: q
+        type: string
+      - description: Filter by item kind
+        in: query
+        name: item_kind
+        type: string
+      - description: Filter by active flag
+        in: query
+        name: is_active
+        type: boolean
+      - description: Page size (max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List company items (ringkas)
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Item data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createInventoryItemRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a company-level item with base unit and ingredients
+      tags:
+      - inventory
+  /inventory/items/{id}:
+    delete:
+      parameters:
+      - description: Item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete an item
+      tags:
+      - inventory
+    get:
+      parameters:
+      - description: Item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get an item detail
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Item fields
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateInventoryItemRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update an item (optimistic locking on row_version)
+      tags:
+      - inventory
+  /inventory/items/{id}/ingredients:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Ingredients
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putInventoryItemIngredientsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace all active ingredients of an item
+      tags:
+      - inventory
+  /inventory/items/{id}/units:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Item UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Packaging unit
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createInventoryItemUnitRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Add a packaging unit to an item
+      tags:
+      - inventory
+  /inventory/units:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List platform units
+      tags:
+      - inventory
   /locations:
     post:
       consumes:

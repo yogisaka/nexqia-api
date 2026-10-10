@@ -2985,6 +2985,448 @@ const docTemplate = `{
                 }
             }
         },
+        "/inventory/item-units/{id}": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Update a packaging unit's flags",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item unit UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Unit fields",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updateInventoryItemUnitRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/inventory/items": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "List company items (ringkas)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by code or name",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by item kind",
+                        "name": "item_kind",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Filter by active flag",
+                        "name": "is_active",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Create a company-level item with base unit and ingredients",
+                "parameters": [
+                    {
+                        "description": "Item data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createInventoryItemRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/inventory/items/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Get an item detail",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Soft-delete an item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Update an item (optimistic locking on row_version)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Item fields",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updateInventoryItemRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/inventory/items/{id}/ingredients": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Replace all active ingredients of an item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Ingredients",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.putInventoryItemIngredientsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/inventory/items/{id}/units": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Add a packaging unit to an item",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Item UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Packaging unit",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createInventoryItemUnitRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/inventory/units": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "List platform units",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/locations": {
             "post": {
                 "security": [
@@ -10157,6 +10599,141 @@ const docTemplate = `{
                 }
             }
         },
+        "server.createInventoryItemRequest": {
+            "type": "object",
+            "required": [
+                "base_unit_id",
+                "code",
+                "item_kind",
+                "name",
+                "pricing_category"
+            ],
+            "properties": {
+                "base_unit_id": {
+                    "type": "string"
+                },
+                "bud_after_open_hours": {
+                    "type": "integer"
+                },
+                "bud_after_reconstitution_hours": {
+                    "type": "integer"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "dosage_form": {
+                    "type": "string"
+                },
+                "drug_class": {
+                    "type": "string"
+                },
+                "fornas_period": {
+                    "type": "string"
+                },
+                "het_amount": {
+                    "type": "string"
+                },
+                "het_effective_from": {
+                    "type": "string"
+                },
+                "ingredients": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.itemIngredientInput"
+                    }
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_fornas": {
+                    "type": "boolean"
+                },
+                "is_generic": {
+                    "type": "boolean"
+                },
+                "is_high_alert": {
+                    "type": "boolean"
+                },
+                "is_lasa": {
+                    "type": "boolean"
+                },
+                "is_oot": {
+                    "type": "boolean"
+                },
+                "is_single_dose": {
+                    "type": "boolean"
+                },
+                "item_kind": {
+                    "type": "string"
+                },
+                "kfa_code": {
+                    "type": "string"
+                },
+                "kfa_pov_code": {
+                    "type": "string"
+                },
+                "lasa_note": {
+                    "type": "string"
+                },
+                "manufacturer": {
+                    "type": "string"
+                },
+                "min_fraction": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "nie": {
+                    "type": "string"
+                },
+                "no_crush": {
+                    "type": "boolean"
+                },
+                "non_kfa": {
+                    "type": "boolean"
+                },
+                "non_kfa_reason": {
+                    "type": "string"
+                },
+                "pricing_category": {
+                    "type": "string"
+                },
+                "storage_temp": {
+                    "type": "string"
+                },
+                "track_batch": {
+                    "type": "boolean"
+                },
+                "track_expiry": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "server.createInventoryItemUnitRequest": {
+            "type": "object",
+            "required": [
+                "factor",
+                "unit_id"
+            ],
+            "properties": {
+                "factor": {
+                    "type": "string"
+                },
+                "is_default_issue": {
+                    "type": "boolean"
+                },
+                "is_default_purchase": {
+                    "type": "boolean"
+                },
+                "kfa_packaging_code": {
+                    "type": "string"
+                },
+                "unit_id": {
+                    "type": "string"
+                }
+            }
+        },
         "server.createLocationRequest": {
             "type": "object",
             "required": [
@@ -10671,6 +11248,29 @@ const docTemplate = `{
                 }
             }
         },
+        "server.itemIngredientInput": {
+            "type": "object",
+            "properties": {
+                "ingredient_code": {
+                    "type": "string"
+                },
+                "ingredient_name": {
+                    "type": "string"
+                },
+                "per_quantity": {
+                    "type": "string"
+                },
+                "per_unit": {
+                    "type": "string"
+                },
+                "strength": {
+                    "type": "string"
+                },
+                "strength_unit": {
+                    "type": "string"
+                }
+            }
+        },
         "server.loginRequest": {
             "type": "object",
             "required": [
@@ -11061,6 +11661,20 @@ const docTemplate = `{
                 }
             }
         },
+        "server.putInventoryItemIngredientsRequest": {
+            "type": "object",
+            "required": [
+                "ingredients"
+            ],
+            "properties": {
+                "ingredients": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.itemIngredientInput"
+                    }
+                }
+            }
+        },
         "server.putPriceListAdjustmentsRequest": {
             "type": "object",
             "required": [
@@ -11432,6 +12046,115 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "specialty_concept_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.updateInventoryItemRequest": {
+            "type": "object",
+            "properties": {
+                "base_unit_id": {
+                    "type": "string"
+                },
+                "bud_after_open_hours": {
+                    "type": "integer"
+                },
+                "bud_after_reconstitution_hours": {
+                    "type": "integer"
+                },
+                "dosage_form": {
+                    "type": "string"
+                },
+                "drug_class": {
+                    "type": "string"
+                },
+                "fornas_period": {
+                    "type": "string"
+                },
+                "het_amount": {
+                    "type": "string"
+                },
+                "het_effective_from": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_fornas": {
+                    "type": "boolean"
+                },
+                "is_generic": {
+                    "type": "boolean"
+                },
+                "is_high_alert": {
+                    "type": "boolean"
+                },
+                "is_lasa": {
+                    "type": "boolean"
+                },
+                "is_oot": {
+                    "type": "boolean"
+                },
+                "is_single_dose": {
+                    "type": "boolean"
+                },
+                "kfa_code": {
+                    "type": "string"
+                },
+                "kfa_pov_code": {
+                    "type": "string"
+                },
+                "lasa_note": {
+                    "type": "string"
+                },
+                "manufacturer": {
+                    "type": "string"
+                },
+                "min_fraction": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "nie": {
+                    "type": "string"
+                },
+                "no_crush": {
+                    "type": "boolean"
+                },
+                "non_kfa": {
+                    "type": "boolean"
+                },
+                "non_kfa_reason": {
+                    "type": "string"
+                },
+                "row_version": {
+                    "type": "integer"
+                },
+                "storage_temp": {
+                    "type": "string"
+                },
+                "track_batch": {
+                    "type": "boolean"
+                },
+                "track_expiry": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "server.updateInventoryItemUnitRequest": {
+            "type": "object",
+            "properties": {
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_default_issue": {
+                    "type": "boolean"
+                },
+                "is_default_purchase": {
+                    "type": "boolean"
+                },
+                "kfa_packaging_code": {
                     "type": "string"
                 }
             }
