@@ -242,6 +242,14 @@ WHERE mr.merchant_id = $1 AND mr.pricing_category = $2
 SELECT pricing_category, het_amount, het_effective_from
 FROM inventory.item WHERE id = $1;
 
+-- HET of the formulary item behind a service item (spec §4.3); no row means
+-- the service item is not a formulary drug (no HET applies).
+-- name: GetHETForServiceItem :one
+SELECT i.het_amount, i.het_effective_from
+FROM inventory.merchant_item mi
+JOIN inventory.item i ON i.id = mi.item_id
+WHERE mi.service_item_id = $1 AND mi.deleted_at IS NULL;
+
 -- name: ListActiveMerchantItemsWithReference :many
 SELECT * FROM inventory.merchant_item
 WHERE merchant_id = $1 AND is_active AND deleted_at IS NULL

@@ -93,3 +93,40 @@ func TestResolvePrice(t *testing.T) {
 		t.Fatalf("derived without base rows: want errPriceMissing, got %v", err)
 	}
 }
+
+func TestCapAtHET(t *testing.T) {
+	// 1000 + 300 = 1300 > HET 1000: surplus 200 comes off A (largest) → 700,
+	// B stays 300, total 1000, capped.
+	res := resolvedPrice{TotalCents: 1300, Components: []rateRow{
+		{Code: "A", Cents: 1000}, {Code: "B", Cents: 300},
+	}}
+	got := capAtHET(res, 1000)
+	if got.TotalCents != 1000 || !got.HETCapped || got.Source != res.Source || got.AppliedBP != res.AppliedBP {
+		t.Fatalf("capped = %+v", got)
+	}
+	if got.Components[0].Code != "A" || got.Components[0].Cents != 700 || got.Components[1].Cents != 300 {
+		t.Fatalf("capped components = %+v", got.Components)
+	}
+	if res.Components[0].Cents != 1000 {
+		t.Fatalf("capAtHET mutated its input: %+v", res.Components)
+	}
+
+	// Total within the HET and HET 0 → unchanged, not capped.
+	same := resolvedPrice{TotalCents: 900, Components: []rateRow{{Code: "A", Cents: 900}}}
+	if got := capAtHET(same, 1000); got.HETCapped || got.TotalCents != 900 {
+		t.Fatalf("under HET = %+v", got)
+	}
+	if got := capAtHET(same, 0); got.HETCapped || got.TotalCents != 900 {
+		t.Fatalf("HET 0 = %+v", got)
+	}
+
+	// Tie on the largest component → the first after sorting by Code loses
+	// the surplus: 500 + 500 = 1000, HET 900 → A 400, B 500.
+	tie := resolvedPrice{TotalCents: 1000, Components: []rateRow{
+		{Code: "B", Cents: 500}, {Code: "A", Cents: 500},
+	}}
+	got = capAtHET(tie, 900)
+	if got.TotalCents != 900 || !got.HETCapped || got.Components[0].Code != "A" || got.Components[0].Cents != 400 || got.Components[1].Cents != 500 {
+		t.Fatalf("tie cap = %+v", got)
+	}
+}

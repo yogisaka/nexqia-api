@@ -184,6 +184,7 @@ func priceResultJSON(item sqlcgen.CoreServiceItem, res resolvedPrice) gin.H {
 		"total":                      formatCents(res.TotalCents),
 		"components":                 comps,
 		"adjustment_percent_applied": formatCents(res.AppliedBP),
+		"het_capped":                 res.HETCapped,
 	}
 }
 
@@ -199,7 +200,31 @@ func missingPriceResultJSON(item sqlcgen.CoreServiceItem) gin.H {
 		"total":                      nil,
 		"components":                 []gin.H{},
 		"adjustment_percent_applied": nil,
+		"het_capped":                 false,
 	}
+}
+
+// hetCentsOn returns the HET in cents of the formulary item behind a service
+// item, or 0 when there is no formulary row, no HET, or the HET only becomes
+// effective after date. ok is false on a database error (already responded).
+func hetCentsOn(c *gin.Context, q *sqlcgen.Queries, serviceItemID pgtype.UUID, date pgtype.Date) (int64, bool) {
+	het, err := q.GetHETForServiceItem(c.Request.Context(), serviceItemID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, true
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return 0, false
+	}
+	if !het.HetAmount.Valid || !het.HetEffectiveFrom.Valid || het.HetEffectiveFrom.Time.After(date.Time) {
+		return 0, true
+	}
+	cents, err := numericToCents(het.HetAmount)
+	if err != nil {
+		respondInternalError(c, err)
+		return 0, false
+	}
+	return cents, true
 }
 
 // requestDate resolves the ?date= param (default: today in the merchant's
@@ -704,6 +729,22 @@ func SetPriceListPriceHandler(c *gin.Context) {
 		})
 		resolved = append(resolved, rateRow{ComponentID: compID.String(), Code: component.Code, Name: component.Name, Cents: cents})
 	}
+	// HET is a hard ceiling for formulary drugs: reject totals above it
+	// before any version bookkeeping (spec §4.3).
+	hetCents, okHET := hetCentsOn(c, q, item.ID, effDate)
+	if !okHET {
+		return
+	}
+	if hetCents > 0 {
+		var total int64
+		for _, r := range resolved {
+			total += r.Cents
+		}
+		if total > hetCents {
+			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("price exceeds HET %s", formatCents(hetCents))})
+			return
+		}
+	}
 	if !lockItemPrice(c, q, list.MerchantID, list.ID, item.ID) {
 		return
 	}
@@ -867,6 +908,11 @@ func ResolvePriceListHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	hetCents, okHET := hetCentsOn(c, q, item.ID, onDate)
+	if !okHET {
+		return
+	}
+	res = capAtHET(res, hetCents)
 	c.JSON(http.StatusOK, gin.H{"data": priceResultJSON(item, res), "meta": gin.H{}})
 }
 
@@ -952,7 +998,11 @@ func ListPriceListItemsHandler(c *gin.Context) {
 			respondInternalError(c, err)
 			return
 		}
-		data = append(data, priceResultJSON(item, res))
+		hetCents, okHET := hetCentsOn(c, q, item.ID, onDate)
+		if !okHET {
+			return
+		}
+		data = append(data, priceResultJSON(item, capAtHET(res, hetCents)))
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{"limit": limit, "offset": offset}})
 }

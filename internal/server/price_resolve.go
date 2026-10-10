@@ -34,6 +34,7 @@ type resolvedPrice struct {
 	Components []rateRow
 	Source     string // "manual" | "derived"
 	AppliedBP  int64
+	HETCapped  bool
 }
 
 // roundHalfUpDiv returns num/den rounded half up (num >= 0, den > 0).
@@ -92,4 +93,25 @@ func resolvePrice(itemType string, rule priceListRule, own, base []rateRow) (res
 		}
 	}
 	return resolvedPrice{TotalCents: total, Components: comps, Source: "derived", AppliedBP: bp}, nil
+}
+
+// capAtHET clamps a resolved price to the drug HET (in cents). A HET of zero
+// or less, or a total within the HET, returns the price unchanged; otherwise
+// the surplus (total − HET) is taken from the component with the largest
+// Cents (ties: the first after sorting by Code) and the total becomes the
+// HET with HETCapped set.
+func capAtHET(res resolvedPrice, hetCents int64) resolvedPrice {
+	if hetCents <= 0 || res.TotalCents <= hetCents {
+		return res
+	}
+	comps := append([]rateRow(nil), res.Components...)
+	sort.Slice(comps, func(i, j int) bool { return comps[i].Code < comps[j].Code })
+	largest := 0
+	for i := range comps {
+		if comps[i].Cents > comps[largest].Cents {
+			largest = i
+		}
+	}
+	comps[largest].Cents -= res.TotalCents - hetCents
+	return resolvedPrice{TotalCents: hetCents, Components: comps, Source: res.Source, AppliedBP: res.AppliedBP, HETCapped: true}
 }
