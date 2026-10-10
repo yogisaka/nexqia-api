@@ -300,8 +300,9 @@ WHERE admission_id = $1 AND status = 'active';
 -- in Go from plan_year_start_month and matched against each charge's
 -- service_date — the plan year the SERVICE belongs to, not the year the
 -- split was computed/finalized in). The guarantor row of the past visit
--- must carry the same plan_id, so usage of another plan of the same payer
--- never eats this plan's annual limit.
+-- must resolve to the same plan — directly via plan_id or, when the row was
+-- stored without one, through its coverage's plan_id — so usage of another
+-- plan of the same payer never eats this plan's annual limit.
 SELECT COALESCE(sum(cs.amount), 0)::numeric AS used
 FROM operations.charge_split cs
 JOIN operations.charge ch ON ch.id = cs.charge_id
@@ -313,7 +314,9 @@ WHERE cs.party = 'payer' AND cs.payer_id = $1
   AND ch.service_date >= $4 AND ch.service_date < $5
   AND EXISTS (
       SELECT 1 FROM operations.admission_guarantor ag
-      WHERE ag.admission_id = a.id AND ag.payer_id = cs.payer_id AND ag.plan_id = $6);
+      LEFT JOIN core.patient_coverage coverage ON coverage.id = ag.coverage_id
+      WHERE ag.admission_id = a.id AND ag.payer_id = cs.payer_id
+        AND COALESCE(ag.plan_id, coverage.plan_id) = $6);
 
 -- name: InsertGuaranteeLetter :exec
 INSERT INTO operations.guarantee_letter

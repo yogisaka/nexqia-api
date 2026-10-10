@@ -707,3 +707,93 @@ func TestBilling_PlanWithoutCareTypeRule(t *testing.T) {
 		t.Fatalf("finalized account = %v", acct)
 	}
 }
+
+// TestBilling_ReopenPermission — the permission gate runs before body
+// validation: staff without billing.account.reopen gets 403 even with an
+// empty (invalid) body, never 400.
+func TestBilling_ReopenPermission(t *testing.T) {
+	env := payNewEnv(t, "bil.reopenperm")
+	_, admissionID := bilNewPersonAndVisit(t, env, "BILR2", "Pasien Reopen Izin")
+
+	ctx := context.Background()
+	seedMerchantStaff(t, ctx, env.pool, env.companyID, env.merchantID, "bil-reopenperm-staff", "",
+		"billing.invoice.view")
+	staff := qeStaffToken(t, ctx, env.pool, env.router, env.companyID, "bil-reopenperm-staff")
+	status, out := qeRequestToken(t, env.router, http.MethodPost, "/api/v1/admissions/"+admissionID+"/billing/reopen",
+		staff, env.companyID, env.merchantID, map[string]any{})
+	if status != http.StatusForbidden {
+		t.Fatalf("reopen without permission, empty body = %d %v, want 403", status, out)
+	}
+}
+
+// TestBilling_AnnualUsageNoPlanID — guarantor rows stored WITHOUT plan_id
+// (the plan is only reachable through the coverage) still count toward the
+// plan's annual limit: a first finalized visit consumes part of the limit and
+// the second visit is capped at the remainder.
+func TestBilling_AnnualUsageNoPlanID(t *testing.T) {
+	env := payNewEnv(t, "bil.annualnp")
+	personID, admissionA := bilNewPersonAndVisit(t, env, "BIL4A", "Pasien Limit Tanpa Plan")
+	_, itemID := bilDefaultList(t, env, "ANNUAL4", "50000.00")
+	privID := pcCreatePayer(t, env, "BIL4-PRV", "Asuransi Tanpa Plan", "private_insurance")
+	// limit 62500.00, first visit uses 50000.00 = 80%; remainder 12500.00.
+	status, out := qeRequest(t, env, http.MethodPost, "/api/v1/payers/"+privID+"/plans",
+		map[string]any{"code": "BIL4-PLAN", "name": "Plan Tanpa Plan ID", "annual_limit": "62500.00"})
+	planID, _ := payMapData(t, status, out, http.StatusCreated)["id"].(string)
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/payer-plans/"+planID+"/rules",
+		map[string]any{"rules": []map[string]any{{
+			"care_type": "outpatient", "copay_percent": "0.00", "deductible_per_claim": "0.00",
+		}}})
+	if status != http.StatusOK {
+		t.Fatalf("put rules = %d %v", status, out)
+	}
+	// Coverage membership carrying the plan for this person.
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/persons/"+personID+"/coverages",
+		map[string]any{"payer_id": privID, "plan_id": planID, "member_number": "BIL4-MBR"})
+	covID, _ := payMapData(t, status, out, http.StatusCreated)["id"].(string)
+	if covID == "" {
+		t.Fatalf("create coverage = %d %v", status, out)
+	}
+	// Guarantor WITHOUT plan_id — plan resolved through coverage_id only.
+	putGuarantorCoverage := func(admissionID string) {
+		t.Helper()
+		status, out := qeRequest(t, env, http.MethodPut, "/api/v1/admissions/"+admissionID+"/guarantors",
+			map[string]any{"guarantors": []map[string]any{{"payer_id": privID, "coverage_id": covID}}})
+		if status != http.StatusOK {
+			t.Fatalf("put guarantor = %d %v", status, out)
+		}
+	}
+	putGuarantorCoverage(admissionA)
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionA+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	payMapData(t, status, out, http.StatusCreated)
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionA+"/billing/finalize", nil)
+	payMapData(t, status, out, http.StatusOK)
+
+	// Second visit, same person/payer/coverage: only the annual remainder is
+	// borne by the plan even though the past guarantor row has no plan_id.
+	mergeSeedAdmission(t, context.Background(), env.pool, env.companyID, env.merchantID, personID, "BIL4B")
+	var admissionB string
+	if err := env.pool.QueryRow(context.Background(),
+		"SELECT id::text FROM operations.admission WHERE merchant_id = $1 AND person_id = $2 ORDER BY created_at DESC LIMIT 1",
+		env.merchantID, personID).Scan(&admissionB); err != nil {
+		t.Fatalf("find admission B: %v", err)
+	}
+	putGuarantorCoverage(admissionB)
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionB+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	data := payMapData(t, status, out, http.StatusCreated)
+	totals, _ := data["totals"].(map[string]any)
+	if totals["payer"] != "12500.00" || totals["patient"] != "37500.00" {
+		t.Fatalf("annual-capped totals = %v", totals)
+	}
+	charges, _ := data["charges"].([]any)
+	ch, _ := charges[0].(map[string]any)
+	splits, _ := ch["splits"].([]any)
+	if len(splits) != 2 {
+		t.Fatalf("splits = %v", ch)
+	}
+	sp0, _ := splits[0].(map[string]any)
+	if sp0["party"] != "payer" || sp0["coverage"] != "plan" || sp0["amount"] != "12500.00" || sp0["note"] != "annual limit" {
+		t.Fatalf("payer split = %v", sp0)
+	}
+}

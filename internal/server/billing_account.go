@@ -1296,14 +1296,16 @@ type reopenBillingRequest struct {
 // @Failure 409 {object} apiErrorResponse
 // @Router /admissions/{id}/billing/reopen [post]
 func ReopenBillingHandler(c *gin.Context) {
-	var req reopenBillingRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
-		return
-	}
+	// Permission gate before body validation: a caller without
+	// billing.account.reopen gets 403 even when the body is empty/invalid.
 	q := sqlcgen.New(TxFromContext(c))
 	adm, _, ok := loadBillingAdmission(c, c.Param("id"), q, PermAccountReopen)
 	if !ok {
+		return
+	}
+	var req reopenBillingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
 		return
 	}
 	acct, err := q.GetBillingAccountByAdmission(c.Request.Context(), adm.ID)
