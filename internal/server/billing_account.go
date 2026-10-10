@@ -1031,11 +1031,6 @@ func CreateChargeHandler(c *gin.Context) {
 // @Failure 409 {object} apiErrorResponse
 // @Router /charges/{id}/void [post]
 func VoidChargeHandler(c *gin.Context) {
-	var req voidChargeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
-		return
-	}
 	q := sqlcgen.New(TxFromContext(c))
 	chargeID, ok := parseUUID(c.Param("id"))
 	if !ok {
@@ -1051,7 +1046,14 @@ func VoidChargeHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Permission gate BEFORE body validation (review fix): a caller
+	// without billing.invoice.create gets 403 regardless of body validity.
 	if !RequirePermissionForMerchant(c, PermInvoiceCreate, charge.MerchantID) {
+		return
+	}
+	var req voidChargeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
 		return
 	}
 	acct, err := q.GetBillingAccountForUpdate(c.Request.Context(), charge.AccountID)

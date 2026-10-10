@@ -472,6 +472,31 @@ func TestBilling_CancelGuard(t *testing.T) {
 	payMapData(t, status, out, http.StatusOK)
 }
 
+// TestBilling_VoidPermission — the permission gate runs before body
+// validation: staff without billing.invoice.create gets 403 even with an
+// empty (invalid) body, never 400.
+func TestBilling_VoidPermission(t *testing.T) {
+	env := payNewEnv(t, "bil.voidperm")
+	_, admissionID := bilNewPersonAndVisit(t, env, "BILV", "Pasien Void Izin")
+	_, itemID := bilDefaultList(t, env, "VOIDP", "10000.00")
+	status, out := qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	data := payMapData(t, status, out, http.StatusCreated)
+	charges, _ := data["charges"].([]any)
+	ch, _ := charges[0].(map[string]any)
+	chargeID, _ := ch["id"].(string)
+
+	ctx := context.Background()
+	seedMerchantStaff(t, ctx, env.pool, env.companyID, env.merchantID, "bil-void-staff", "",
+		"billing.invoice.view")
+	staff := qeStaffToken(t, ctx, env.pool, env.router, env.companyID, "bil-void-staff")
+	status, out = qeRequestToken(t, env.router, http.MethodPost, "/api/v1/charges/"+chargeID+"/void",
+		staff, env.companyID, env.merchantID, map[string]any{})
+	if status != http.StatusForbidden {
+		t.Fatalf("void without permission = %d %v, want 403", status, out)
+	}
+}
+
 // TestBilling_AnnualUsage — a first finalized account consuming 80% of the
 // plan's annual limit caps the second visit's coverage at the remainder.
 func TestBilling_AnnualUsage(t *testing.T) {
