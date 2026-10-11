@@ -1269,6 +1269,12 @@ func FinalizeBillingHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Spec 2026-10-07-tariff-b2 §4.1.1: one receivable per payer with a
+	// positive share, inserted in the SAME finalize transaction.
+	if err := createAccountReceivables(c, q, &finalized, AuthUserID(c)); err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	payload, err := billingPayload(c, q, adm.ID, &finalized)
 	if err != nil {
 		respondInternalError(c, err)
@@ -1326,6 +1332,11 @@ func ReopenBillingHandler(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "billing is not finalized"})
 		return
 	}
+	// Spec 2026-10-07-tariff-b2 §4.1.2: fresh open receivables are deleted
+	// (recreated on the next finalize); processed ones block the reopen.
+	if !clearReceivablesOnReopen(c, q, acct.ID, AuthUserID(c)) {
+		return
+	}
 	reopened, err := q.ReopenBillingAccount(c.Request.Context(), sqlcgen.ReopenBillingAccountParams{
 		ID: acct.ID, LastReopenReason: optText(req.Reason), UpdatedBy: AuthUserID(c),
 	})
@@ -1339,4 +1350,71 @@ func ReopenBillingHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": payload, "meta": gin.H{}})
+}
+
+// createAccountReceivables inserts one receivable per payer with a positive
+// share of the finalized account (spec 2026-10-07-tariff-b2 §4.1.1), inside
+// the caller's finalize transaction: claim_types = distinct claim types of the
+// payer's splits, due_date = finalize day + the payer's payment_term_days,
+// expires_on = service_date_to + 6 months for BPJS payers only. Capitation
+// payers (zero payer share) get no receivable.
+func createAccountReceivables(c *gin.Context, q *sqlcgen.Queries, acct *sqlcgen.OperationsBillingAccount, userID pgtype.UUID) error {
+	ctx := c.Request.Context()
+	splits, err := q.SumPayerSplitsForAccount(ctx, acct.ID)
+	if err != nil {
+		return err
+	}
+	loc, err := merchantLocation(ctx, q, acct.MerchantID)
+	if err != nil {
+		return err
+	}
+	finalDay, err := txDayStart(ctx, q, loc)
+	if err != nil {
+		return err
+	}
+	for _, s := range splits {
+		total, err := numericToCents(s.TotalAmount)
+		if err != nil {
+			return err
+		}
+		if total <= 0 {
+			continue
+		}
+		expiresOn := pgtype.Date{}
+		if s.PayerType == "bpjs" {
+			expiresOn = pgtype.Date{Time: s.ServiceDateTo.Time.AddDate(0, 6, 0), Valid: true}
+		}
+		if _, err := q.InsertReceivable(ctx, sqlcgen.InsertReceivableParams{
+			CompanyID: acct.CompanyID, MerchantID: acct.MerchantID,
+			AccountID: acct.ID, AdmissionID: acct.AdmissionID, PayerID: s.PayerID,
+			ServiceDateFrom: s.ServiceDateFrom, ServiceDateTo: s.ServiceDateTo,
+			Amount: s.TotalAmount, ClaimTypes: s.ClaimTypes,
+			DueDate:   pgtype.Date{Time: finalDay.AddDate(0, 0, int(s.PaymentTermDays)), Valid: true},
+			ExpiresOn: expiresOn, CreatedBy: userID,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// clearReceivablesOnReopen enforces the reopen guard (spec §4.1.2): receivables
+// that are no longer fresh `open`, or that carry an allocation/adjustment,
+// answer 409 `billing has receivables in process`; otherwise every remaining
+// open receivable of the account is hard deleted (recreated on next finalize).
+func clearReceivablesOnReopen(c *gin.Context, q *sqlcgen.Queries, accountID, userID pgtype.UUID) bool {
+	inProcess, err := q.CountReceivablesInProcessByAccount(c.Request.Context(), accountID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	if inProcess > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "billing has receivables in process"})
+		return false
+	}
+	if err := q.DeleteReceivablesByAccount(c.Request.Context(), accountID); err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	return true
 }

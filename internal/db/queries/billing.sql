@@ -323,3 +323,154 @@ INSERT INTO operations.guarantee_letter
     (company_id, merchant_id, admission_id, payer_id, gl_number, amount_limit,
      valid_from, valid_to, note, created_by, updated_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10);
+
+-- Payer receivables (spec 2026-10-07-tariff-b2-receivables-claims §4.1/§4.5).
+
+-- name: SumPayerSplitsForAccount :many
+-- One row per payer bearing a positive share of the account's active charges:
+-- the receivable amount, the distinct claim types and the service date range.
+SELECT cs.payer_id,
+       p.name AS payer_name,
+       p.payer_type,
+       p.payment_term_days,
+       COALESCE(sum(cs.amount), 0)::numeric AS total_amount,
+       COALESCE(array_agg(DISTINCT cs.claim_type)
+                FILTER (WHERE cs.claim_type IS NOT NULL AND cs.claim_type <> ''), '{}')::text[] AS claim_types,
+       min(ch.service_date)::date AS service_date_from,
+       max(ch.service_date)::date AS service_date_to
+FROM operations.charge_split cs
+JOIN operations.charge ch ON ch.id = cs.charge_id
+JOIN core.payer p ON p.id = cs.payer_id
+WHERE ch.account_id = $1 AND ch.status = 'active' AND cs.party = 'payer' AND cs.amount > 0
+GROUP BY cs.payer_id, p.name, p.payer_type, p.payment_term_days
+ORDER BY p.name;
+
+-- name: InsertReceivable :one
+INSERT INTO operations.receivable
+    (company_id, merchant_id, account_id, admission_id, payer_id,
+     service_date_from, service_date_to, amount, claim_types, due_date, expires_on, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING *;
+
+-- name: ListReceivablesByAccount :many
+SELECT * FROM operations.receivable WHERE account_id = $1;
+
+-- name: CountReceivablesInProcessByAccount :one
+-- Reopen guard (§4.1.2): any receivable that is no longer fresh `open`, or
+-- that already carries an allocation/adjustment, blocks reopening.
+SELECT count(*) FROM operations.receivable r
+WHERE r.account_id = $1
+  AND (r.status <> 'open'
+       OR EXISTS (SELECT 1 FROM operations.payer_payment_allocation a WHERE a.receivable_id = r.id)
+       OR EXISTS (SELECT 1 FROM operations.receivable_adjustment j WHERE j.receivable_id = r.id));
+
+-- name: DeleteReceivablesByAccount :exec
+DELETE FROM operations.receivable WHERE account_id = $1;
+
+-- name: GetReceivableByID :one
+SELECT r.*, p.name AS payer_name, p.payer_type,
+       a.visit_no AS admission_visit_no,
+       per.id AS person_id, per.full_name AS person_full_name,
+       per.medical_record_no AS person_mrn
+FROM operations.receivable r
+JOIN core.payer p ON p.id = r.payer_id
+JOIN operations.admission a ON a.id = r.admission_id
+JOIN core.person per ON per.id = a.person_id
+WHERE r.id = $1;
+
+-- name: ListReceivablesByMerchant :many
+SELECT r.*, p.name AS payer_name, p.payer_type,
+       a.visit_no AS admission_visit_no,
+       per.id AS person_id, per.full_name AS person_full_name,
+       per.medical_record_no AS person_mrn
+FROM operations.receivable r
+JOIN core.payer p ON p.id = r.payer_id
+JOIN operations.admission a ON a.id = r.admission_id
+JOIN core.person per ON per.id = a.person_id
+WHERE r.merchant_id = sqlc.arg(merchant_id)
+  AND (sqlc.narg(payer_id)::uuid IS NULL OR r.payer_id = sqlc.narg(payer_id))
+  AND (sqlc.narg(status)::text IS NULL OR r.status = sqlc.narg(status))
+  AND (sqlc.narg(date_from)::date IS NULL OR r.service_date_to >= sqlc.narg(date_from))
+  AND (sqlc.narg(date_to)::date IS NULL OR r.service_date_to <= sqlc.narg(date_to))
+ORDER BY r.due_date, r.id
+LIMIT sqlc.arg(row_limit)::integer OFFSET sqlc.arg(row_offset)::integer;
+
+-- name: ReceivableAgingByMerchant :many
+-- AR aging per payer (§4.5): outstanding balance (> 0) bucketed by
+-- as_of - due_date in days; disputed receivables live in their own column.
+WITH bal AS (
+    SELECT r.payer_id, p.name AS payer_name,
+           (r.status = 'disputed') AS is_disputed,
+           (sqlc.arg(as_of)::date - r.due_date) AS overdue_days,
+           (r.amount - r.paid_amount - r.adjusted_amount) AS balance
+    FROM operations.receivable r
+    JOIN core.payer p ON p.id = r.payer_id
+    WHERE r.merchant_id = sqlc.arg(merchant_id)
+      AND r.amount - r.paid_amount - r.adjusted_amount > 0
+)
+SELECT payer_id, payer_name,
+    COALESCE(sum(balance) FILTER (WHERE NOT is_disputed AND overdue_days <= 30), 0)::numeric AS d0_30,
+    COALESCE(sum(balance) FILTER (WHERE NOT is_disputed AND overdue_days BETWEEN 31 AND 60), 0)::numeric AS d31_60,
+    COALESCE(sum(balance) FILTER (WHERE NOT is_disputed AND overdue_days BETWEEN 61 AND 90), 0)::numeric AS d61_90,
+    COALESCE(sum(balance) FILTER (WHERE NOT is_disputed AND overdue_days > 90), 0)::numeric AS over_90,
+    COALESCE(sum(balance) FILTER (WHERE is_disputed), 0)::numeric AS disputed
+FROM bal
+GROUP BY payer_id, payer_name
+ORDER BY payer_name;
+
+-- name: ListExpiringReceivables :many
+-- BPJS receivables (spec §4.5/§7.2: expiry = last service date + 6 months)
+-- with an outstanding balance, expiring within `days` days of as_of.
+SELECT r.*, p.name AS payer_name, p.payer_type,
+       a.visit_no AS admission_visit_no,
+       per.id AS person_id, per.full_name AS person_full_name,
+       per.medical_record_no AS person_mrn
+FROM operations.receivable r
+JOIN core.payer p ON p.id = r.payer_id
+JOIN operations.admission a ON a.id = r.admission_id
+JOIN core.person per ON per.id = a.person_id
+WHERE r.merchant_id = sqlc.arg(merchant_id)
+  AND p.payer_type = 'bpjs'
+  AND r.expires_on IS NOT NULL AND r.expires_on <= sqlc.arg(expires_before)
+  AND r.amount - r.paid_amount - r.adjusted_amount > 0
+ORDER BY r.expires_on, r.id;
+
+-- name: GetReceivableForUpdate :one
+SELECT * FROM operations.receivable WHERE id = $1 FOR UPDATE;
+
+-- name: SumReceivableAllocations :one
+SELECT COALESCE(sum(amount), 0)::numeric AS paid
+FROM operations.payer_payment_allocation WHERE receivable_id = $1;
+
+-- name: SumReceivableAdjustments :one
+SELECT COALESCE(sum(amount), 0)::numeric AS adjusted
+FROM operations.receivable_adjustment WHERE receivable_id = $1;
+
+-- name: GetClaimBatchByID :one
+SELECT * FROM operations.claim_batch WHERE id = $1;
+
+-- name: UpdateReceivableTotalsAndStatus :one
+UPDATE operations.receivable
+SET paid_amount = $2, adjusted_amount = $3, status = $4, updated_by = $5
+WHERE id = $1
+RETURNING *;
+
+-- name: SetReceivableDispute :one
+-- Status and reason move together (chk_receivable_dispute ties `disputed` to
+-- a non-empty reason); refreshReceivableStatus re-derives the final status.
+UPDATE operations.receivable
+SET status = CASE WHEN btrim(coalesce($2, '')) <> '' THEN 'disputed' ELSE 'open' END,
+    dispute_reason = $2, updated_by = $3
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateReceivableDocuments :one
+UPDATE operations.receivable
+SET documents = $2, updated_by = $3
+WHERE id = $1
+RETURNING *;
+
+-- name: InsertReceivableAdjustment :exec
+INSERT INTO operations.receivable_adjustment
+    (company_id, merchant_id, receivable_id, kind, amount, reason, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
