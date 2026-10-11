@@ -391,7 +391,7 @@ func EditClaimBatchReceivablesHandler(c *gin.Context) {
 		}
 	}
 	// Removes: the receivable must currently sit in THIS batch; it returns to
-	// open with a NULL batch_id.
+	// its recomputed status (refreshReceivableStatus) with a NULL batch_id.
 	for _, raw := range req.Remove {
 		recID, okID := parseUUID(raw)
 		if !okID {
