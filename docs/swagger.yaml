@@ -4429,6 +4429,180 @@ paths:
       summary: Today's active physician schedules for a department
       tags:
       - display
+  /fee-batches/{id}:
+    delete:
+      parameters:
+      - description: Fee batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a draft fee batch and release its fees
+      tags:
+      - fee-payout
+    get:
+      parameters:
+      - description: Fee batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get one fee payout batch with its lines
+      tags:
+      - fee-payout
+  /fee-batches/{id}/lines/{physician_id}:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Fee batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Physician UUID
+        in: path
+        name: physician_id
+        required: true
+        type: string
+      - description: '{other_gross}'
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Set the other income of one line (employees, draft only)
+      tags:
+      - fee-payout
+  /fee-batches/{id}/lock:
+    post:
+      parameters:
+      - description: Fee batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Lock a draft fee batch and compute PPh 21 per line
+      tags:
+      - fee-payout
+  /fee-batches/{id}/paid:
+    post:
+      parameters:
+      - description: Fee batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Mark a locked fee batch as paid
+      tags:
+      - fee-payout
+  /fee-batches/{id}/tax-export.csv:
+    get:
+      parameters:
+      - description: Fee batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: CSV
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Export the PPh 21 CSV of a locked/paid fee batch
+      tags:
+      - fee-payout
   /fee-rules/{id}:
     delete:
       parameters:
@@ -5364,6 +5538,65 @@ paths:
       summary: List a merchant's display boards
       tags:
       - display-board
+  /merchants/{id}/fee-batches:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by period year
+        in: query
+        name: year
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List fee payout batches of a merchant
+      tags:
+      - fee-payout
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: '{year, month}'
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a monthly fee payout batch from open fees
+      tags:
+      - fee-payout
   /merchants/{id}/fee-rules:
     get:
       parameters:

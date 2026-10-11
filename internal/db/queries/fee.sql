@@ -114,3 +114,124 @@ DELETE FROM operations.practitioner_fee WHERE account_id = $1;
 INSERT INTO operations.practitioner_fee (company_id, merchant_id, account_id, charge_id, physician_id, role, service_date, gross_amount, fee_amount, rule_id, rule_snapshot)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING *;
+
+-- Fee payout batches and PPh 21 reference data
+-- (spec 2026-10-07-tariff-d-practitioner-fees-tax §4.3, migration 000070).
+
+-- name: GetFeeBatchByPeriod :one
+SELECT id, status FROM operations.fee_payout_batch
+WHERE merchant_id = $1 AND period_year = $2 AND period_month = $3;
+
+-- name: CreateFeeBatch :one
+INSERT INTO operations.fee_payout_batch (company_id, merchant_id, period_year, period_month, created_by)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: GetFeeBatchByID :one
+SELECT * FROM operations.fee_payout_batch WHERE id = $1;
+
+-- name: ListFeeBatchesByMerchant :many
+SELECT * FROM operations.fee_payout_batch
+WHERE merchant_id = $1 AND (sqlc.narg('year')::smallint IS NULL OR period_year = sqlc.narg('year')::smallint)
+ORDER BY period_year DESC, period_month DESC;
+
+-- name: SumOpenFeesByPhysician :many
+SELECT pf.physician_id,
+       sum(pf.gross_amount)::numeric(15,2) AS gross_amount,
+       sum(pf.fee_amount)::numeric(15,2)   AS fee_amount,
+       coalesce(max(ph.employment_type)::text, 'owner')::text AS employment_type,
+       coalesce(max(ph.ptkp_status)::text, '')::text          AS ptkp_status
+FROM operations.practitioner_fee pf
+JOIN core.physician ph ON ph.id = pf.physician_id
+WHERE pf.merchant_id = $1 AND pf.status = 'open' AND pf.service_date <= $2
+GROUP BY pf.physician_id
+ORDER BY pf.physician_id;
+
+-- name: MarkFeesInBatch :exec
+UPDATE operations.practitioner_fee SET batch_id = $2, status = 'in_batch'
+WHERE merchant_id = $1 AND status = 'open' AND service_date <= $3;
+
+-- name: ReleaseBatchFees :exec
+UPDATE operations.practitioner_fee SET batch_id = NULL, status = 'open' WHERE batch_id = $1;
+
+-- name: PayBatchFees :exec
+UPDATE operations.practitioner_fee SET status = 'paid' WHERE batch_id = $1;
+
+-- name: InsertFeePayoutLine :exec
+INSERT INTO operations.fee_payout_line (company_id, merchant_id, batch_id, physician_id, employment_type, ptkp_status, gross_amount, fee_amount)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: ListFeePayoutLines :many
+SELECT * FROM operations.fee_payout_line WHERE batch_id = $1 ORDER BY physician_id;
+
+-- name: GetFeePayoutLine :one
+SELECT * FROM operations.fee_payout_line WHERE batch_id = $1 AND physician_id = $2;
+
+-- name: SetFeePayoutLineOtherGross :one
+UPDATE operations.fee_payout_line SET other_gross = $3
+WHERE batch_id = $1 AND physician_id = $2
+RETURNING *;
+
+-- name: UpdateFeePayoutLineTax :one
+UPDATE operations.fee_payout_line
+SET tax_method = $2, tax_base = $3, ter_category = $4, tax_rate = $5, tax_amount = $6, net_amount = $7
+WHERE id = $1
+RETURNING *;
+
+-- name: LockFeeBatch :one
+UPDATE operations.fee_payout_batch SET status = 'locked', locked_at = now(), locked_by = $2
+WHERE id = $1
+RETURNING *;
+
+-- name: PayFeeBatch :one
+UPDATE operations.fee_payout_batch SET status = 'paid', paid_at = now(), paid_by = $2
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteFeeBatch :exec
+DELETE FROM operations.fee_payout_batch WHERE id = $1;
+
+-- name: ListFeePayoutLinesWithPerson :many
+SELECT l.*, pe.full_name AS person_full_name, pe.nik, ph.npwp
+FROM operations.fee_payout_line l
+JOIN core.physician ph ON ph.id = l.physician_id
+JOIN core.person pe ON pe.id = ph.person_id
+WHERE l.batch_id = $1
+ORDER BY l.physician_id;
+
+-- name: ListFeePayoutYearLines :many
+-- Locked/paid Jan–November lines of one physician in one year: the annual
+-- December tax base (gross + other) and the tax already withheld.
+SELECT l.gross_amount, l.other_gross, coalesce(l.tax_amount, 0) AS tax_amount
+FROM operations.fee_payout_line l
+JOIN operations.fee_payout_batch b ON b.id = l.batch_id
+WHERE l.physician_id = $1 AND b.merchant_id = $2 AND b.period_year = $3
+  AND b.period_month < 12 AND b.status IN ('locked','paid');
+
+-- name: ListTaxTERCurrent :many
+-- All TER rows of the latest table effective on the given date.
+SELECT category, lower_exclusive, upper_inclusive, rate_percent
+FROM core.tax_ter_rate
+WHERE effective_from = (SELECT max(t.effective_from) FROM core.tax_ter_rate t WHERE t.effective_from <= $1)
+ORDER BY category, lower_exclusive;
+
+-- name: ListTaxPTKPCurrent :many
+-- Latest PTKP annual amount per status effective on the given date.
+SELECT DISTINCT ON (status) status, annual_amount
+FROM core.tax_ptkp
+WHERE effective_from <= $1
+ORDER BY status, effective_from DESC;
+
+-- name: ListTaxPasal17Current :many
+-- All brackets of the latest Pasal 17 table effective on the given date.
+SELECT upper_inclusive, rate_percent
+FROM core.tax_pasal17_bracket
+WHERE effective_from = (SELECT max(t.effective_from) FROM core.tax_pasal17_bracket t WHERE t.effective_from <= $1)
+ORDER BY upper_inclusive NULLS LAST;
+
+-- name: ListTaxSettingsCurrent :many
+-- Latest value per tax setting key effective on the given date.
+SELECT DISTINCT ON (key) key, value
+FROM core.tax_setting
+WHERE effective_from <= $1
+ORDER BY key, effective_from DESC;
