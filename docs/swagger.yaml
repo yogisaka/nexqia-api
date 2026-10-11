@@ -107,6 +107,39 @@ definitions:
     required:
     - counter_id
     type: object
+  server.claimBatchCreateRequest:
+    properties:
+      note:
+        type: string
+      payer_id:
+        type: string
+      period_end:
+        type: string
+      period_start:
+        type: string
+    required:
+    - payer_id
+    - period_end
+    - period_start
+    type: object
+  server.claimBatchEditRequest:
+    properties:
+      add:
+        items:
+          type: string
+        type: array
+      remove:
+        items:
+          type: string
+        type: array
+    type: object
+  server.claimBatchStatusRequest:
+    properties:
+      status:
+        type: string
+    required:
+    - status
+    type: object
   server.copyScheduleWeekRequest:
     properties:
       from_week_start:
@@ -3286,6 +3319,230 @@ paths:
       summary: Void an active charge row (recomputes the billing account)
       tags:
       - billing
+  /claim-batches/{id}:
+    get:
+      parameters:
+      - description: Claim batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Show one claim batch with its receivables
+      tags:
+      - claim-batch
+  /claim-batches/{id}/documents:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Claim batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Document keys to set/unset
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.receivableDocumentsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Toggle the document checklist of a claim batch (spec §4.2.3/§4.3)
+      tags:
+      - claim-batch
+  /claim-batches/{id}/export.csv:
+    get:
+      parameters:
+      - description: Claim batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Export a claim batch as Excel-local CSV (spec §4.2.6)
+      tags:
+      - claim-batch
+  /claim-batches/{id}/receivables:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Claim batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Receivable ids to add/remove
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.claimBatchEditRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Add/remove receivables of a draft claim batch (spec §4.2.2)
+      tags:
+      - claim-batch
+  /claim-batches/{id}/status:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Claim batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Target status
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.claimBatchStatusRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Advance a claim batch status (verified → paid → closed)
+      tags:
+      - claim-batch
+  /claim-batches/{id}/submit:
+    post:
+      parameters:
+      - description: Claim batch UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Submit a draft claim batch (spec §4.2.4)
+      tags:
+      - claim-batch
   /companies/{id}:
     delete:
       parameters:
@@ -4710,6 +4967,85 @@ paths:
       summary: Update the facility / BPJS billing profile of a merchant
       tags:
       - payer
+  /merchants/{id}/claim-batches:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by payer UUID
+        in: query
+        name: payer_id
+        type: string
+      - description: Filter by status
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's claim batches
+      tags:
+      - claim-batch
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Batch period
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.claimBatchCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a claim batch for one payer and period (spec §4.2.1)
+      tags:
+      - claim-batch
   /merchants/{id}/counters:
     get:
       parameters:

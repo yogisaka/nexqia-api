@@ -61,6 +61,14 @@ func RegisterReceivableRoutes(rg *gin.RouterGroup) {
 	rg.PATCH("/receivables/:id", PatchReceivableHandler)
 	rg.PATCH("/receivables/:id/documents", PatchReceivableDocumentsHandler)
 	rg.POST("/receivables/:id/adjustments", CreateReceivableAdjustmentHandler)
+	rg.POST("/merchants/:id/claim-batches", CreateClaimBatchHandler)
+	rg.GET("/merchants/:id/claim-batches", AccessLog("claim_batch", "list", "id"), ListClaimBatchesHandler)
+	rg.GET("/claim-batches/:id", GetClaimBatchHandler)
+	rg.GET("/claim-batches/:id/export.csv", AccessLog("claim_batch", "export", "id"), ExportClaimBatchCSVHandler)
+	rg.PUT("/claim-batches/:id/receivables", EditClaimBatchReceivablesHandler)
+	rg.PATCH("/claim-batches/:id/documents", PatchClaimBatchDocumentsHandler)
+	rg.POST("/claim-batches/:id/submit", SubmitClaimBatchHandler)
+	rg.POST("/claim-batches/:id/status", SetClaimBatchStatusHandler)
 }
 
 // recvDate renders a pgtype.Date as an ISO string ("" when NULL).

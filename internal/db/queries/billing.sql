@@ -474,3 +474,116 @@ RETURNING *;
 INSERT INTO operations.receivable_adjustment
     (company_id, merchant_id, receivable_id, kind, amount, reason, created_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: CreateClaimBatch :one
+INSERT INTO operations.claim_batch
+    (company_id, merchant_id, payer_id, kind, period_start, period_end, note,
+     submission_deadline, created_by, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+RETURNING *;
+
+-- name: ListClaimBatchesByMerchant :many
+SELECT cb.*, p.code AS payer_code, p.name AS payer_name
+FROM operations.claim_batch cb
+JOIN core.payer p ON p.id = cb.payer_id
+WHERE cb.merchant_id = sqlc.arg(merchant_id)
+  AND (sqlc.narg(payer_id)::uuid IS NULL OR cb.payer_id = sqlc.narg(payer_id))
+  AND (sqlc.narg(status)::text IS NULL OR cb.status = sqlc.narg(status))
+ORDER BY cb.period_end DESC, cb.id;
+
+-- name: GetClaimBatchDetail :one
+SELECT cb.*, p.code AS payer_code, p.name AS payer_name,
+       p.payer_type, p.claim_documents AS payer_claim_documents
+FROM operations.claim_batch cb
+JOIN core.payer p ON p.id = cb.payer_id
+WHERE cb.id = $1;
+
+-- name: ListBatchCandidates :many
+SELECT * FROM operations.receivable
+WHERE merchant_id = sqlc.arg(merchant_id) AND payer_id = sqlc.arg(payer_id) AND status = 'open'
+  AND service_date_to >= sqlc.arg(period_start) AND service_date_to <= sqlc.arg(period_end)
+ORDER BY service_date_to, id;
+
+-- name: ListReceivablesByIDs :many
+SELECT * FROM operations.receivable WHERE id = ANY($1::uuid[]);
+
+-- name: AttachReceivableToBatch :exec
+UPDATE operations.receivable
+SET batch_id = $2, status = 'in_batch', updated_by = $3
+WHERE id = $1;
+
+-- name: DetachReceivableFromBatch :exec
+UPDATE operations.receivable
+SET batch_id = NULL, status = 'open', updated_by = $2
+WHERE id = $1;
+
+-- name: RecomputeClaimBatchTotal :one
+UPDATE operations.claim_batch cb
+SET total_amount = COALESCE((
+        SELECT sum(amount) FROM operations.receivable WHERE batch_id = cb.id
+    ), 0), updated_by = $2
+WHERE cb.id = $1
+RETURNING *;
+
+-- name: UpdateClaimBatchDocuments :one
+UPDATE operations.claim_batch
+SET documents = $2, updated_by = $3
+WHERE id = $1
+RETURNING *;
+
+-- name: SubmitClaimBatch :one
+UPDATE operations.claim_batch
+SET status = 'submitted', submitted_at = now(), submitted_by = $2, updated_by = $2
+WHERE id = $1
+RETURNING *;
+
+-- name: SetClaimBatchStatus :one
+UPDATE operations.claim_batch
+SET status = $2, updated_by = $3
+WHERE id = $1
+RETURNING *;
+
+-- name: PromoteClaimBatchReceivables :exec
+UPDATE operations.receivable
+SET status = $2, updated_by = $3
+WHERE batch_id = $1;
+
+-- name: ListBatchReceivables :many
+SELECT r.*, p.name AS payer_name, p.payer_type,
+       a.visit_no AS admission_visit_no,
+       per.id AS person_id, per.full_name AS person_full_name,
+       per.medical_record_no AS person_mrn
+FROM operations.receivable r
+JOIN core.payer p ON p.id = r.payer_id
+JOIN operations.admission a ON a.id = r.admission_id
+JOIN core.person per ON per.id = a.person_id
+WHERE r.batch_id = $1
+ORDER BY r.service_date_to, r.id;
+
+-- name: ClaimBatchExportRows :many
+-- One CSV row per payer-side charge split (spec §4.2.6): party `payer` with a
+-- positive amount for the batch payer; nomor_peserta comes from the visit's
+-- guarantor coverage membership (empty when there is none).
+SELECT per.full_name AS person_name,
+       per.medical_record_no AS person_mrn,
+       a.visit_no,
+       c.service_date,
+       si.code AS item_code,
+       si.name AS item_name,
+       c.quantity::text AS quantity_text,
+       cs.claim_type,
+       cs.amount,
+       pc.member_number
+FROM operations.receivable r
+JOIN operations.admission a ON a.id = r.admission_id
+JOIN core.person per ON per.id = a.person_id
+JOIN operations.charge c
+    ON c.account_id = r.account_id AND c.admission_id = r.admission_id AND c.status = 'active'
+JOIN operations.charge_split cs ON cs.charge_id = c.id
+JOIN core.service_item si ON si.id = c.service_item_id
+LEFT JOIN operations.admission_guarantor g
+    ON g.admission_id = r.admission_id AND g.payer_id = r.payer_id
+LEFT JOIN core.patient_coverage pc ON pc.id = g.coverage_id
+WHERE r.batch_id = $1
+  AND cs.party = 'payer' AND cs.payer_id = r.payer_id AND cs.amount > 0
+ORDER BY a.visit_no, c.service_date, c.id, cs.seq;
