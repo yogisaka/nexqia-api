@@ -357,3 +357,117 @@ func TestPayerPayment_Concurrent(t *testing.T) {
 		t.Fatalf("payments after race = %d %v, want exactly one", len(got), got)
 	}
 }
+
+// TestPayerPayment_AllocationToInBatchRejected — allocations onto a
+// draft-batch (in_batch) receivable answer 409 on both endpoints; after
+// submit the same allocation succeeds.
+func TestPayerPayment_AllocationToInBatchRejected(t *testing.T) {
+	env := payNewEnv(t, "pp.ib")
+	payerID, rcID := ppClaimReceivable(t, env, "PPI")
+	today := rcToday()
+	todayStr := ppToday(t, env)
+
+	// A draft batch covering today holds the receivable (in_batch).
+	data := cbCreateBatch(t, env, payerID, today, today)
+	batchID, _ := data["id"].(string)
+	cbTickBatchDocs(t, env, batchID, map[string]any{
+		"fpk": true, "rekap": true, "kuitansi": true, "sptjm": true,
+	})
+
+	// Allocation in the create-payment call → 409.
+	status, out := ppCreate(t, env, payerID, map[string]any{
+		"amount": "10000.00", "paid_on": todayStr,
+		"allocations": []map[string]any{ppAlloc(rcID, "10000.00")},
+	})
+	if status != http.StatusConflict || out["error"] != "receivable is in a draft batch" {
+		t.Fatalf("create with alloc = %d %v", status, out)
+	}
+	// Unallocated payment, then a later allocation → 409 as well.
+	status, out = ppCreate(t, env, payerID, map[string]any{
+		"amount": "10000.00", "paid_on": todayStr,
+	})
+	paymentID, _ := payMapData(t, status, out, http.StatusCreated)["payment"].(map[string]any)["id"].(string)
+	status, out = qeRequest(t, env, http.MethodPost,
+		"/api/v1/payer-payments/"+paymentID+"/allocations",
+		map[string]any{"allocations": []map[string]any{ppAlloc(rcID, "10000.00")}})
+	if status != http.StatusConflict || out["error"] != "receivable is in a draft batch" {
+		t.Fatalf("later alloc = %d %v", status, out)
+	}
+
+	// After submit the same allocation succeeds and pays the receivable.
+	if status, out = cbSubmit(t, env, batchID); status != http.StatusOK {
+		t.Fatalf("submit = %d %v", status, out)
+	}
+	status, out = qeRequest(t, env, http.MethodPost,
+		"/api/v1/payer-payments/"+paymentID+"/allocations",
+		map[string]any{"allocations": []map[string]any{ppAlloc(rcID, "10000.00")}})
+	payMapData(t, status, out, http.StatusCreated)
+	if row := ppStatusOf(t, env, payerID); row["status"] != "paid" {
+		t.Fatalf("after submit alloc = %v, want paid", row["status"])
+	}
+}
+
+// TestPayerPayment_ConcurrentPaymentCap — two concurrent allocations onto
+// different receivables of one payment: the FOR UPDATE payment lock keeps
+// the cap (review fix 4).
+func TestPayerPayment_ConcurrentPaymentCap(t *testing.T) {
+	env := payNewEnv(t, "pp.cap")
+	todayStr := ppToday(t, env)
+	payerID, itemID := rcClaimBPJS(t, env, "PPK", "other")
+	rcNewClaimAdmission(t, env, payerID, itemID, "PPK1")
+	rcNewClaimAdmission(t, env, payerID, itemID, "PPK2")
+	rows := rcList(t, env, "?payer_id="+payerID)
+	if len(rows) != 2 {
+		t.Fatalf("receivables = %d, want 2: %v", len(rows), rows)
+	}
+	rcA, _ := rows[0]["id"].(string)
+	rcB, _ := rows[1]["id"].(string)
+
+	status, out := ppCreate(t, env, payerID, map[string]any{
+		"amount": "10000.00", "paid_on": todayStr,
+	})
+	paymentID, _ := payMapData(t, status, out, http.StatusCreated)["payment"].(map[string]any)["id"].(string)
+
+	type result struct {
+		status int
+		body   map[string]any
+	}
+	results := make([]result, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	targets := []string{rcA, rcB}
+	for i := 0; i < 2; i++ {
+		go func(slot int) {
+			defer wg.Done()
+			// No t.Fatalf here: failures surface via the status check below.
+			st, body := qeRequest(t, env, http.MethodPost,
+				"/api/v1/payer-payments/"+paymentID+"/allocations",
+				map[string]any{"allocations": []map[string]any{ppAlloc(targets[slot], "6000.00")}})
+			results[slot] = result{status: st, body: body}
+		}(i)
+	}
+	wg.Wait()
+
+	created, capped := 0, 0
+	for _, r := range results {
+		switch r.status {
+		case http.StatusCreated:
+			created++
+		case http.StatusBadRequest:
+			if r.body["error"] != "allocations exceed payment" {
+				t.Fatalf("cap body = %v", r.body)
+			}
+			capped++
+		default:
+			t.Fatalf("unexpected status %d: %v", r.status, r.body)
+		}
+	}
+	if created != 1 || capped != 1 {
+		t.Fatalf("created = %d, capped = %d, want 1/1: %v", created, capped, results)
+	}
+	status, out = qeRequest(t, env, http.MethodGet, "/api/v1/payers/"+payerID+"/payments", nil)
+	payRows := payDataSlice(t, out)
+	if status != http.StatusOK || len(payRows) != 1 || payRows[0]["allocated"] != "6000.00" {
+		t.Fatalf("payments after race = %d %v, want one with 6000.00", len(payRows), payRows)
+	}
+}

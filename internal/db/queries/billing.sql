@@ -636,6 +636,12 @@ ORDER BY created_at, id;
 SELECT COALESCE(sum(amount), 0)::numeric AS allocated
 FROM operations.payer_payment_allocation WHERE payment_id = $1;
 
+-- name: GetPayerPaymentForUpdate :one
+-- Locks the payment row so concurrent allocations onto different
+-- receivables serialize before the total-allocations cap check (spec
+-- 2026-10-11-tariff-b2-review-fixes §3).
+SELECT * FROM operations.payer_payment WHERE id = $1 FOR UPDATE;
+
 -- name: InsertPayerPaymentAllocation :exec
 INSERT INTO operations.payer_payment_allocation
     (company_id, merchant_id, payment_id, receivable_id, amount, created_by)

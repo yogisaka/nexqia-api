@@ -97,7 +97,9 @@ type payerAllocationInput struct {
 // applyPaymentAllocations validates and inserts allocations for an existing
 // (positive) payment row. Every receivable is locked with SELECT … FOR UPDATE
 // before its balance check, and the payment total cap (allocations ≤ amount)
-// is enforced against the allocations already on the payment. Returns the
+// is enforced against the allocations already on the payment; the payment row
+// itself is locked FOR UPDATE first so the cap holds across concurrent calls.
+// Returns the
 // inserted allocation views; when validation fails the response has been
 // written and ok is false (the ≥ 400 response rolls the tx back).
 func applyPaymentAllocations(c *gin.Context, q *sqlcgen.Queries, pay sqlcgen.OperationsPayerPayment, inputs []payerAllocationInput) ([]gin.H, bool) {
@@ -134,8 +136,20 @@ func applyPaymentAllocations(c *gin.Context, q *sqlcgen.Queries, pay sqlcgen.Ope
 		}
 		totalC += amt
 	}
-	// Total allocations on the payment must stay within its amount.
-	if totalC > 0 {
+	// Total allocations on the payment must stay within its amount. The
+	// payment row is locked first so concurrent allocations onto different
+	// receivables serialize: the later transaction sees the earlier inserts.
+	if len(targets) > 0 {
+		lockedPay, err := q.GetPayerPaymentForUpdate(ctx, pay.ID)
+		if err != nil {
+			respondInternalError(c, err)
+			return nil, false
+		}
+		amountC, err = numericToCents(lockedPay.Amount)
+		if err != nil {
+			respondInternalError(c, err)
+			return nil, false
+		}
 		sumRow, err := q.SumPayerPaymentAllocations(ctx, pay.ID)
 		if err != nil {
 			respondInternalError(c, err)
@@ -165,6 +179,10 @@ func applyPaymentAllocations(c *gin.Context, q *sqlcgen.Queries, pay sqlcgen.Ope
 		}
 		if locked.PayerID != pay.PayerID {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "receivable does not belong to payer"})
+			return nil, false
+		}
+		if locked.Status == "in_batch" {
+			c.JSON(http.StatusConflict, gin.H{"error": "receivable is in a draft batch"})
 			return nil, false
 		}
 		amount, err := numericToCents(locked.Amount)
