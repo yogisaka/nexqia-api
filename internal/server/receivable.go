@@ -69,6 +69,10 @@ func RegisterReceivableRoutes(rg *gin.RouterGroup) {
 	rg.PATCH("/claim-batches/:id/documents", PatchClaimBatchDocumentsHandler)
 	rg.POST("/claim-batches/:id/submit", SubmitClaimBatchHandler)
 	rg.POST("/claim-batches/:id/status", SetClaimBatchStatusHandler)
+	rg.POST("/payers/:id/payments", CreatePayerPaymentHandler)
+	rg.GET("/payers/:id/payments", AccessLog("payer_payment", "list", "id"), ListPayerPaymentsHandler)
+	rg.POST("/payer-payments/:id/allocations", AddPayerPaymentAllocationsHandler)
+	rg.POST("/payer-payments/:id/reverse", ReversePayerPaymentHandler)
 }
 
 // recvDate renders a pgtype.Date as an ISO string ("" when NULL).

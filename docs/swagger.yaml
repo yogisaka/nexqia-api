@@ -922,6 +922,52 @@ definitions:
     - allergy_type
     - substance_name
     type: object
+  server.payerAllocationInput:
+    properties:
+      amount:
+        type: string
+      receivable_id:
+        type: string
+    required:
+    - amount
+    - receivable_id
+    type: object
+  server.payerPaymentAllocateRequest:
+    properties:
+      allocations:
+        items:
+          $ref: '#/definitions/server.payerAllocationInput'
+        type: array
+    required:
+    - allocations
+    type: object
+  server.payerPaymentCreateRequest:
+    properties:
+      allocations:
+        items:
+          $ref: '#/definitions/server.payerAllocationInput'
+        type: array
+      amount:
+        type: string
+      batch_id:
+        type: string
+      note:
+        type: string
+      paid_on:
+        type: string
+      reference:
+        type: string
+    required:
+    - amount
+    - paid_on
+    type: object
+  server.payerPaymentReverseRequest:
+    properties:
+      reason:
+        type: string
+    required:
+    - reason
+    type: object
   server.personFamilyRequest:
     properties:
       address:
@@ -6045,6 +6091,94 @@ paths:
       summary: Update a patient coverage (optimistic locking)
       tags:
       - patient-coverage
+  /payer-payments/{id}/allocations:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer payment UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Allocations
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.payerPaymentAllocateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Allocate (part of) an unallocated payment onto receivables
+      tags:
+      - payer-payment
+  /payer-payments/{id}/reverse:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer payment UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Reversal reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.payerPaymentReverseRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Reverse a payer payment with a negative payment + negative allocations
+      tags:
+      - payer-payment
   /payer-plans/{id}:
     delete:
       description: Rejected with 409 while active patient coverages point at the plan.
@@ -6314,6 +6448,89 @@ paths:
       summary: Seed BPJS claim coverage rules from the non-capitation template
       tags:
       - payer
+  /payers/{id}/payments:
+    get:
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: paid_on lower bound (YYYY-MM-DD)
+        in: query
+        name: from
+        type: string
+      - description: paid_on upper bound (YYYY-MM-DD)
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List a payer's payments with allocated/unallocated/reversed flags
+      tags:
+      - payer-payment
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Payer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Payment + allocations
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.payerPaymentCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Record a payment from a payer with optional allocations
+      tags:
+      - payer-payment
   /payers/{id}/plans:
     get:
       parameters:

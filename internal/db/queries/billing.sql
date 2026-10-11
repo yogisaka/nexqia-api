@@ -587,3 +587,50 @@ LEFT JOIN core.patient_coverage pc ON pc.id = g.coverage_id
 WHERE r.batch_id = $1
   AND cs.party = 'payer' AND cs.payer_id = r.payer_id AND cs.amount > 0
 ORDER BY a.visit_no, c.service_date, c.id, cs.seq;
+
+-- name: InsertPayerPayment :one
+INSERT INTO operations.payer_payment
+    (company_id, merchant_id, payer_id, batch_id, amount, paid_on, reference, note, recorded_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING *;
+
+-- name: InsertPayerPaymentReversal :one
+-- Negative payment linked to the original (chk_payer_payment_sign); the UNIQUE
+-- reversal_of index makes a second reversal fail.
+INSERT INTO operations.payer_payment
+    (company_id, merchant_id, payer_id, amount, paid_on, note, reversal_of, recorded_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING *;
+
+-- name: GetPayerPaymentByID :one
+SELECT pp.*, p.name AS payer_name, p.code AS payer_code
+FROM operations.payer_payment pp
+JOIN core.payer p ON p.id = pp.payer_id
+WHERE pp.id = $1;
+
+-- name: GetPayerPaymentReversalID :one
+SELECT id FROM operations.payer_payment WHERE reversal_of = $1;
+
+-- name: ListPayerPaymentsByPayer :many
+SELECT pp.*, p.name AS payer_name, p.code AS payer_code,
+       EXISTS (SELECT 1 FROM operations.payer_payment r WHERE r.reversal_of = pp.id) AS reversed
+FROM operations.payer_payment pp
+JOIN core.payer p ON p.id = pp.payer_id
+WHERE pp.payer_id = $1
+  AND (sqlc.narg(date_from)::date IS NULL OR pp.paid_on >= sqlc.narg(date_from))
+  AND (sqlc.narg(date_to)::date IS NULL OR pp.paid_on <= sqlc.narg(date_to))
+ORDER BY pp.paid_on, pp.id;
+
+-- name: ListPayerPaymentAllocations :many
+SELECT * FROM operations.payer_payment_allocation
+WHERE payment_id = $1
+ORDER BY created_at, id;
+
+-- name: SumPayerPaymentAllocations :one
+SELECT COALESCE(sum(amount), 0)::numeric AS allocated
+FROM operations.payer_payment_allocation WHERE payment_id = $1;
+
+-- name: InsertPayerPaymentAllocation :exec
+INSERT INTO operations.payer_payment_allocation
+    (company_id, merchant_id, payment_id, receivable_id, amount, created_by)
+VALUES ($1, $2, $3, $4, $5, $6);
