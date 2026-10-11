@@ -7,6 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
@@ -25,12 +27,59 @@ func RegisterPhysicianRoutes(rg *gin.RouterGroup) {
 	rg.DELETE("/physicians/:id", DeletePhysicianHandler)
 }
 
+// physicianEmploymentFields carries the optional employment fields of spec
+// 2026-10-07-tariff-d-practitioner-fees-tax §3. nil = not provided (keeps the
+// DB default on create, the current value on update).
+type physicianEmploymentFields struct {
+	Profession     *string `json:"profession"`
+	EmploymentType *string `json:"employment_type"`
+	PtkpStatus     *string `json:"ptkp_status"`
+	Npwp           *string `json:"npwp"`
+}
+
+// respondPhysicianPTKPError maps the chk_physician_ptkp violation to the
+// contract message; returns false for any other error.
+func respondPhysicianPTKPError(c *gin.Context, err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "chk_physician_ptkp" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ptkp_status is required for employees only"})
+		return true
+	}
+	return false
+}
+
+// physicianHasEmploymentFields reports whether any employment field was sent.
+func physicianHasEmploymentFields(f *physicianEmploymentFields) bool {
+	return f.Profession != nil || f.EmploymentType != nil || f.PtkpStatus != nil || f.Npwp != nil
+}
+
+// applyPhysicianEmployment persists the optional employment fields after a
+// create/update. ok=false means the error response was already written.
+func applyPhysicianEmployment(c *gin.Context, q *sqlcgen.Queries, id pgtype.UUID, fields *physicianEmploymentFields) (sqlcgen.CorePhysician, bool) {
+	row, err := q.SetPhysicianEmployment(c.Request.Context(), sqlcgen.SetPhysicianEmploymentParams{
+		ID:             id,
+		Profession:     optTextPtr(fields.Profession),
+		EmploymentType: optTextPtr(fields.EmploymentType),
+		PtkpStatus:     optTextPtr(fields.PtkpStatus),
+		Npwp:           optTextPtr(fields.Npwp),
+	})
+	if err != nil {
+		if respondPhysicianPTKPError(c, err) {
+			return sqlcgen.CorePhysician{}, false
+		}
+		respondInternalError(c, err)
+		return sqlcgen.CorePhysician{}, false
+	}
+	return row, true
+}
+
 type createPhysicianRequest struct {
 	MerchantID         string `json:"merchant_id" binding:"required"`
 	PersonID           string `json:"person_id" binding:"required"`
 	StrNumber          string `json:"str_number"`
 	SipNumber          string `json:"sip_number"`
 	SpecialtyConceptID string `json:"specialty_concept_id"`
+	physicianEmploymentFields
 }
 
 // CreatePhysicianHandler godoc
@@ -80,6 +129,13 @@ func CreatePhysicianHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	if physicianHasEmploymentFields(&req.physicianEmploymentFields) {
+		updated, ok := applyPhysicianEmployment(c, q, physician.ID, &req.physicianEmploymentFields)
+		if !ok {
+			return
+		}
+		physician = updated
+	}
 	c.JSON(http.StatusCreated, gin.H{"data": physician, "meta": gin.H{}})
 }
 
@@ -104,6 +160,19 @@ func ListPhysiciansHandler(c *gin.Context) {
 	}
 	limit, offset := paginationParams(c)
 	q := sqlcgen.New(TxFromContext(c))
+	// Optional ?profession= filter (spec tariff-d §3; profession values are
+	// the CHECK list of core.physician).
+	if profession := c.Query("profession"); profession != "" {
+		physicians, err := q.ListPhysiciansByProfession(c.Request.Context(), sqlcgen.ListPhysiciansByProfessionParams{
+			MerchantID: merchantID, Profession: profession, Limit: limit, Offset: offset,
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": physicians, "meta": gin.H{"limit": limit, "offset": offset}})
+		return
+	}
 	physicians, err := q.ListPhysiciansByMerchant(c.Request.Context(), sqlcgen.ListPhysiciansByMerchantParams{
 		MerchantID: merchantID, Limit: limit, Offset: offset,
 	})
@@ -150,6 +219,7 @@ type updatePhysicianRequest struct {
 	SipNumber          string `json:"sip_number"`
 	SpecialtyConceptID string `json:"specialty_concept_id"`
 	IsActive           bool   `json:"is_active"`
+	physicianEmploymentFields
 }
 
 // UpdatePhysicianHandler godoc
@@ -202,6 +272,13 @@ func UpdatePhysicianHandler(c *gin.Context) {
 	if err != nil {
 		respondInternalError(c, err)
 		return
+	}
+	if physicianHasEmploymentFields(&req.physicianEmploymentFields) {
+		updated, ok := applyPhysicianEmployment(c, q, physician.ID, &req.physicianEmploymentFields)
+		if !ok {
+			return
+		}
+		physician = updated
 	}
 	c.JSON(http.StatusOK, gin.H{"data": physician, "meta": gin.H{}})
 }

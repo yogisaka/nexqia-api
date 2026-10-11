@@ -3788,6 +3788,97 @@ const docTemplate = `{
                 }
             }
         },
+        "/fee-rules/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "fee-rule"
+                ],
+                "summary": "Soft-delete a fee rule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Fee rule UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "fee-rule"
+                ],
+                "summary": "Update a fee rule (optimistic locking on row_version)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Fee rule UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fee rule data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/formulary/{id}": {
             "patch": {
                 "security": [
@@ -5182,6 +5273,87 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/fee-rules": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "fee-rule"
+                ],
+                "summary": "List fee rules of a merchant",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "fee-rule"
+                ],
+                "summary": "Create a practitioner fee rule",
+                "parameters": [
+                    {
+                        "description": "Fee rule data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
                         }
                     }
                 }
@@ -13971,10 +14143,22 @@ const docTemplate = `{
                 "person_id"
             ],
             "properties": {
+                "employment_type": {
+                    "type": "string"
+                },
                 "merchant_id": {
                     "type": "string"
                 },
+                "npwp": {
+                    "type": "string"
+                },
                 "person_id": {
+                    "type": "string"
+                },
+                "profession": {
+                    "type": "string"
+                },
+                "ptkp_status": {
                     "type": "string"
                 },
                 "sip_number": {
@@ -15879,8 +16063,20 @@ const docTemplate = `{
         "server.updatePhysicianRequest": {
             "type": "object",
             "properties": {
+                "employment_type": {
+                    "type": "string"
+                },
                 "is_active": {
                     "type": "boolean"
+                },
+                "npwp": {
+                    "type": "string"
+                },
+                "profession": {
+                    "type": "string"
+                },
+                "ptkp_status": {
+                    "type": "string"
                 },
                 "sip_number": {
                     "type": "string"
