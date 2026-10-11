@@ -440,3 +440,73 @@ func TestClaimBatch_ExportCSV(t *testing.T) {
 		}
 	}
 }
+
+// TestClaimBatch_SubmitKeepsDisputedStatus — submit promotes only in_batch
+// rows; a disputed receivable keeps its status (review fix 1).
+func TestClaimBatch_SubmitKeepsDisputedStatus(t *testing.T) {
+	env := payNewEnv(t, "cb.disp")
+	payerID, itemID := rcClaimBPJS(t, env, "CKD", "other")
+	admA := rcNewClaimAdmission(t, env, payerID, itemID, "CKDA")
+	admB := rcNewClaimAdmission(t, env, payerID, itemID, "CKDB")
+	today := rcToday()
+	data := cbCreateBatch(t, env, payerID, today, today)
+	batchID, _ := data["id"].(string)
+	rcA := cbOnlyReceivable(t, env, batchID, admA)
+	rcB := cbOnlyReceivable(t, env, batchID, admB)
+
+	status, out := qeRequest(t, env, http.MethodPatch,
+		"/api/v1/receivables/"+rcA, map[string]any{"disputed": true, "reason": "selisih tarif"})
+	payMapData(t, status, out, http.StatusOK)
+	cbTickBatchDocs(t, env, batchID, map[string]any{
+		"fpk": true, "rekap": true, "kuitansi": true, "sptjm": true,
+	})
+	status, out = cbSubmit(t, env, batchID)
+	data = payMapData(t, status, out, http.StatusOK)
+	if data["status"] != "submitted" {
+		t.Fatalf("batch status = %v, want submitted", data["status"])
+	}
+	rows := rcList(t, env, "?payer_id="+payerID)
+	if len(rows) != 2 {
+		t.Fatalf("receivables = %d, want 2", len(rows))
+	}
+	byID := map[string]map[string]any{}
+	for _, row := range rows {
+		id, _ := row["id"].(string)
+		byID[id] = row
+	}
+	if byID[rcA]["status"] != "disputed" {
+		t.Fatalf("disputed receivable after submit = %v, want disputed", byID[rcA]["status"])
+	}
+	if byID[rcB]["status"] != "submitted" {
+		t.Fatalf("in_batch receivable after submit = %v, want submitted", byID[rcB]["status"])
+	}
+}
+
+// TestClaimBatch_RemoveKeepsDisputedStatus — removing a disputed receivable
+// from a draft batch recomputes instead of flattening to open (sweep finding).
+func TestClaimBatch_RemoveKeepsDisputedStatus(t *testing.T) {
+	env := payNewEnv(t, "cb.rmd")
+	payerID, itemID := rcClaimBPJS(t, env, "CRD", "other")
+	admID := rcNewClaimAdmission(t, env, payerID, itemID, "CRDA")
+	today := rcToday()
+	data := cbCreateBatch(t, env, payerID, today, today)
+	batchID, _ := data["id"].(string)
+	recID := cbOnlyReceivable(t, env, batchID, admID)
+
+	status, out := qeRequest(t, env, http.MethodPatch,
+		"/api/v1/receivables/"+recID, map[string]any{"disputed": true, "reason": "selisih"})
+	payMapData(t, status, out, http.StatusOK)
+	status, out = qeRequest(t, env, http.MethodPut,
+		"/api/v1/claim-batches/"+batchID+"/receivables",
+		map[string]any{"remove": []string{recID}})
+	payMapData(t, status, out, http.StatusOK)
+	rows := rcList(t, env, "?payer_id="+payerID)
+	if len(rows) != 1 {
+		t.Fatalf("receivables = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row["status"] != "disputed" || row["batch_id"] != nil {
+		t.Fatalf("removed receivable = (status %v, batch_id %v), want (disputed, nil)",
+			row["status"], row["batch_id"])
+	}
+}

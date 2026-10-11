@@ -513,8 +513,11 @@ SET batch_id = $2, status = 'in_batch', updated_by = $3
 WHERE id = $1;
 
 -- name: DetachReceivableFromBatch :exec
+-- Drops the batch link only; the handler recomputes the status right
+-- after (refreshReceivableStatus) so a disputed/paid row keeps its
+-- true state instead of being flattened to open.
 UPDATE operations.receivable
-SET batch_id = NULL, status = 'open', updated_by = $2
+SET batch_id = NULL, updated_by = $2
 WHERE id = $1;
 
 -- name: RecomputeClaimBatchTotal :one
@@ -544,9 +547,12 @@ WHERE id = $1
 RETURNING *;
 
 -- name: PromoteClaimBatchReceivables :exec
+-- Selective promote (spec 2026-10-11-tariff-b2-review-fixes §1): only
+-- in_batch rows move to the target status; disputed/paid rows in the
+-- batch keep their own status.
 UPDATE operations.receivable
 SET status = $2, updated_by = $3
-WHERE batch_id = $1;
+WHERE batch_id = $1 AND status = 'in_batch';
 
 -- name: ListBatchReceivables :many
 SELECT r.*, p.name AS payer_name, p.payer_type,

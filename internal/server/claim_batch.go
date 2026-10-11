@@ -413,6 +413,10 @@ func EditClaimBatchReceivablesHandler(c *gin.Context) {
 			respondInternalError(c, err)
 			return
 		}
+		if _, err := refreshReceivableStatus(c, q, recID); err != nil {
+			respondInternalError(c, err)
+			return
+		}
 	}
 	updated, err := q.RecomputeClaimBatchTotal(ctx, sqlcgen.RecomputeClaimBatchTotalParams{
 		ID: batch.ID, UpdatedBy: AuthUserID(c),
