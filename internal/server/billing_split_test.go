@@ -6,11 +6,15 @@ import (
 	"time"
 )
 
-// splitTestPrice builds a splitPrice from list|item → cents.
+// splitTestPrice builds a splitPrice from list|item → cents; each unit price
+// carries a single MEDIS component worth the full amount.
 func splitTestPrice(m map[string]int64) splitPrice {
-	return func(listID, itemID string, on time.Time) (int64, bool, error) {
+	return func(listID, itemID string, on time.Time) (int64, map[string]int64, bool, error) {
 		c, ok := m[listID+"|"+itemID]
-		return c, ok, nil
+		if !ok {
+			return 0, nil, false, nil
+		}
+		return c, map[string]int64{"MEDIS": c}, true, nil
 	}
 }
 
@@ -417,6 +421,36 @@ func TestSplitAccount(t *testing.T) {
 			},
 		},
 		{
+			name:    "components_proportional",
+			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 1000, ServiceDate: day}},
+			payers: []splitPayer{
+				{PayerID: "a", PayerType: "private", PriceListID: "def", AnnualRemainingCents: -1, CopayBP: 1000, CopayMaxCents: -1}, // 10% co-pay
+			},
+			priceFn: func(listID, itemID string, on time.Time) (int64, map[string]int64, bool, error) {
+				// Unit: MEDIS 60000 + SARANA 40000 = 100000.
+				return 100000, map[string]int64{"MEDIS": 60000, "SARANA": 40000}, true, nil
+			},
+			check: func(t *testing.T, res splitResult, err error) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Co-pay 10%: the payer bears 90000, the patient 10000.
+				parts := res.ByCharge["c1"]
+				if len(parts) != 2 {
+					t.Fatalf("parts=%+v", parts)
+				}
+				payer, patient := parts[0], parts[1]
+				if payer.Party != "payer" || payer.AmountCents != 90000 ||
+					payer.Components["MEDIS"] != 54000 || payer.Components["SARANA"] != 36000 {
+					t.Fatalf("payer part=%+v", payer)
+				}
+				if patient.Party != "patient" || patient.AmountCents != 10000 ||
+					patient.Components["MEDIS"] != 6000 || patient.Components["SARANA"] != 4000 {
+					t.Fatalf("patient part=%+v", patient)
+				}
+			},
+		},
+		{
 			name:    "price_missing",
 			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 1000, ServiceDate: day}},
 			price:   map[string]int64{},
@@ -432,8 +466,8 @@ func TestSplitAccount(t *testing.T) {
 			payers: []splitPayer{
 				{PayerID: "bpjs", PayerType: "bpjs", PriceListID: "bpjs-list", DefaultCoverage: "excluded"},
 			},
-			priceFn: func(listID, itemID string, on time.Time) (int64, bool, error) {
-				return 0, false, errSplitPriceBoom
+			priceFn: func(listID, itemID string, on time.Time) (int64, map[string]int64, bool, error) {
+				return 0, nil, false, errSplitPriceBoom
 			},
 			check: func(t *testing.T, res splitResult, err error) {
 				if !errors.Is(err, errSplitPriceBoom) {

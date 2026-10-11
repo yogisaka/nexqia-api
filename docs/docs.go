@@ -2154,6 +2154,69 @@ const docTemplate = `{
                 }
             }
         },
+        "/charges/{id}/performers": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Replace the performers of a charge row (billing.invoice.create)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Charge UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Performer set",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.setChargePerformersRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/charges/{id}/void": {
             "post": {
                 "security": [
@@ -13563,6 +13626,21 @@ const docTemplate = `{
                 }
             }
         },
+        "server.chargePerformerInput": {
+            "type": "object",
+            "required": [
+                "physician_id",
+                "role"
+            ],
+            "properties": {
+                "physician_id": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
         "server.checkInQueueRequest": {
             "type": "object",
             "required": [
@@ -15532,6 +15610,17 @@ const docTemplate = `{
                 },
                 "service_item_id": {
                     "type": "string"
+                }
+            }
+        },
+        "server.setChargePerformersRequest": {
+            "type": "object",
+            "properties": {
+                "performers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/server.chargePerformerInput"
+                    }
                 }
             }
         },

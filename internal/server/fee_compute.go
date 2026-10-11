@@ -5,7 +5,15 @@ package server
 // The DB loader that feeds these functions is added by Task 4
 // (computeFees); the functions here must stay side-effect free.
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
+)
 
 // feeRule is the pure, DB-free view of core.practitioner_fee_rule used by
 // selectFeeRule/computeFee. Empty string means "no constraint" (NULL in the
@@ -127,4 +135,193 @@ func computeFee(rule feeRule, line feeLine) (grossCents, feeCents int64) {
 // halfUpCents divides num/den rounding half up (both positive).
 func halfUpCents(num, den int64) int64 {
 	return (num + den/2) / den
+}
+
+// feeRuleSnapshot is the JSON snapshot of the winning rule stored with each
+// operations.practitioner_fee row (spec §3 rule_snapshot): the fee must stay
+// reproducible even after the rule changes or is deleted.
+type feeRuleSnapshot struct {
+	ID            string `json:"id"`
+	Basis         string `json:"basis"`
+	ComponentCode string `json:"component_code,omitempty"`
+	PercentBP     int64  `json:"percent_bp,omitempty"`
+	FixedCents    int64  `json:"fixed_cents,omitempty"`
+	EffectiveFrom string `json:"effective_from"`
+}
+
+// parseSplitComponents decodes the components jsonb of a charge_split row
+// ([{"code","amount"}], amount a 2-decimal string) into cents per code.
+func parseSplitComponents(raw []byte) (map[string]int64, error) {
+	out := map[string]int64{}
+	if len(raw) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		Code   string `json:"code"`
+		Amount string `json:"amount"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		cents, err := parseCents(r.Amount)
+		if err != nil {
+			return nil, err
+		}
+		out[r.Code] += cents
+	}
+	return out, nil
+}
+
+// activeFeeRules loads the merchant's fee rules as the pure feeRule view used
+// by selectFeeRule/computeFee.
+func activeFeeRules(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) ([]feeRule, error) {
+	rows, err := q.ListFeeRulesByMerchant(c.Request.Context(), merchantID)
+	if err != nil {
+		return nil, err
+	}
+	rules := make([]feeRule, 0, len(rows))
+	for _, r := range rows {
+		fr := feeRule{ID: r.ID.String(), Basis: r.Basis, EffectiveFrom: r.EffectiveFrom.Time}
+		if r.PhysicianID.Valid {
+			fr.PhysicianID = r.PhysicianID.String()
+		}
+		if r.ServiceItemID.Valid {
+			fr.ServiceItemID = r.ServiceItemID.String()
+		}
+		if r.ItemType.Valid {
+			fr.ItemType = r.ItemType.String
+		}
+		if r.PayerID.Valid {
+			fr.PayerID = r.PayerID.String()
+		}
+		if r.PerformerRole.Valid {
+			fr.PerformerRole = r.PerformerRole.String
+		}
+		if r.ComponentCode.Valid {
+			fr.ComponentCode = r.ComponentCode.String
+		}
+		if r.Percent.Valid {
+			bp, err := numericToCents(r.Percent) // numeric percent "40.00" → 4000 BP
+			if err != nil {
+				return nil, err
+			}
+			fr.PercentBP = bp
+		}
+		if r.Amount.Valid {
+			cents, err := numericToCents(r.Amount)
+			if err != nil {
+				return nil, err
+			}
+			fr.FixedCents = cents
+		}
+		rules = append(rules, fr)
+	}
+	return rules, nil
+}
+
+// computeFees snapshots the practitioner fees of a finalized account (spec
+// §4.1–4.2): for every active charge line and its performers it selects the
+// winning rule per pelaksana, computes the fee from the stored splits
+// (combined component portions of ALL parties) and inserts one
+// operations.practitioner_fee row per (charge, performer) — including zero
+// fees without a matching rule (rule_id NULL, spec §4.1). Called inside the
+// finalize transaction, after the receivables.
+func computeFees(c *gin.Context, q *sqlcgen.Queries, acct *sqlcgen.OperationsBillingAccount) error {
+	ctx := c.Request.Context()
+	rules, err := activeFeeRules(c, q, acct.MerchantID)
+	if err != nil {
+		return err
+	}
+	charges, err := q.ListChargeFeeLinesForAccount(ctx, acct.ID)
+	if err != nil {
+		return err
+	}
+	perfRows, err := q.ListChargePerformersForAccount(ctx, acct.ID)
+	if err != nil {
+		return err
+	}
+	perfByCharge := map[string][]sqlcgen.ListChargePerformersForAccountRow{}
+	for _, p := range perfRows {
+		perfByCharge[p.ChargeID.String()] = append(perfByCharge[p.ChargeID.String()], p)
+	}
+
+	firstForVisit := map[string]bool{} // physician → already had a line in this account
+	for _, ch := range charges {
+		splits, err := q.ListSplitsWithComponentsForCharge(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		comps := map[string]int64{}
+		var total int64
+		allCap := len(splits) > 0
+		firstPayer := ""
+		for _, s := range splits {
+			if s.Coverage != "capitation" && s.Coverage != "package" {
+				allCap = false
+			}
+			cents, err := numericToCents(s.Amount)
+			if err != nil {
+				return err
+			}
+			total += cents
+			sc, err := parseSplitComponents(s.Components)
+			if err != nil {
+				return err
+			}
+			for code, v := range sc {
+				comps[code] += v
+			}
+			if s.Party == "payer" && cents > 0 && firstPayer == "" {
+				firstPayer = s.PayerID.String()
+			}
+		}
+
+		for _, p := range perfByCharge[ch.ID.String()] {
+			physicianID := p.PhysicianID.String()
+			// Spec §4.2: lines whose splits are all capitation/package
+			// produce no fee at all (v1).
+			if allCap {
+				continue
+			}
+			rule, found := selectFeeRule(rules, feeCtx{
+				PhysicianID: physicianID, ServiceItemID: ch.ServiceItemID.String(),
+				ItemType: ch.ItemType, PayerID: firstPayer, PerformerRole: p.Role,
+			})
+			gross, fee := computeFee(rule, feeLine{
+				AccountID: acct.ID.String(), Quantity: quantityMilli(ch.Quantity),
+				TotalCents: total, Components: comps,
+				FirstForVisit:          !firstForVisit[physicianID],
+				AllCapitationOrPackage: allCap,
+			})
+			var ruleID pgtype.UUID
+			snapshot := []byte("{}")
+			if found {
+				id, err := pgtypeUUIDFromString(rule.ID)
+				if err != nil {
+					return err
+				}
+				ruleID = id
+				buf, err := json.Marshal(feeRuleSnapshot{
+					ID: rule.ID, Basis: rule.Basis, ComponentCode: rule.ComponentCode,
+					PercentBP: rule.PercentBP, FixedCents: rule.FixedCents,
+					EffectiveFrom: rule.EffectiveFrom.Format("2006-01-02"),
+				})
+				if err != nil {
+					return err
+				}
+				snapshot = buf
+			}
+			if _, err := q.InsertPractitionerFee(ctx, sqlcgen.InsertPractitionerFeeParams{
+				CompanyID: acct.CompanyID, MerchantID: acct.MerchantID, AccountID: acct.ID,
+				ChargeID: ch.ID, PhysicianID: p.PhysicianID, Role: p.Role,
+				ServiceDate: ch.ServiceDate, GrossAmount: centsNum(gross), FeeAmount: centsNum(fee),
+				RuleID: ruleID, RuleSnapshot: snapshot,
+			}); err != nil {
+				return err
+			}
+			firstForVisit[physicianID] = true
+		}
+	}
+	return nil
 }

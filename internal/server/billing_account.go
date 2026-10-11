@@ -5,9 +5,11 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"math/big"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +42,7 @@ func RegisterBillingRoutes(rg *gin.RouterGroup) {
 	rg.POST("/admissions/:id/billing/consents", CreateBillingConsentHandler)
 	rg.POST("/admissions/:id/billing/finalize", FinalizeBillingHandler)
 	rg.POST("/admissions/:id/billing/reopen", ReopenBillingHandler)
+	rg.PUT("/charges/:id/performers", AccessLog("billing", "performers", "id"), SetChargePerformersHandler)
 }
 
 // parseQuantity3 parses a positive decimal string with at most 3 fraction
@@ -114,61 +117,62 @@ type recomputeResult struct {
 }
 
 // priceForBilling resolves one unit price (cents, HET-capped) of an item on a
-// price list valid at date, using the same queries as loadPriceResolveContext
-// (price_list.go) but without writing any HTTP response. Inactive list/base or
-// no resolvable price → ok=false; DB errors return err (or errAlreadyResponded
-// when hetCentsOn already responded).
-func priceForBilling(c *gin.Context, q *sqlcgen.Queries, listID string, item sqlcgen.CoreServiceItem, date pgtype.Date) (int64, bool, error) {
+// price list valid at date, plus its per-component breakdown (code → cents,
+// from resolvePrice/capAtHET), using the same queries as
+// loadPriceResolveContext (price_list.go) but without writing any HTTP
+// response. Inactive list/base or no resolvable price → ok=false; DB errors
+// return err (or errAlreadyResponded when hetCentsOn already responded).
+func priceForBilling(c *gin.Context, q *sqlcgen.Queries, listID string, item sqlcgen.CoreServiceItem, date pgtype.Date) (int64, map[string]int64, bool, error) {
 	if listID == "" {
-		return 0, false, nil
+		return 0, nil, false, nil
 	}
 	id, err := pgtypeUUIDFromString(listID)
 	if err != nil {
-		return 0, false, nil
+		return 0, nil, false, nil
 	}
 	list, err := q.GetPriceListByID(c.Request.Context(), id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+		return 0, nil, false, nil
 	}
 	if err != nil {
-		return 0, false, err
+		return 0, nil, false, err
 	}
 	if !list.IsActive {
-		return 0, false, nil
+		return 0, nil, false, nil
 	}
 	rule := priceListRule{}
 	var baseRows []sqlcgen.ListEffectiveRatesForListRow
 	if list.BasePriceListID.Valid {
 		base, err := q.GetPriceListByID(c.Request.Context(), list.BasePriceListID)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, false, nil
+			return 0, nil, false, nil
 		}
 		if err != nil {
-			return 0, false, err
+			return 0, nil, false, err
 		}
 		if !base.IsActive {
-			return 0, false, nil
+			return 0, nil, false, nil
 		}
 		rule.Derived = true
 		adjustBP, err := numericToCents(list.AdjustmentPercent)
 		if err != nil {
-			return 0, false, err
+			return 0, nil, false, err
 		}
 		rule.AdjustmentBP = adjustBP
 		rounding, err := numericToCents(list.RoundingUnit)
 		if err != nil {
-			return 0, false, err
+			return 0, nil, false, err
 		}
 		rule.RoundingCents = rounding
 		adjustments, err := q.ListPriceListAdjustments(c.Request.Context(), list.ID)
 		if err != nil {
-			return 0, false, err
+			return 0, nil, false, err
 		}
 		rule.CategoryAdjustmentBP = make(map[string]int64, len(adjustments))
 		for _, a := range adjustments {
 			bp, err := numericToCents(a.AdjustmentPercent)
 			if err != nil {
-				return 0, false, err
+				return 0, nil, false, err
 			}
 			rule.CategoryAdjustmentBP[a.ItemType] = bp
 		}
@@ -176,7 +180,7 @@ func priceForBilling(c *gin.Context, q *sqlcgen.Queries, listID string, item sql
 			PriceListID: base.ID, OnDate: date,
 		})
 		if err != nil {
-			return 0, false, err
+			return 0, nil, false, err
 		}
 		baseRows = rows
 	}
@@ -184,7 +188,7 @@ func priceForBilling(c *gin.Context, q *sqlcgen.Queries, listID string, item sql
 		PriceListID: list.ID, ServiceItemID: item.ID, OnDate: date,
 	})
 	if err != nil {
-		return 0, false, err
+		return 0, nil, false, err
 	}
 	toRows := func(rows []sqlcgen.ListEffectiveRatesForListRow, wantItem pgtype.UUID) ([]rateRow, error) {
 		out := make([]rateRow, 0, len(rows))
@@ -204,24 +208,48 @@ func priceForBilling(c *gin.Context, q *sqlcgen.Queries, listID string, item sql
 	for _, r := range own {
 		cents, err := numericToCents(r.Amount)
 		if err != nil {
-			return 0, false, err
+			return 0, nil, false, err
 		}
 		ownRows = append(ownRows, rateRow{ComponentID: r.RateComponentID.String(), Code: r.Code, Name: r.Name, Cents: cents})
 	}
 	baseFiltered, err := toRows(baseRows, item.ID)
 	if err != nil {
-		return 0, false, err
+		return 0, nil, false, err
 	}
 	res, err := resolvePrice(item.ItemType, rule, ownRows, baseFiltered)
 	if err != nil {
-		return 0, false, nil // includes errPriceMissing
+		return 0, nil, false, nil // includes errPriceMissing
 	}
 	hetCents, okHET := hetCentsOn(c, q, item.ID, date)
 	if !okHET {
-		return 0, false, errAlreadyResponded
+		return 0, nil, false, errAlreadyResponded
 	}
 	res = capAtHET(res, hetCents)
-	return res.TotalCents, true, nil
+	comps := make(map[string]int64, len(res.Components))
+	for _, comp := range res.Components {
+		comps[comp.Code] = comp.Cents
+	}
+	return res.TotalCents, comps, true, nil
+}
+
+// splitComponentsJSON renders a split's per-component portions as the jsonb
+// payload stored on operations.charge_split: [{"code","amount"}] with the
+// amounts as 2-decimal strings, ordered by code for determinism.
+func splitComponentsJSON(comps map[string]int64) ([]byte, error) {
+	type compJSON struct {
+		Code   string `json:"code"`
+		Amount string `json:"amount"`
+	}
+	codes := make([]string, 0, len(comps))
+	for code := range comps {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	out := make([]compJSON, 0, len(codes))
+	for _, code := range codes {
+		out = append(out, compJSON{Code: code, Amount: formatCents(comps[code])})
+	}
+	return json.Marshal(out)
 }
 
 // pgtypeUUIDFromString parses a UUID string ("" handled by callers).
@@ -485,18 +513,22 @@ func recomputeAccount(c *gin.Context, q *sqlcgen.Queries, account sqlcgen.Operat
 		list, item string
 		day        string
 	}
-	cache := map[priceKey]int64{}
-	priceFn := func(listID, itemID string, on time.Time) (int64, bool, error) {
+	type pricedUnit struct {
+		cents int64
+		comps map[string]int64
+	}
+	cache := map[priceKey]pricedUnit{}
+	priceFn := func(listID, itemID string, on time.Time) (int64, map[string]int64, bool, error) {
 		key := priceKey{listID, itemID, on.Format("2006-01-02")}
-		if cents, ok := cache[key]; ok {
-			return cents, true, nil
+		if hit, ok := cache[key]; ok {
+			return hit.cents, hit.comps, true, nil
 		}
-		cents, ok, err := priceForBilling(c, q, listID, items[itemID], pgtype.Date{Time: on, Valid: true})
+		cents, comps, ok, err := priceForBilling(c, q, listID, items[itemID], pgtype.Date{Time: on, Valid: true})
 		if err != nil || !ok {
-			return 0, false, err
+			return 0, nil, false, err
 		}
-		cache[key] = cents
-		return cents, true, nil
+		cache[key] = pricedUnit{cents: cents, comps: comps}
+		return cents, comps, true, nil
 	}
 
 	res, err := splitAccount(engineCharges, payers, defaultList, priceFn)
@@ -551,6 +583,19 @@ func recomputeAccount(c *gin.Context, q *sqlcgen.Queries, account sqlcgen.Operat
 				ShadowAmount: shadow, Note: pgtype.Text{String: part.Note, Valid: part.Note != ""},
 			}); err != nil {
 				return out, err
+			}
+			// Spec 2026-10-07-tariff-d §4.2: keep each party's per-component
+			// portion (the fee gross keys on the MEDIS component).
+			if len(part.Components) > 0 {
+				compsJSON, err := splitComponentsJSON(part.Components)
+				if err != nil {
+					return out, err
+				}
+				if err := q.SetChargeSplitComponents(ctx, sqlcgen.SetChargeSplitComponentsParams{
+					ChargeID: chargeUUID, Seq: seq, Components: compsJSON,
+				}); err != nil {
+					return out, err
+				}
 			}
 		}
 	}
@@ -670,6 +715,18 @@ func billingPayload(c *gin.Context, q *sqlcgen.Queries, admissionID pgtype.UUID,
 	if err != nil {
 		return nil, err
 	}
+	performers, err := q.ListChargePerformersForAdmission(ctx, admissionID)
+	if err != nil {
+		return nil, err
+	}
+	performersByCharge := map[string][]gin.H{}
+	for _, p := range performers {
+		performersByCharge[p.ChargeID.String()] = append(performersByCharge[p.ChargeID.String()], gin.H{
+			"physician_id": p.PhysicianID.String(),
+			"name":         p.PhysicianName,
+			"role":         p.Role,
+		})
+	}
 
 	payerNames := map[string]string{}
 	for _, g := range guarantors {
@@ -738,6 +795,10 @@ func billingPayload(c *gin.Context, q *sqlcgen.Queries, admissionID pgtype.UUID,
 		if splitRows == nil {
 			splitRows = []gin.H{}
 		}
+		perfRows := performersByCharge[ch.ID.String()]
+		if perfRows == nil {
+			perfRows = []gin.H{}
+		}
 		chargeJSON = append(chargeJSON, gin.H{
 			"id": ch.ID.String(),
 			"service_item": gin.H{
@@ -749,6 +810,7 @@ func billingPayload(c *gin.Context, q *sqlcgen.Queries, admissionID pgtype.UUID,
 			"status":       ch.Status,
 			"note":         textJSON(ch.Note),
 			"splits":       splitRows,
+			"performers":   perfRows,
 		})
 	}
 
@@ -1099,6 +1161,123 @@ type voidChargeRequest struct {
 	Reason string `json:"reason" binding:"required"`
 }
 
+type chargePerformerInput struct {
+	PhysicianID string `json:"physician_id" binding:"required"`
+	Role        string `json:"role" binding:"required"`
+}
+
+type setChargePerformersRequest struct {
+	Performers []chargePerformerInput `json:"performers" binding:"dive"`
+}
+
+// allowedPerformerRoles is the role enum of operations.charge_performer
+// (migration 000070).
+var allowedPerformerRoles = map[string]bool{
+	"primary": true, "assistant": true, "anesthesia": true, "midwife": true,
+	"nurse": true, "pharmacist": true, "other": true,
+}
+
+// SetChargePerformersHandler godoc
+// @Summary Replace the performers of a charge row (billing.invoice.create)
+// @Tags billing
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Charge UUID"
+// @Param request body setChargePerformersRequest true "Performer set"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /charges/{id}/performers [put]
+func SetChargePerformersHandler(c *gin.Context) {
+	q := sqlcgen.New(TxFromContext(c))
+	chargeID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	charge, err := q.GetChargeByID(c.Request.Context(), chargeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "charge not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermInvoiceCreate, charge.MerchantID) {
+		return
+	}
+	var req setChargePerformersRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	acct, err := q.GetBillingAccountForUpdate(c.Request.Context(), charge.AccountID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if acct.Status != "open" {
+		c.JSON(http.StatusConflict, gin.H{"error": "billing is finalized"})
+		return
+	}
+	seen := make(map[string]bool, len(req.Performers))
+	physicians := make([]sqlcgen.CorePhysician, 0, len(req.Performers))
+	for _, in := range req.Performers {
+		if !allowedPerformerRoles[in.Role] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
+			return
+		}
+		key := in.PhysicianID + "|" + in.Role
+		if seen[key] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "duplicate performer"})
+			return
+		}
+		seen[key] = true
+		physID, okID := parseUUID(in.PhysicianID)
+		if !okID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid physician_id"})
+			return
+		}
+		phys, err := q.GetPhysicianByID(c.Request.Context(), physID)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (phys.MerchantID != charge.MerchantID || !phys.IsActive)) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "physician not found"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		physicians = append(physicians, phys)
+	}
+	// Replace the whole set (contract: "ganti set").
+	if err := q.DeleteChargePerformers(c.Request.Context(), charge.ID); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	rows := make([]gin.H, 0, len(req.Performers))
+	for i, in := range req.Performers {
+		perf, err := q.InsertChargePerformer(c.Request.Context(), sqlcgen.InsertChargePerformerParams{
+			CompanyID: charge.CompanyID, MerchantID: charge.MerchantID, ChargeID: charge.ID,
+			PhysicianID: physicians[i].ID, Role: in.Role, CreatedBy: AuthUserID(c),
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		name := ""
+		if person, err := q.GetPersonByID(c.Request.Context(), physicians[i].PersonID); err == nil {
+			name = person.FullName
+		}
+		rows = append(rows, gin.H{
+			"physician_id": perf.PhysicianID.String(), "name": name, "role": perf.Role,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"charge_id": charge.ID.String(), "performers": rows}, "meta": gin.H{}})
+}
+
 type billingConsentRequest struct {
 	ChargeID        string `json:"charge_id"`
 	ConsentedByName string `json:"consented_by_name" binding:"required"`
@@ -1275,6 +1454,12 @@ func FinalizeBillingHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Spec 2026-10-07-tariff-d §4.1–4.2: practitioner fees are snapshotted
+	// in the same finalize transaction, after the receivables.
+	if err := computeFees(c, q, &finalized); err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	payload, err := billingPayload(c, q, adm.ID, &finalized)
 	if err != nil {
 		respondInternalError(c, err)
@@ -1337,10 +1522,26 @@ func ReopenBillingHandler(c *gin.Context) {
 	if !clearReceivablesOnReopen(c, q, acct.ID, AuthUserID(c)) {
 		return
 	}
+	// Spec 2026-10-07-tariff-d §4.3.3: fees already claimed by a payout
+	// batch block the reopen; open fees are deleted (recreated on the next
+	// finalize).
+	inBatch, err := q.CountFeesInProcessByAccount(c.Request.Context(), acct.ID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if inBatch > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "fees of this billing are in a payout batch"})
+		return
+	}
 	reopened, err := q.ReopenBillingAccount(c.Request.Context(), sqlcgen.ReopenBillingAccountParams{
 		ID: acct.ID, LastReopenReason: optText(req.Reason), UpdatedBy: AuthUserID(c),
 	})
 	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if err := q.DeleteFeesByAccount(c.Request.Context(), acct.ID); err != nil {
 		respondInternalError(c, err)
 		return
 	}

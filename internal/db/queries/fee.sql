@@ -53,3 +53,64 @@ RETURNING *;
 UPDATE core.practitioner_fee_rule
 SET deleted_at = now(), deleted_by = $2
 WHERE id = $1 AND deleted_at IS NULL;
+
+-- SetChargeSplitComponents stores the per-component portions ([{"code",
+-- "amount"}] jsonb) of one freshly inserted charge_split row (spec
+-- 2026-10-07-tariff-d §4.2: fee gross keys on the MEDIS component).
+-- name: SetChargeSplitComponents :exec
+UPDATE operations.charge_split
+SET components = $3
+WHERE charge_id = $1 AND seq = $2;
+
+-- Charge performers (spec 2026-10-07-tariff-d §3, per-charge pelaksana).
+
+-- name: InsertChargePerformer :one
+INSERT INTO operations.charge_performer (company_id, merchant_id, charge_id, physician_id, role, created_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING *;
+
+-- name: DeleteChargePerformers :exec
+DELETE FROM operations.charge_performer WHERE charge_id = $1;
+
+-- name: ListChargePerformersForAdmission :many
+SELECT cp.charge_id, cp.physician_id, cp.role, pe.full_name AS physician_name
+FROM operations.charge_performer cp
+JOIN operations.charge ch ON ch.id = cp.charge_id
+JOIN core.physician ph ON ph.id = cp.physician_id
+JOIN core.person pe ON pe.id = ph.person_id
+WHERE ch.admission_id = $1
+ORDER BY cp.charge_id, cp.created_at, cp.id;
+
+-- name: ListChargePerformersForAccount :many
+SELECT cp.charge_id, cp.physician_id, cp.role
+FROM operations.charge_performer cp
+JOIN operations.charge ch ON ch.id = cp.charge_id
+WHERE ch.account_id = $1
+ORDER BY cp.charge_id, cp.created_at, cp.id;
+
+-- Fee computation inputs (spec 2026-10-07-tariff-d §4.1–4.2).
+
+-- name: ListChargeFeeLinesForAccount :many
+SELECT ch.id, ch.service_item_id, si.item_type, ch.quantity, ch.service_date
+FROM operations.charge ch
+JOIN core.service_item si ON si.id = ch.service_item_id
+WHERE ch.account_id = $1 AND ch.status = 'active'
+ORDER BY ch.service_date, ch.created_at, ch.id;
+
+-- name: ListSplitsWithComponentsForCharge :many
+SELECT party, payer_id, coverage, amount, components
+FROM operations.charge_split
+WHERE charge_id = $1
+ORDER BY seq;
+
+-- name: CountFeesInProcessByAccount :one
+SELECT count(*) FROM operations.practitioner_fee
+WHERE account_id = $1 AND status <> 'open';
+
+-- name: DeleteFeesByAccount :exec
+DELETE FROM operations.practitioner_fee WHERE account_id = $1;
+
+-- name: InsertPractitionerFee :one
+INSERT INTO operations.practitioner_fee (company_id, merchant_id, account_id, charge_id, physician_id, role, service_date, gross_amount, fee_amount, rule_id, rule_snapshot)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING *;

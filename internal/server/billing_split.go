@@ -18,9 +18,11 @@ type splitCharge struct {
 }
 
 // splitPrice returns the unit price (cents) on the given price list that is
-// valid at time `on` (the charge's ServiceDate), already HET-capped. A
-// non-nil error (anything but a missing price) is propagated by the engine.
-type splitPrice func(priceListID, itemID string, on time.Time) (int64, bool, error)
+// valid at time `on` (the charge's ServiceDate), already HET-capped, plus the
+// per-component breakdown of that unit price (component code → cents; the
+// components sum to the unit price). A non-nil error (anything but a missing
+// price) is propagated by the engine.
+type splitPrice func(priceListID, itemID string, on time.Time) (unitCents int64, components map[string]int64, ok bool, err error)
 
 type splitPayer struct {
 	PayerID, PayerType, PriceListID string // PriceListID resolved (payer list or merchant default)
@@ -51,6 +53,34 @@ type splitPart struct {
 	AmountCents, ShadowCents                         int64
 	HasShadow                                        bool
 	Note                                             string
+	// Components is this party's portion of the line per price component
+	// (code → cents), scaled proportionally from the unit components by
+	// AmountCents/GrossCents with the rounding remainder on the largest
+	// component (the pattern of resolvePrice).
+	Components map[string]int64
+}
+
+// componentShare scales the unit components of a line to a party's amount
+// (cents): each component half-up proportional to amount/gross, and the
+// rounding remainder (either sign) goes to the largest component (ties: the
+// smallest code), matching resolvePrice. Zero/negative amounts share nothing.
+func componentShare(unit map[string]int64, gross, amount int64) map[string]int64 {
+	if len(unit) == 0 || gross <= 0 || amount <= 0 {
+		return map[string]int64{}
+	}
+	out := make(map[string]int64, len(unit))
+	var sum, largestCents int64
+	largest := ""
+	for code, cents := range unit {
+		v := roundHalfUpDiv(cents*amount, gross)
+		out[code] = v
+		sum += v
+		if v > largestCents || (v == largestCents && (largest == "" || code < largest)) {
+			largest, largestCents = code, v
+		}
+	}
+	out[largest] += amount - sum
+	return out
 }
 
 type splitResult struct {
@@ -99,16 +129,17 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 		excluded := false // remainder originates from BPJS exclusion
 		carried := false  // a private payer covered part of the excluded remainder
 		unit, gross, list := int64(0), int64(0), defaultListID
+		comps := map[string]int64{} // unit components of the current (list, item)
 
-		grossAt := func(listID string) (int64, int64, error) {
-			u, ok, err := price(listID, ch.ItemID, ch.ServiceDate)
+		grossAt := func(listID string) (int64, map[string]int64, int64, error) {
+			u, uc, ok, err := price(listID, ch.ItemID, ch.ServiceDate)
 			if err != nil {
-				return 0, 0, err
+				return 0, nil, 0, err
 			}
 			if !ok {
-				return 0, 0, fmt.Errorf("%w: charge %s (list %s, item %s)", errPriceMissing, ch.ID, listID, ch.ItemID)
+				return 0, nil, 0, fmt.Errorf("%w: charge %s (list %s, item %s)", errPriceMissing, ch.ID, listID, ch.ItemID)
 			}
-			return u, roundHalfUpDiv(u*ch.QtyMilli, 1000), nil
+			return u, uc, roundHalfUpDiv(u*ch.QtyMilli, 1000), nil
 		}
 
 		baseSet := false // remainder valued at the default list, set lazily
@@ -131,7 +162,7 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 				}
 				switch cov.Coverage {
 				case "capitation", "package":
-					u, g, err := grossAt(p.PriceListID)
+					u, uc, g, err := grossAt(p.PriceListID)
 					if err != nil {
 						return splitResult{}, err
 					}
@@ -139,10 +170,11 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 						Party: "payer", PayerID: p.PayerID, Coverage: cov.Coverage,
 						ClaimType: cov.ClaimType, PriceListID: p.PriceListID,
 						UnitCents: u, GrossCents: g, ShadowCents: g, HasShadow: true,
+						Components: componentShare(uc, g, 0),
 					})
 					remaining, locked = 0, true
 				case "claim":
-					u, g, err := grossAt(p.PriceListID)
+					u, uc, g, err := grossAt(p.PriceListID)
 					if err != nil {
 						return splitResult{}, err
 					}
@@ -150,15 +182,16 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 						Party: "payer", PayerID: p.PayerID, Coverage: "claim",
 						ClaimType: cov.ClaimType, PriceListID: p.PriceListID,
 						UnitCents: u, GrossCents: g, AmountCents: g,
+						Components: componentShare(uc, g, g),
 					})
 					remaining, locked = 0, true
 				default: // "excluded" (and empty): pass on at the default list
-					u, g, err := grossAt(defaultListID)
+					u, uc, g, err := grossAt(defaultListID)
 					if err != nil {
 						return splitResult{}, err
 					}
 					excluded = true
-					unit, gross, remaining, list = u, g, g, defaultListID
+					unit, gross, remaining, list, comps = u, g, g, defaultListID, uc
 				}
 				continue
 			}
@@ -171,17 +204,17 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 				continue
 			}
 			if !baseSet {
-				u0, g0, err := grossAt(defaultListID)
+				u0, uc0, g0, err := grossAt(defaultListID)
 				if err != nil {
 					return splitResult{}, err
 				}
-				unit, gross, remaining, list = u0, g0, g0, defaultListID
+				unit, gross, remaining, list, comps = u0, g0, g0, defaultListID, uc0
 				baseSet = true
 			}
 			if remaining <= 0 {
 				break
 			}
-			u, g, err := grossAt(p.PriceListID)
+			u, uc, g, err := grossAt(p.PriceListID)
 			if err != nil {
 				return splitResult{}, err
 			}
@@ -289,6 +322,7 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 					Party: "payer", PayerID: p.PayerID, PriceListID: p.PriceListID,
 					UnitCents: u, GrossCents: g, DiscountCents: discount,
 					AmountCents: cover, Note: joinNotes(notes),
+					Components: componentShare(uc, g, cover),
 				})
 				// Contractual discount is waived (absorbed by the facility),
 				// not passed on to the next payer or the patient.
@@ -300,11 +334,11 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 		}
 
 		if !baseSet && !locked { // no payer touched the remainder: patient pays in full
-			u, g, err := grossAt(defaultListID)
+			u, uc, g, err := grossAt(defaultListID)
 			if err != nil {
 				return splitResult{}, err
 			}
-			unit, gross, remaining, list, baseSet = u, g, g, defaultListID, true
+			unit, gross, remaining, list, comps, baseSet = u, g, g, defaultListID, uc, true
 		}
 		if remaining > 0 {
 			cov := ""
@@ -320,6 +354,7 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 			parts = append(parts, splitPart{
 				Party: "patient", Coverage: cov, PriceListID: list,
 				UnitCents: unit, GrossCents: gross, AmountCents: remaining,
+				Components: componentShare(comps, gross, remaining),
 			})
 		}
 
