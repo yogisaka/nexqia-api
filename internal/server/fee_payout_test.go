@@ -242,8 +242,16 @@ func TestFeePayout_OtherGrossEmployeeOnly(t *testing.T) {
 	batchID, _ := batch["id"].(string)
 	path := "/api/v1/fee-batches/" + batchID + "/lines/"
 	status, out := qeRequest(t, env, http.MethodPut, path+employeeID, map[string]any{"other_gross": "500000"})
-	if data := payMapData(t, status, out, http.StatusOK); data["other_gross"] != "500000.00" {
-		t.Fatalf("employee line = %v", data)
+	data := payMapData(t, status, out, http.StatusOK)
+	// The PUT returns the full batch (contract §2): draft status and a lines array.
+	if data["status"] != "draft" {
+		t.Fatalf("batch = %v", data)
+	}
+	if _, ok := data["lines"].([]any); !ok {
+		t.Fatalf("lines not an array: %v", data["lines"])
+	}
+	if line := fpLine(t, data, employeeID); line["other_gross"] != "500000.00" {
+		t.Fatalf("employee line = %v", line)
 	}
 	// Partner line → 400.
 	status, out = qeRequest(t, env, http.MethodPut, path+partnerID, map[string]any{"other_gross": "500000"})
@@ -458,5 +466,48 @@ func TestFeePayout_December(t *testing.T) {
 	// Negative tax does not add to net: net = fee 2,000,000.00.
 	if decLine["net_amount"] != "2000000.00" {
 		t.Fatalf("dec net = %v", decLine["net_amount"])
+	}
+}
+
+// TestFeePayout_FutureMonthRejected — creating a batch for a future month is
+// rejected with 400 (guard evaluated in the merchant timezone).
+func TestFeePayout_FutureMonthRejected(t *testing.T) {
+	env := fpNewEnv(t, "future")
+	status, out := qeRequest(t, env, http.MethodPost, "/api/v1/merchants/"+env.merchantID+"/fee-batches",
+		map[string]any{"year": time.Now().Year() + 2, "month": 1})
+	if status != http.StatusBadRequest || out["error"] != "fee batch month is in the future" {
+		t.Fatalf("future month = %d %v, want 400", status, out)
+	}
+}
+
+// TestFeePayout_TaxExportCSVFormulaSafety — a person name that Excel would
+// read as a formula is neutralized with a leading apostrophe in the tax CSV.
+func TestFeePayout_TaxExportCSVFormulaSafety(t *testing.T) {
+	env := fpNewEnv(t, "csvsafe")
+	employeeID, employee := frCreatePhysician(t, env, "FP SafeE", map[string]any{
+		"employment_type": "employee", "ptkp_status": "TK/0", "npwp": "12.345.678.9-012.345",
+	})
+	fpSetNIK(t, env, employee["PersonID"].(string), "3201010101800099")
+	fpSingleMedisFee(t, env, "SAFE", employeeID, "100000.00", "1")
+
+	now := time.Now()
+	batch := fpCreateBatch(t, env, now.Year(), int(now.Month()), http.StatusCreated)
+	batchID, _ := batch["id"].(string)
+	// Formula-like person name, before the lock snapshot the CSV reads.
+	if _, err := env.pool.Exec(context.Background(),
+		"UPDATE core.person SET full_name = '=SUM(1+1)' WHERE id = $1",
+		employee["PersonID"].(string)); err != nil {
+		t.Fatalf("set full_name: %v", err)
+	}
+	status, _ := qeRequest(t, env, http.MethodPost, "/api/v1/fee-batches/"+batchID+"/lock", nil)
+	if status != http.StatusOK {
+		t.Fatalf("lock = %d", status)
+	}
+	code, body := fpRequestRaw(t, env, http.MethodGet, "/api/v1/fee-batches/"+batchID+"/tax-export.csv")
+	if code != http.StatusOK {
+		t.Fatalf("export = %d: %s", code, body)
+	}
+	if !strings.Contains(body, "'=SUM(1+1)") {
+		t.Fatalf("csv-safe name missing: %s", body)
 	}
 }

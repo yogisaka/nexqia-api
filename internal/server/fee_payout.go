@@ -6,10 +6,12 @@
 package server
 
 import (
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -252,12 +254,17 @@ func CreateFeeBatchHandler(c *gin.Context) {
 	if !RequirePermissionForMerchant(c, PermFeeManage, merchantID) {
 		return
 	}
-	now := time.Now()
+	q := sqlcgen.New(TxFromContext(c))
+	loc, err := merchantLocation(c.Request.Context(), q, merchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	now := time.Now().In(loc)
 	if req.Year > now.Year() || (req.Year == now.Year() && req.Month > int(now.Month())) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "fee batch month is in the future"})
 		return
 	}
-	q := sqlcgen.New(TxFromContext(c))
 	monthEnd := time.Date(req.Year, time.Month(req.Month+1), 0, 0, 0, 0, 0, time.UTC)
 	if _, err := q.GetFeeBatchByPeriod(c.Request.Context(), sqlcgen.GetFeeBatchByPeriodParams{
 		MerchantID: merchantID, PeriodYear: int16(req.Year), PeriodMonth: int16(req.Month),
@@ -446,14 +453,18 @@ func UpdateFeeBatchLineHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "other gross applies to employees only"})
 		return
 	}
-	updated, err := q.SetFeePayoutLineOtherGross(c.Request.Context(), sqlcgen.SetFeePayoutLineOtherGrossParams{
+	if _, err := q.SetFeePayoutLineOtherGross(c.Request.Context(), sqlcgen.SetFeePayoutLineOtherGrossParams{
 		BatchID: batch.ID, PhysicianID: physicianID, OtherGross: centsNum(otherCents),
-	})
+	}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	lines, err := q.ListFeePayoutLines(c.Request.Context(), batch.ID)
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": feeLineJSON(updated), "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": feeBatchJSON(batch, lines), "meta": gin.H{}})
 }
 
 // DeleteFeeBatchHandler godoc
@@ -696,8 +707,13 @@ func TaxExportHandler(cfg config.Config) gin.HandlerFunc {
 			respondInternalError(c, err)
 			return
 		}
-		header := "masa_pajak;tahun;nik;npwp;nama;status_ptkp;jenis_pemotongan;penghasilan_bruto;dasar_pengenaan;tarif;pph_dipotong\n"
-		body := header
+		var sb strings.Builder
+		w := csv.NewWriter(&sb)
+		w.Comma = ';'
+		if err := w.Write([]string{"masa_pajak", "tahun", "nik", "npwp", "nama", "status_ptkp", "jenis_pemotongan", "penghasilan_bruto", "dasar_pengenaan", "tarif", "pph_dipotong"}); err != nil {
+			respondInternalError(c, err)
+			return
+		}
 		for _, r := range rows {
 			nik, err := decryptNIK(c.Request.Context(), TxFromContext(c), r.Nik, cfg.NIKEncryptionKey)
 			if err != nil {
@@ -747,10 +763,21 @@ func TaxExportHandler(cfg config.Config) gin.HandlerFunc {
 			if r.Npwp.Valid {
 				npwp = r.Npwp.String
 			}
-			body += strconv.Itoa(int(batch.PeriodMonth)) + ";" + strconv.Itoa(int(batch.PeriodYear)) + ";" +
-				nik + ";" + npwp + ";" + r.PersonFullName + ";" + ptkp + ";" + jenis + ";" +
-				formatCents(bruto) + ";" + base + ";" + tarif + ";" + tax + "\n"
+			if err := w.Write([]string{
+				csvSafe(strconv.Itoa(int(batch.PeriodMonth))), csvSafe(strconv.Itoa(int(batch.PeriodYear))),
+				csvSafe(nik), csvSafe(npwp), csvSafe(r.PersonFullName), csvSafe(ptkp), csvSafe(jenis),
+				csvSafe(formatCents(bruto)), csvSafe(base), csvSafe(tarif), csvSafe(tax),
+			}); err != nil {
+				respondInternalError(c, err)
+				return
+			}
 		}
+		w.Flush()
+		if err := w.Error(); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		body := sb.String()
 		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"tax-export-%d-%02d.csv\"", batch.PeriodYear, batch.PeriodMonth))
 		c.Data(http.StatusOK, "text/csv; charset=utf-8", []byte(body))
 	}
