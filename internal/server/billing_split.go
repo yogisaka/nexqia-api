@@ -83,6 +83,31 @@ func componentShare(unit map[string]int64, gross, amount int64) map[string]int64
 	return out
 }
 
+// lineComponents scales the unit components of a line to its quantity
+// (milli-units): each component half-up per-unit × qty, and only the
+// rounding remainder (gross − sum) goes to the largest component
+// (ties: the smallest code) — the pattern of componentShare/resolvePrice.
+func lineComponents(unit map[string]int64, gross, qtyMilli int64) map[string]int64 {
+	if len(unit) == 0 || gross <= 0 || qtyMilli <= 0 {
+		return map[string]int64{}
+	}
+	out := make(map[string]int64, len(unit))
+	var sum, largestCents int64
+	largest := ""
+	for code, cents := range unit {
+		v := roundHalfUpDiv(cents*qtyMilli, 1000)
+		out[code] = v
+		sum += v
+		if v > largestCents || (v == largestCents && code < largest) {
+			largest, largestCents = code, v
+		}
+	}
+	if largest != "" {
+		out[largest] += gross - sum
+	}
+	return out
+}
+
 type splitResult struct {
 	ByCharge     map[string][]splitPart
 	PatientCents int64
@@ -129,7 +154,7 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 		excluded := false // remainder originates from BPJS exclusion
 		carried := false  // a private payer covered part of the excluded remainder
 		unit, gross, list := int64(0), int64(0), defaultListID
-		comps := map[string]int64{} // unit components of the current (list, item)
+		comps := map[string]int64{} // line components (per-unit × qty) of the current (list, item)
 
 		grossAt := func(listID string) (int64, map[string]int64, int64, error) {
 			u, uc, ok, err := price(listID, ch.ItemID, ch.ServiceDate)
@@ -139,7 +164,8 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 			if !ok {
 				return 0, nil, 0, fmt.Errorf("%w: charge %s (list %s, item %s)", errPriceMissing, ch.ID, listID, ch.ItemID)
 			}
-			return u, uc, roundHalfUpDiv(u*ch.QtyMilli, 1000), nil
+			g := roundHalfUpDiv(u*ch.QtyMilli, 1000)
+			return u, lineComponents(uc, g, ch.QtyMilli), g, nil
 		}
 
 		baseSet := false // remainder valued at the default list, set lazily

@@ -138,6 +138,143 @@ func TestBillingFee_PerformersAndSnapshot(t *testing.T) {
 	}
 }
 
+// TestBillingFee_FixedPerItemQuantity — a fixed_per_item rule pays
+// amount × quantity per performer: charge 2 × (MEDIS 60000 + SARANA 40000)
+// gives gross 120000.00 and fee 15000.00 × 1 performer = 30000.00.
+func TestBillingFee_FixedPerItemQuantity(t *testing.T) {
+	env := payNewEnv(t, "bfee.fpiq")
+	_, admissionID := bilNewPersonAndVisit(t, env, "BFEEQ", "Pasien Jasa Per Item")
+	_, itemID := bfeeTwoComponentList(t, env, "FPIQ")
+
+	physicianID, _ := frCreatePhysician(t, env, "BFEEQ Dok", nil)
+	rule := frCreateRule(t, env, map[string]any{
+		"physician_id": physicianID, "service_item_id": itemID,
+		"basis": "fixed_per_item", "amount": "15000.00", "effective_from": plToday(env, 0),
+	}, http.StatusCreated)
+	ruleID, _ := rule["id"].(string)
+	if ruleID == "" {
+		t.Fatalf("rule id missing: %v", rule)
+	}
+
+	status, out := qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "2"})
+	data := payMapData(t, status, out, http.StatusCreated)
+	charges, _ := data["charges"].([]any)
+	ch, _ := charges[0].(map[string]any)
+	chargeID, _ := ch["id"].(string)
+
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/charges/"+chargeID+"/performers",
+		map[string]any{"performers": []map[string]any{{"physician_id": physicianID, "role": "primary"}}})
+	payMapData(t, status, out, http.StatusOK)
+
+	// Finalize: gross = MEDIS 60000.00 × qty 2 = 120000.00; fee = 15000.00 × 2 = 30000.00.
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/billing/finalize", nil)
+	payMapData(t, status, out, http.StatusOK)
+	accountID := bfeeAccountID(t, env, admissionID)
+	gross, fee, feeRuleID := bfeeFeeRow(t, env, accountID)
+	if gross != "120000.00" || fee != "30000.00" {
+		t.Fatalf("fee row gross=%s fee=%s, want 120000.00/30000.00", gross, fee)
+	}
+	if feeRuleID != ruleID {
+		t.Fatalf("rule_id = %v, want %s", feeRuleID, ruleID)
+	}
+	if n := bfeeFeeCount(t, env, accountID); n != 1 {
+		t.Fatalf("fee rows = %d, want 1", n)
+	}
+}
+
+// TestBillingFee_RuleWindow — the rule's effective window is evaluated on the
+// service date in the merchant timezone: expired → no fee, not yet effective →
+// no fee, boundary days (from and to today) are inclusive.
+func TestBillingFee_RuleWindow(t *testing.T) {
+	newScenario := func(t *testing.T, label string) (*qeEnv, string, string) {
+		t.Helper()
+		env := payNewEnv(t, "bfee.win."+label)
+		_, admissionID := bilNewPersonAndVisit(t, env, "BFEEW"+label, "Pasien Jendela "+label)
+		_, itemID := bfeeTwoComponentList(t, env, "W-"+label)
+		return env, admissionID, itemID
+	}
+	finalizeAndRead := func(t *testing.T, env *qeEnv, admissionID string) (string, string, any) {
+		t.Helper()
+		status, out := qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/billing/finalize", nil)
+		payMapData(t, status, out, http.StatusOK)
+		return bfeeFeeRow(t, env, bfeeAccountID(t, env, admissionID))
+	}
+
+	// (a) Expired: effective_to in the past → no fee row rule match.
+	env, admissionID, itemID := newScenario(t, "exp")
+	physicianID, _ := frCreatePhysician(t, env, "BFEEW Exp", nil)
+	rule := frCreateRule(t, env, map[string]any{
+		"physician_id": physicianID, "basis": "percent_of_component",
+		"component_code": "MEDIS", "percent": "40.00", "effective_from": plToday(env, -1),
+	}, http.StatusCreated)
+	ruleID, _ := rule["id"].(string)
+	if _, err := env.pool.Exec(context.Background(),
+		"UPDATE core.practitioner_fee_rule SET effective_to = $2 WHERE id = $1",
+		ruleID, plToday(env, -1)); err != nil {
+		t.Fatalf("set effective_to: %v", err)
+	}
+	status, out := qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	data := payMapData(t, status, out, http.StatusCreated)
+	charges, _ := data["charges"].([]any)
+	ch, _ := charges[0].(map[string]any)
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/charges/"+ch["id"].(string)+"/performers",
+		map[string]any{"performers": []map[string]any{{"physician_id": physicianID, "role": "primary"}}})
+	payMapData(t, status, out, http.StatusOK)
+	gross, fee, feeRuleID := finalizeAndRead(t, env, admissionID)
+	if gross != "60000.00" || fee != "0.00" || feeRuleID != nil {
+		t.Fatalf("expired: gross=%s fee=%s rule=%v, want 60000.00/0.00/NULL", gross, fee, feeRuleID)
+	}
+
+	// (b) Not yet effective: effective_from tomorrow → no fee.
+	env, admissionID, itemID = newScenario(t, "fut")
+	physicianID, _ = frCreatePhysician(t, env, "BFEEW Fut", nil)
+	frCreateRule(t, env, map[string]any{
+		"physician_id": physicianID, "basis": "percent_of_component",
+		"component_code": "MEDIS", "percent": "40.00", "effective_from": plToday(env, 1),
+	}, http.StatusCreated)
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	data = payMapData(t, status, out, http.StatusCreated)
+	charges, _ = data["charges"].([]any)
+	ch, _ = charges[0].(map[string]any)
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/charges/"+ch["id"].(string)+"/performers",
+		map[string]any{"performers": []map[string]any{{"physician_id": physicianID, "role": "primary"}}})
+	payMapData(t, status, out, http.StatusOK)
+	gross, fee, feeRuleID = finalizeAndRead(t, env, admissionID)
+	if gross != "60000.00" || fee != "0.00" || feeRuleID != nil {
+		t.Fatalf("future: gross=%s fee=%s rule=%v, want 60000.00/0.00/NULL", gross, fee, feeRuleID)
+	}
+
+	// (c) Inclusive boundary: from = to = today → fee applies.
+	env, admissionID, itemID = newScenario(t, "edge")
+	physicianID, _ = frCreatePhysician(t, env, "BFEEW Edge", nil)
+	rule = frCreateRule(t, env, map[string]any{
+		"physician_id": physicianID, "basis": "percent_of_component",
+		"component_code": "MEDIS", "percent": "40.00", "effective_from": plToday(env, 0),
+	}, http.StatusCreated)
+	ruleID, _ = rule["id"].(string)
+	if _, err := env.pool.Exec(context.Background(),
+		"UPDATE core.practitioner_fee_rule SET effective_to = $2 WHERE id = $1",
+		ruleID, plToday(env, 0)); err != nil {
+		t.Fatalf("set effective_to: %v", err)
+	}
+	status, out = qeRequest(t, env, http.MethodPost, "/api/v1/admissions/"+admissionID+"/charges",
+		map[string]any{"service_item_id": itemID, "quantity": "1"})
+	data = payMapData(t, status, out, http.StatusCreated)
+	charges, _ = data["charges"].([]any)
+	ch, _ = charges[0].(map[string]any)
+	status, out = qeRequest(t, env, http.MethodPut, "/api/v1/charges/"+ch["id"].(string)+"/performers",
+		map[string]any{"performers": []map[string]any{{"physician_id": physicianID, "role": "primary"}}})
+	payMapData(t, status, out, http.StatusOK)
+	gross, fee, feeRuleID = finalizeAndRead(t, env, admissionID)
+	// 40% × MEDIS 60000.00, qty 1 = 24000.00.
+	if gross != "60000.00" || fee != "24000.00" || feeRuleID != ruleID {
+		t.Fatalf("boundary: gross=%s fee=%s rule=%v, want 60000.00/24000.00/%s", gross, fee, feeRuleID, ruleID)
+	}
+}
+
 // TestBillingFee_ReopenDeletesOpenFees — reopening the account deletes its
 // (still open) fee rows.
 func TestBillingFee_ReopenDeletesOpenFees(t *testing.T) {

@@ -480,6 +480,34 @@ func TestFeePayout_FutureMonthRejected(t *testing.T) {
 	}
 }
 
+// TestFeePayout_SoftDeletedPhysicianStillPaid — regression locking the spec
+// 2026-10-16 §4 decision: a soft-deleted physician's open fees are still
+// gathered into the payout batch; do NOT add a deleted_at filter to the fee
+// batch query.
+func TestFeePayout_SoftDeletedPhysicianStillPaid(t *testing.T) {
+	env := fpNewEnv(t, "softdel")
+	physicianID, physician := frCreatePhysician(t, env, "FP Soft", map[string]any{
+		"employment_type": "employee", "ptkp_status": "TK/0",
+	})
+	fpSetNIK(t, env, physician["PersonID"].(string), "3201010101800095")
+	fpSingleMedisFee(t, env, "SOFT", physicianID, "100000.00", "1")
+
+	status, _ := qeRequest(t, env, http.MethodDelete, "/api/v1/physicians/"+physicianID, nil)
+	if status != http.StatusNoContent {
+		t.Fatalf("delete physician = %d, want 204", status)
+	}
+
+	now := time.Now()
+	batch := fpCreateBatch(t, env, now.Year(), int(now.Month()), http.StatusCreated)
+	if batch["status"] != "draft" {
+		t.Fatalf("batch = %v", batch)
+	}
+	line := fpLine(t, batch, physicianID)
+	if line["fee_amount"] != "100000.00" {
+		t.Fatalf("soft-deleted physician line = %v", line)
+	}
+}
+
 // TestFeePayout_TaxExportCSVFormulaSafety — a person name that Excel would
 // read as a formula is neutralized with a leading apostrophe in the tax CSV.
 func TestFeePayout_TaxExportCSVFormulaSafety(t *testing.T) {

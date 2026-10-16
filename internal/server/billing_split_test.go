@@ -451,6 +451,55 @@ func TestSplitAccount(t *testing.T) {
 			},
 		},
 		{
+			name:    "components_qty_scaled",
+			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 2000, ServiceDate: day}},
+			priceFn: func(listID, itemID string, on time.Time) (int64, map[string]int64, bool, error) {
+				// Unit: MEDIS 60000 + SARANA 40000 = 100000; qty 2 → gross 200000.
+				return 100000, map[string]int64{"MEDIS": 60000, "SARANA": 40000}, true, nil
+			},
+			check: func(t *testing.T, res splitResult, err error) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				// lineComponents: MEDIS 60000×2=120000, SARANA 40000×2=80000,
+				// remainder 200000−200000=0 → Σ components == gross (invariant).
+				parts := res.ByCharge["c1"]
+				if len(parts) != 1 || parts[0].Party != "patient" {
+					t.Fatalf("parts=%+v", parts)
+				}
+				p := parts[0]
+				if p.GrossCents != 200000 || p.AmountCents != 200000 {
+					t.Fatalf("gross=%d amount=%d, want 200000/200000", p.GrossCents, p.AmountCents)
+				}
+				if p.Components["MEDIS"] != 120000 || p.Components["SARANA"] != 80000 {
+					t.Fatalf("components=%+v, want MEDIS 120000 / SARANA 80000", p.Components)
+				}
+			},
+		},
+		{
+			name:    "components_qty_fraction_rounding",
+			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 2500, ServiceDate: day}},
+			priceFn: func(listID, itemID string, on time.Time) (int64, map[string]int64, bool, error) {
+				// Unit: MEDIS 333 + SARANA 667 = 1000; qty 2.5 → gross 2500.
+				return 1000, map[string]int64{"MEDIS": 333, "SARANA": 667}, true, nil
+			},
+			check: func(t *testing.T, res splitResult, err error) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				// MEDIS roundHalfUpDiv(333×2500,1000)=833, SARANA=1668;
+				// remainder 2500−2501=−1 goes to the largest (SARANA) → 1667.
+				parts := res.ByCharge["c1"]
+				if len(parts) != 1 || parts[0].GrossCents != 2500 {
+					t.Fatalf("parts=%+v", parts)
+				}
+				comp := parts[0].Components
+				if comp["MEDIS"] != 833 || comp["SARANA"] != 1667 {
+					t.Fatalf("components=%+v, want MEDIS 833 / SARANA 1667 (Σ 2500)", comp)
+				}
+			},
+		},
+		{
 			name:    "price_missing",
 			charges: []splitCharge{{ID: "c1", ItemID: "it", ItemType: "visit", QtyMilli: 1000, ServiceDate: day}},
 			price:   map[string]int64{},
