@@ -30,6 +30,7 @@ type feeRule struct {
 	PercentBP     int64  // for percent_* bases
 	FixedCents    int64  // for fixed_* bases
 	EffectiveFrom time.Time
+	EffectiveTo   *time.Time // nil = open-ended
 }
 
 // feeCtx identifies the line context a rule is selected for.
@@ -39,13 +40,14 @@ type feeCtx struct {
 	ItemType      string
 	PayerID       string // "" = general patient (first responsible payer)
 	PerformerRole string
+	ServiceDate   time.Time // the charge's service date (validity window filter)
 }
 
 // feeLine is the charge line a fee is computed from. Components holds the
 // combined portions of ALL parties of the line per component code.
 type feeLine struct {
 	AccountID     string
-	Quantity      int64
+	Quantity      int64            // milli-units (1 item = 1000) — see quantityMilli in billing_account.go
 	TotalCents    int64            // total of all parties
 	Components    map[string]int64 // combined component portions, cents
 	FirstForVisit bool             // true only for the first line of (account, physician)
@@ -93,10 +95,21 @@ func selectFeeRule(rules []feeRule, ctx feeCtx) (feeRule, bool) {
 	return best, found
 }
 
+// feeRuleActive reports whether the rule's validity window covers the
+// service date, inclusive on both ends (spec §4.1); a NULL effective_to
+// is open-ended.
+func feeRuleActive(r feeRule, serviceDate time.Time) bool {
+	if serviceDate.Before(r.EffectiveFrom) {
+		return false
+	}
+	return r.EffectiveTo == nil || !serviceDate.After(*r.EffectiveTo)
+}
+
 // feeRuleMatches reports whether an active rule is a candidate for ctx: every
 // constrained dimension is either open ("") or equal to the context value.
 func feeRuleMatches(r feeRule, ctx feeCtx) bool {
-	return (r.PhysicianID == "" || r.PhysicianID == ctx.PhysicianID) &&
+	return feeRuleActive(r, ctx.ServiceDate) &&
+		(r.PhysicianID == "" || r.PhysicianID == ctx.PhysicianID) &&
 		(r.ServiceItemID == "" || r.ServiceItemID == ctx.ServiceItemID) &&
 		(r.ItemType == "" || r.ItemType == ctx.ItemType) &&
 		(r.PayerID == "" || r.PayerID == ctx.PayerID) &&
@@ -123,7 +136,9 @@ func computeFee(rule feeRule, line feeLine) (grossCents, feeCents int64) {
 	case "percent_of_total":
 		feeCents = halfUpCents(line.TotalCents*rule.PercentBP, 10000)
 	case "fixed_per_item":
-		feeCents = rule.FixedCents * line.Quantity
+		// line.Quantity is milli-units (1 item = 1000, see quantityMilli);
+		// scale back to items, half-up to the cent (2.5 items × Rp150 = Rp375).
+		feeCents = halfUpCents(rule.FixedCents*line.Quantity, 1000)
 	case "fixed_per_visit":
 		if line.FirstForVisit {
 			feeCents = rule.FixedCents
@@ -183,6 +198,10 @@ func activeFeeRules(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID) 
 	rules := make([]feeRule, 0, len(rows))
 	for _, r := range rows {
 		fr := feeRule{ID: r.ID.String(), Basis: r.Basis, EffectiveFrom: r.EffectiveFrom.Time}
+		if r.EffectiveTo.Valid {
+			t := r.EffectiveTo.Time
+			fr.EffectiveTo = &t
+		}
 		if r.PhysicianID.Valid {
 			fr.PhysicianID = r.PhysicianID.String()
 		}
@@ -287,6 +306,7 @@ func computeFees(c *gin.Context, q *sqlcgen.Queries, acct *sqlcgen.OperationsBil
 			rule, found := selectFeeRule(rules, feeCtx{
 				PhysicianID: physicianID, ServiceItemID: ch.ServiceItemID.String(),
 				ItemType: ch.ItemType, PayerID: firstPayer, PerformerRole: p.Role,
+				ServiceDate: ch.ServiceDate.Time,
 			})
 			gross, fee := computeFee(rule, feeLine{
 				AccountID: acct.ID.String(), Quantity: quantityMilli(ch.Quantity),

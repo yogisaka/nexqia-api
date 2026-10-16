@@ -22,7 +22,7 @@ func TestSelectFeeRule(t *testing.T) {
 	phy := "11111111-1111-1111-1111-111111111111"
 	item := "22222222-2222-2222-2222-222222222222"
 	payer := "33333333-3333-3333-3333-333333333333"
-	ctx := feeCtx{PhysicianID: phy, ServiceItemID: item, ItemType: "consultation", PayerID: payer, PerformerRole: "primary"}
+	ctx := feeCtx{PhysicianID: phy, ServiceItemID: item, ItemType: "consultation", PayerID: payer, PerformerRole: "primary", ServiceDate: feeTestDay}
 
 	t.Run("physician_item_beats_all", func(t *testing.T) {
 		rules := []feeRule{
@@ -109,6 +109,44 @@ func TestSelectFeeRule(t *testing.T) {
 		}
 	})
 
+	t.Run("window_expired_rule_excluded", func(t *testing.T) {
+		expired := feeTestDay.AddDate(0, 0, -1)
+		rules := []feeRule{
+			mkRule("expired", func(r *feeRule) { r.EffectiveTo = &expired }),
+		}
+		// service date 2024-03-01 > effective_to 2024-02-29 → excluded.
+		if _, ok := selectFeeRule(rules, ctx); ok {
+			t.Fatal("want ok=false for expired rule")
+		}
+	})
+
+	t.Run("window_future_rule_excluded", func(t *testing.T) {
+		future := feeTestDay.AddDate(0, 0, 1)
+		rules := []feeRule{
+			mkRule("future", func(r *feeRule) { r.EffectiveFrom = future }),
+		}
+		// service date 2024-03-01 < effective_from 2024-03-02 → excluded.
+		if _, ok := selectFeeRule(rules, ctx); ok {
+			t.Fatal("want ok=false for future rule")
+		}
+	})
+
+	t.Run("window_boundaries_inclusive", func(t *testing.T) {
+		// service date == effective_from → included.
+		fromRules := []feeRule{mkRule("from_today", nil)} // effective_from = feeTestDay = ServiceDate
+		if got, ok := selectFeeRule(fromRules, ctx); !ok || got.ID != "from_today" {
+			t.Fatalf("want from_today at effective_from, got %v ok=%v", got.ID, ok)
+		}
+		// service date == effective_to → included.
+		end := feeTestDay
+		toRules := []feeRule{
+			mkRule("ends_today", func(r *feeRule) { r.EffectiveTo = &end }),
+		}
+		if got, ok := selectFeeRule(toRules, ctx); !ok || got.ID != "ends_today" {
+			t.Fatalf("want ends_today at effective_to, got %v ok=%v", got.ID, ok)
+		}
+	})
+
 	t.Run("tie_newest_effective_from_wins", func(t *testing.T) {
 		rules := []feeRule{
 			mkRule("old", func(r *feeRule) { r.PhysicianID = phy; r.EffectiveFrom = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) }),
@@ -185,9 +223,17 @@ func TestComputeFee(t *testing.T) {
 
 	t.Run("fixed_per_item_multiplied_by_quantity", func(t *testing.T) {
 		rule := mkRule("r", func(r *feeRule) { r.Basis = "fixed_per_item"; r.FixedCents = 1500 })
-		_, fee := computeFee(rule, line)
-		if fee != 3_000 { // 1.500 × qty 2 = 3.000
+		_, fee := computeFee(rule, feeLine{Quantity: 2000}) // milli-units = 2 items
+		if fee != 3_000 {                                   // 1.500 × 2 item = 3.000
 			t.Fatalf("fee = %d, want 3000", fee)
+		}
+	})
+
+	t.Run("fixed_per_item_fractional_quantity", func(t *testing.T) {
+		rule := mkRule("r", func(r *feeRule) { r.Basis = "fixed_per_item"; r.FixedCents = 1500 })
+		_, fee := computeFee(rule, feeLine{Quantity: 2500}) // milli-units = 2.5 items
+		if fee != 3_750 {                                   // 2500 × 1500 / 1000 = 3.750
+			t.Fatalf("fee = %d, want 3750", fee)
 		}
 	})
 
