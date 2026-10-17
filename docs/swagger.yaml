@@ -7402,6 +7402,10 @@ paths:
       summary: List the suppliers visible to a merchant (company + its own)
       tags:
       - inventory
+  /onboarding-status:
+    get:
+      responses: {}
+      summary: Status checklist onboarding untuk merchant aktif
   /patient-allergies/{id}:
     delete:
       parameters:

@@ -8159,6 +8159,12 @@ const docTemplate = `{
                 }
             }
         },
+        "/onboarding-status": {
+            "get": {
+                "summary": "Status checklist onboarding untuk merchant aktif",
+                "responses": {}
+            }
+        },
         "/patient-allergies/{id}": {
             "delete": {
                 "security": [
