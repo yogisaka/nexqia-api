@@ -41,6 +41,20 @@ func RegisterStockRoutes(rg *gin.RouterGroup) {
 	rg.PATCH("/goods-receipts/:id", UpdateGoodsReceiptHandler)
 	rg.POST("/goods-receipts/:id/post", PostGoodsReceiptHandler)
 	rg.POST("/goods-receipts/:id/void", VoidGoodsReceiptHandler)
+
+	// Stock operations (Task 5, spec §4.3–4.5).
+	rg.POST("/merchants/:id/stock/usage", StockUsageHandler)
+	rg.POST("/merchants/:id/stock/transfers", StockTransferHandler)
+	rg.POST("/merchants/:id/stock/adjustments", StockAdjustmentHandler)
+	rg.POST("/merchants/:id/stock/status-change", StockStatusChangeHandler)
+	rg.PATCH("/lots/:id/recall", RecallLotHandler)
+	rg.POST("/merchants/:id/stock-counts", CreateStockCountHandler)
+	rg.PUT("/stock-counts/:id/lines", UpdateStockCountLinesHandler)
+	rg.POST("/stock-counts/:id/post", PostStockCountHandler)
+	rg.DELETE("/stock-counts/:id", DeleteStockCountHandler)
+	rg.PUT("/merchants/:id/stock-levels", PutStockLevelsHandler)
+	rg.GET("/merchants/:id/inventory-settings", GetInventorySettingsHandler)
+	rg.PATCH("/merchants/:id/inventory-settings", PatchInventorySettingsHandler)
 }
 
 // numericExact renders a pgtype numeric as its exact decimal string

@@ -702,6 +702,15 @@ definitions:
     - merchant_id
     - name
     type: object
+  server.createStockCountRequest:
+    properties:
+      count_date:
+        type: string
+      location_id:
+        type: string
+    required:
+    - location_id
+    type: object
   server.createSupplierRequest:
     type: object
   server.departmentCodeMapItem:
@@ -923,6 +932,23 @@ definitions:
         type: string
     required:
     - format
+    type: object
+  server.patchInventorySettingsRequest:
+    properties:
+      default_vat_percent:
+        type: string
+      input_vat_creditable:
+        type: boolean
+      min_shelf_life_months:
+        type: integer
+      min_shelf_life_vaccine_months:
+        type: integer
+      near_expiry_months_1:
+        type: integer
+      near_expiry_months_2:
+        type: integer
+      stock_locked_until:
+        type: string
     type: object
   server.patchSupplierRequest:
     type: object
@@ -1264,6 +1290,15 @@ definitions:
           $ref: '#/definitions/server.serviceRuleInput'
         type: array
     type: object
+  server.recallLotRequest:
+    properties:
+      is_recalled:
+        type: boolean
+      recall_note:
+        type: string
+    required:
+    - is_recalled
+    type: object
   server.receiptLineRequest:
     properties:
       batch_no:
@@ -1547,6 +1582,157 @@ definitions:
         type: boolean
     required:
     - served_by_permission
+    type: object
+  server.stockAdjustmentRequest:
+    properties:
+      item_id:
+        type: string
+      location_id:
+        type: string
+      lot_id:
+        type: string
+      quantity:
+        type: string
+      reason:
+        type: string
+      source:
+        type: string
+      status:
+        type: string
+    required:
+    - item_id
+    - location_id
+    - lot_id
+    - quantity
+    - source
+    - status
+    type: object
+  server.stockCountLineInput:
+    properties:
+      balance_id:
+        type: string
+      counted_qty:
+        type: string
+      reason:
+        type: string
+    required:
+    - balance_id
+    - counted_qty
+    type: object
+  server.stockCountLinesRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/server.stockCountLineInput'
+        minItems: 1
+        type: array
+    required:
+    - lines
+    type: object
+  server.stockLevelInput:
+    properties:
+      item_id:
+        type: string
+      location_id:
+        type: string
+      max_qty:
+        type: string
+      min_qty:
+        type: string
+    required:
+    - item_id
+    - location_id
+    - max_qty
+    - min_qty
+    type: object
+  server.stockLevelsRequest:
+    properties:
+      levels:
+        items:
+          $ref: '#/definitions/server.stockLevelInput'
+        minItems: 1
+        type: array
+    required:
+    - levels
+    type: object
+  server.stockStatusChangeRequest:
+    properties:
+      from_status:
+        type: string
+      location_id:
+        type: string
+      lot_id:
+        type: string
+      quantity:
+        type: string
+      reason:
+        type: string
+      source:
+        type: string
+      to_status:
+        type: string
+    required:
+    - from_status
+    - location_id
+    - lot_id
+    - quantity
+    - source
+    - to_status
+    type: object
+  server.stockTransferLineRequest:
+    properties:
+      item_id:
+        type: string
+      lot_id:
+        type: string
+      quantity:
+        type: string
+      source:
+        type: string
+    required:
+    - item_id
+    - lot_id
+    - quantity
+    - source
+    type: object
+  server.stockTransferRequest:
+    properties:
+      from_location_id:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/server.stockTransferLineRequest'
+        minItems: 1
+        type: array
+      to_location_id:
+        type: string
+      transfer_date:
+        type: string
+    required:
+    - from_location_id
+    - lines
+    - to_location_id
+    type: object
+  server.stockUsageRequest:
+    properties:
+      admission_id:
+        type: string
+      item_id:
+        type: string
+      location_id:
+        type: string
+      override_lot_id:
+        type: string
+      override_reason:
+        type: string
+      quantity:
+        type: string
+      reason:
+        type: string
+    required:
+    - item_id
+    - location_id
+    - quantity
     type: object
   server.switchMerchantRequest:
     properties:
@@ -5462,6 +5648,42 @@ paths:
       summary: Update a location (kind is immutable)
       tags:
       - locations
+  /lots/{id}/recall:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Lot UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Recall flag and note
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.recallLotRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Recall (or release) a lot company-wide
+      tags:
+      - inventory
   /merchant-roles/{id}:
     delete:
       parameters:
@@ -6073,6 +6295,57 @@ paths:
       security:
       - BearerAuth: []
       summary: Create a goods-receipt draft with lines
+      tags:
+      - inventory
+  /merchants/{id}/inventory-settings:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Read the merchant's inventory settings (defaults created on demand)
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Settings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.patchInventorySettingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update the merchant's inventory settings (lock date may not move backwards)
       tags:
       - inventory
   /merchants/{id}/locations:
@@ -6780,6 +7053,218 @@ paths:
       summary: List service items under a merchant
       tags:
       - tariff
+  /merchants/{id}/stock-counts:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Count
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createStockCountRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 'Start a stock count: snapshot every balance with qty > 0'
+      tags:
+      - inventory
+  /merchants/{id}/stock-levels:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Levels
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.stockLevelsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the min/max set for each location sent
+      tags:
+      - inventory
+  /merchants/{id}/stock/adjustments:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Adjustment
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.stockAdjustmentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Signed stock adjustment per lot/source/status (reason required)
+      tags:
+      - inventory
+  /merchants/{id}/stock/status-change:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Status change
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.stockStatusChangeRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Move quantity from one balance status to another (two moves)
+      tags:
+      - inventory
+  /merchants/{id}/stock/transfers:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Transfer lines
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.stockTransferRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Transfer stock between two locations of the merchant
+      tags:
+      - inventory
+  /merchants/{id}/stock/usage:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Usage
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.stockUsageRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Issue stock for usage (FEFO) or an admission
+      tags:
+      - inventory
   /merchants/{id}/suppliers:
     get:
       parameters:
@@ -10750,6 +11235,94 @@ paths:
       summary: List the merchant's security setting changes
       tags:
       - settings
+  /stock-counts/{id}:
+    delete:
+      parameters:
+      - description: Stock count UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a draft stock count
+      tags:
+      - inventory
+  /stock-counts/{id}/lines:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Stock count UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Counted lines
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.stockCountLinesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace counted quantities on draft count lines
+      tags:
+      - inventory
+  /stock-counts/{id}/post:
+    post:
+      parameters:
+      - description: Stock count UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 'Post a draft stock count: one count move per differing line'
+      tags:
+      - inventory
   /suppliers:
     post:
       consumes:

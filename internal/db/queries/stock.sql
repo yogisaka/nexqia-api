@@ -242,3 +242,95 @@ VALUES ($1, $2, $3, $4)
 ON CONFLICT (item_id, batch_no, COALESCE(expiry_date, DATE '9999-12-31'))
 DO UPDATE SET batch_no = EXCLUDED.batch_no
 RETURNING *;
+
+-- §4.3–4.5 stock operations API (Task 5).
+
+-- name: GetLotByID :one
+SELECT * FROM inventory.lot WHERE id = $1;
+
+-- name: UpdateLotRecall :one
+UPDATE inventory.lot SET is_recalled = $2, recall_note = $3 WHERE id = $1 RETURNING *;
+
+-- name: NewStockRefID :one
+SELECT uuid_generate_v7() AS ref_id;
+
+-- name: GetStockMoveByID :one
+SELECT * FROM inventory.stock_move WHERE id = $1;
+
+-- §4.5 opname (stock counts).
+-- name: InsertStockCount :one
+INSERT INTO inventory.stock_count (company_id, merchant_id, location_id, count_date, created_by)
+VALUES ($1, $2, $3, $4, $5) RETURNING *;
+
+-- Snapshot every balance with qty > 0 at the location as a count line.
+-- name: SnapshotStockCountLines :execrows
+INSERT INTO inventory.stock_count_line (company_id, merchant_id, count_id, balance_id, system_qty)
+SELECT $1, $2, $3, b.id, b.quantity
+FROM inventory.stock_balance b
+WHERE b.merchant_id = $2 AND b.location_id = $4 AND b.quantity > 0
+ORDER BY b.id;
+
+-- name: GetStockCountByID :one
+SELECT * FROM inventory.stock_count WHERE id = $1;
+
+-- name: ListStockCountLines :many
+SELECT cl.id, cl.count_id, cl.balance_id, cl.system_qty, cl.counted_qty, cl.reason,
+       i.code AS item_code, i.name AS item_name, l.batch_no, l.expiry_date,
+       b.source, b.status
+FROM inventory.stock_count_line cl
+JOIN inventory.stock_balance b ON b.id = cl.balance_id
+JOIN inventory.item i ON i.id = b.item_id
+JOIN inventory.lot l ON l.id = b.lot_id
+WHERE cl.count_id = $1
+ORDER BY cl.id;
+
+-- name: SetStockCountLine :execrows
+UPDATE inventory.stock_count_line SET
+    counted_qty = sqlc.arg('counted_qty')::numeric,
+    reason = sqlc.narg('reason')::text
+WHERE count_id = sqlc.arg('count_id')::uuid AND balance_id = sqlc.arg('balance_id')::uuid;
+
+-- name: MarkStockCountPosted :one
+UPDATE inventory.stock_count SET
+    status = 'posted', posted_at = now(), posted_by = sqlc.arg('posted_by')::uuid
+WHERE id = sqlc.arg('count_id')::uuid AND status = 'draft' RETURNING *;
+
+-- name: DeleteStockCount :execrows
+DELETE FROM inventory.stock_count WHERE id = $1 AND status = 'draft';
+
+-- Lock one balance row for the count-post comparison and move.
+-- name: LockStockCountBalance :one
+SELECT id, item_id, lot_id, source, status, quantity
+FROM inventory.stock_balance WHERE id = $1 FOR UPDATE;
+
+-- §4.5 min/max per location.
+-- name: ListStockLevelsByMerchant :many
+SELECT * FROM inventory.stock_level WHERE merchant_id = $1
+ORDER BY location_id, item_id;
+
+-- name: DeleteStockLevelsByLocation :exec
+DELETE FROM inventory.stock_level WHERE merchant_id = $1 AND location_id = $2;
+
+-- name: InsertStockLevel :one
+INSERT INTO inventory.stock_level (company_id, merchant_id, location_id, item_id, min_qty, max_qty)
+VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
+
+-- §4.2/§4.5 merchant inventory settings (all columns).
+-- name: GetOrCreateMerchantSettingFull :one
+INSERT INTO inventory.merchant_setting (merchant_id, company_id)
+VALUES ($1, $2)
+ON CONFLICT (merchant_id) DO UPDATE SET updated_at = now()
+RETURNING *;
+
+-- name: UpdateMerchantSetting :one
+UPDATE inventory.merchant_setting s SET
+    near_expiry_months_1 = COALESCE(sqlc.narg('near_expiry_months_1')::smallint, s.near_expiry_months_1),
+    near_expiry_months_2 = COALESCE(sqlc.narg('near_expiry_months_2')::smallint, s.near_expiry_months_2),
+    min_shelf_life_months = COALESCE(sqlc.narg('min_shelf_life_months')::smallint, s.min_shelf_life_months),
+    min_shelf_life_vaccine_months = COALESCE(sqlc.narg('min_shelf_life_vaccine_months')::smallint, s.min_shelf_life_vaccine_months),
+    input_vat_creditable = COALESCE(sqlc.narg('input_vat_creditable')::boolean, s.input_vat_creditable),
+    default_vat_percent = COALESCE(sqlc.narg('default_vat_percent')::numeric, s.default_vat_percent),
+    stock_locked_until = COALESCE(sqlc.narg('stock_locked_until')::date, s.stock_locked_until),
+    updated_by = sqlc.arg('updated_by')::uuid
+WHERE s.merchant_id = sqlc.arg('merchant_id')::uuid
+RETURNING s.*;
