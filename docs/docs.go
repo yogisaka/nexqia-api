@@ -16855,6 +16855,9 @@ const docTemplate = `{
                 "citizenship_concept_id": {
                     "type": "string"
                 },
+                "duplicate_override_reason": {
+                    "type": "string"
+                },
                 "education_concept_id": {
                     "type": "string"
                 },
@@ -16891,7 +16894,16 @@ const docTemplate = `{
                 "nik": {
                     "type": "string"
                 },
+                "nik_exemption": {
+                    "type": "string"
+                },
+                "nik_exemption_note": {
+                    "type": "string"
+                },
                 "phone": {
+                    "type": "string"
+                },
+                "profile": {
                     "type": "string"
                 },
                 "region_village_concept_id": {

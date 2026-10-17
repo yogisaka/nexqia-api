@@ -42,27 +42,31 @@ func RegisterPersonRoutes(rg *gin.RouterGroup, cfg config.Config) {
 }
 
 type personRequest struct {
-	NIK                    string `json:"nik"`
-	MedicalRecordNo        string `json:"medical_record_no"`
-	FullName               string `json:"full_name" binding:"required"`
-	BirthDate              string `json:"birth_date"`
-	BirthPlace             string `json:"birth_place"`
-	Gender                 string `json:"gender" binding:"required"`
-	BloodType              string `json:"blood_type"`
-	MaritalStatus          string `json:"marital_status"`
-	ReligionConceptID      string `json:"religion_concept_id"`
-	EducationConceptID     string `json:"education_concept_id"`
-	EthnicityConceptID     string `json:"ethnicity_concept_id"`
-	RegionVillageConceptID string `json:"region_village_concept_id"`
-	CitizenshipConceptID   string `json:"citizenship_concept_id"`
-	IdentityTypeConceptID  string `json:"identity_type_concept_id"`
-	JobConceptID           string `json:"job_concept_id"`
-	MaritalStatusConceptID string `json:"marital_status_concept_id"`
-	BloodTypeConceptID     string `json:"blood_type_concept_id"`
-	Phone                  string `json:"phone"`
-	Email                  string `json:"email"`
-	Address                string `json:"address"`
-	FamilyID               string `json:"family_id"`
+	Profile                 string `json:"profile"`
+	NIKExemption            string `json:"nik_exemption"`
+	NIKExemptionNote        string `json:"nik_exemption_note"`
+	DuplicateOverrideReason string `json:"duplicate_override_reason"`
+	NIK                     string `json:"nik"`
+	MedicalRecordNo         string `json:"medical_record_no"`
+	FullName                string `json:"full_name" binding:"required"`
+	BirthDate               string `json:"birth_date"`
+	BirthPlace              string `json:"birth_place"`
+	Gender                  string `json:"gender" binding:"required"`
+	BloodType               string `json:"blood_type"`
+	MaritalStatus           string `json:"marital_status"`
+	ReligionConceptID       string `json:"religion_concept_id"`
+	EducationConceptID      string `json:"education_concept_id"`
+	EthnicityConceptID      string `json:"ethnicity_concept_id"`
+	RegionVillageConceptID  string `json:"region_village_concept_id"`
+	CitizenshipConceptID    string `json:"citizenship_concept_id"`
+	IdentityTypeConceptID   string `json:"identity_type_concept_id"`
+	JobConceptID            string `json:"job_concept_id"`
+	MaritalStatusConceptID  string `json:"marital_status_concept_id"`
+	BloodTypeConceptID      string `json:"blood_type_concept_id"`
+	Phone                   string `json:"phone"`
+	Email                   string `json:"email"`
+	Address                 string `json:"address"`
+	FamilyID                string `json:"family_id"`
 }
 
 func optText(s string) pgtype.Text {
@@ -137,6 +141,28 @@ func decryptNIK(ctx context.Context, tx pgx.Tx, ciphertext pgtype.Text, key stri
 	return plaintext, err
 }
 
+// personProfile normalizes the submitted profile: empty defaults to "staff"
+// (spec 2026-10-07-registration-validation §7.1); any value outside
+// patient/staff returns "" so the caller responds 400 invalid profile.
+func personProfile(s string) string {
+	if s == "" {
+		return "staff"
+	}
+	if s == "patient" || s == "staff" {
+		return s
+	}
+	return ""
+}
+
+// setNIKExemption stores the NIK-exemption reason/note chosen at create/update
+// time; empty values are stored as NULL (matches migration 000072 CHECKs).
+func setNIKExemption(ctx context.Context, tx pgx.Tx, id pgtype.UUID, exemption, note string) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE core.person SET nik_exemption = NULLIF(btrim($1), ''), nik_exemption_note = NULLIF(btrim($2), '') WHERE id = $3`,
+		exemption, note, id)
+	return err
+}
+
 // CreatePersonHandler godoc
 // @Summary Create a person
 // @Description NIK is encrypted at rest via pgcrypto — echoed back plaintext in this response only.
@@ -156,6 +182,16 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 		var req personRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		profile := personProfile(req.Profile)
+		if profile == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid profile"})
+			return
+		}
+		fields, warnings := validatePerson(req, time.Now())
+		if len(fields) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "validation_failed", "fields": fields})
 			return
 		}
 		birthDate, err := optDate(req.BirthDate)
@@ -205,6 +241,38 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 				return
 			}
 		}
+		// Spec §4/M6(a): duplicate gate only on CREATE with profile patient.
+		var strongDuplicates []sqlcgen.CheckNewPatientDuplicatesRow
+		if profile == "patient" && birthDate.Valid {
+			dups, err := q.CheckNewPatientDuplicates(c.Request.Context(), sqlcgen.CheckNewPatientDuplicatesParams{
+				CompanyID: AuthCompanyID(c), FullName: req.FullName, BirthDate: birthDate,
+				Gender: optText(req.Gender), Phone: optText(req.Phone),
+			})
+			if err != nil {
+				respondInternalError(c, err)
+				return
+			}
+			for _, d := range dups {
+				if d.Score >= 70 {
+					strongDuplicates = append(strongDuplicates, d)
+				}
+			}
+			if len(strongDuplicates) > 0 && req.DuplicateOverrideReason == "" {
+				candidates := make([]gin.H, 0, len(strongDuplicates))
+				for _, d := range strongDuplicates {
+					candidates = append(candidates, gin.H{
+						"id":                d.ID,
+						"medical_record_no": d.MedicalRecordNo,
+						"full_name":         d.FullName,
+						"birth_date":        d.BirthDate,
+						"gender":            d.Gender,
+						"score":             d.Score,
+					})
+				}
+				c.JSON(http.StatusConflict, gin.H{"error": "possible_duplicate", "candidates": candidates})
+				return
+			}
+		}
 		person, err := q.CreatePerson(c.Request.Context(), sqlcgen.CreatePersonParams{
 			CompanyID:              AuthCompanyID(c),
 			Nik:                    nik,
@@ -241,7 +309,22 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		person.Nik = optText(req.NIK) // echo the plaintext just submitted, avoid a decrypt round-trip
-		c.JSON(http.StatusCreated, gin.H{"data": person, "meta": gin.H{}})
+		if err := setNIKExemption(c.Request.Context(), tx, person.ID, req.NIKExemption, req.NIKExemptionNote); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		// Override accepted: mark every strong candidate as a dismissed pair in
+		// the same transaction (spec §4 M6(a)).
+		for _, d := range strongDuplicates {
+			if _, err := q.UpsertDuplicatePair(c.Request.Context(), sqlcgen.UpsertDuplicatePairParams{
+				A: person.ID, B: d.ID, Status: "dismissed",
+				Note: optText(req.DuplicateOverrideReason), Actor: AuthUserID(c),
+			}); err != nil {
+				respondInternalError(c, err)
+				return
+			}
+		}
+		c.JSON(http.StatusCreated, gin.H{"data": person, "meta": gin.H{}, "warnings": warnings})
 	}
 }
 
@@ -444,6 +527,15 @@ func UpdatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if personProfile(req.Profile) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid profile"})
+			return
+		}
+		fields, warnings := validatePerson(req, time.Now())
+		if len(fields) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "validation_failed", "fields": fields})
+			return
+		}
 		birthDate, err := optDate(req.BirthDate)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid birth_date, expected YYYY-MM-DD"})
@@ -514,7 +606,11 @@ func UpdatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		person.Nik = optText(req.NIK)
-		c.JSON(http.StatusOK, gin.H{"data": person, "meta": gin.H{}})
+		if err := setNIKExemption(c.Request.Context(), tx, person.ID, req.NIKExemption, req.NIKExemptionNote); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": person, "meta": gin.H{}, "warnings": warnings})
 	}
 }
 
