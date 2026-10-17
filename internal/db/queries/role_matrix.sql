@@ -71,3 +71,26 @@ SET name = sqlc.arg('name'), description = sqlc.arg('description'),
     requires_physician_data = sqlc.arg('requires_physician_data'), updated_by = sqlc.arg('updated_by')
 WHERE id = sqlc.arg('id') AND row_version = sqlc.arg('row_version') AND deleted_at IS NULL
 RETURNING *;
+
+-- Audit view of role changes (spec 2026-10-08-role-change-history §3).
+-- company_id is explicit: owner roles and the test pool bypass RLS.
+-- name: ListRoleChangeAudit :many
+SELECT l.id, l.role_id, r.name AS role_name, (r.deleted_at IS NOT NULL)::boolean AS role_deleted,
+       l.changed_by, p.full_name AS changed_by_name, l.changed_at, l.reason, l.changes
+FROM core.role_change_log l
+JOIN core.role r ON r.id = l.role_id
+LEFT JOIN core.app_user u ON u.id = l.changed_by
+LEFT JOIN core.person p ON p.id = u.person_id
+WHERE l.company_id = sqlc.arg(company_id)
+  AND l.changed_at >= sqlc.arg(from_time) AND l.changed_at < sqlc.arg(to_time)
+  AND (sqlc.narg(role_id)::uuid IS NULL OR l.role_id = sqlc.narg(role_id))
+  AND (sqlc.narg(changed_by)::uuid IS NULL OR l.changed_by = sqlc.narg(changed_by))
+ORDER BY l.changed_at DESC, l.id DESC
+LIMIT sqlc.arg(row_limit) OFFSET sqlc.arg(row_offset);
+
+-- Every role of the company, soft-deleted included, for the audit filter.
+-- name: ListAuditRoles :many
+SELECT id, name, (deleted_at IS NOT NULL)::boolean AS deleted
+FROM core.role
+WHERE company_id = $1
+ORDER BY name, id;
