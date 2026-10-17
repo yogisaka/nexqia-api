@@ -334,3 +334,71 @@ UPDATE inventory.merchant_setting s SET
     updated_by = sqlc.arg('updated_by')::uuid
 WHERE s.merchant_id = sqlc.arg('merchant_id')::uuid
 RETURNING s.*;
+
+-- §4.6 stock reports (Task 6). Read-only: no balance or move writes.
+
+-- name: ListStockOnHand :many
+SELECT b.location_id, b.source, b.status, b.quantity,
+       l.batch_no, l.expiry_date, l.is_recalled,
+       i.id AS item_id, i.code AS item_code, i.name AS item_name,
+       u.code AS base_unit_code,
+       COALESCE(ic.avg_cost, 0)::numeric AS avg_cost,
+       ROUND(b.quantity * COALESCE(ic.avg_cost, 0), 2)::numeric AS value
+FROM inventory.stock_balance b
+JOIN inventory.lot l ON l.id = b.lot_id
+JOIN inventory.item i ON i.id = b.item_id
+LEFT JOIN inventory.unit u ON u.id = i.base_unit_id
+LEFT JOIN inventory.item_cost ic ON ic.merchant_id = b.merchant_id AND ic.item_id = b.item_id
+WHERE b.merchant_id = $1 AND b.quantity > 0
+  AND (sqlc.narg('location_id')::uuid IS NULL OR b.location_id = sqlc.narg('location_id'))
+  AND (sqlc.narg('item_id')::uuid IS NULL OR b.item_id = sqlc.narg('item_id'))
+  AND (sqlc.narg('status')::text IS NULL OR b.status = sqlc.narg('status'))
+  AND (sqlc.narg('q')::text IS NULL OR i.code ILIKE '%' || sqlc.narg('q') || '%' OR i.name ILIKE '%' || sqlc.narg('q') || '%')
+ORDER BY b.location_id, i.code, l.batch_no, b.id;
+
+-- name: SumStockCardOpening :one
+SELECT COALESCE(SUM(m.quantity), 0)::numeric AS opening
+FROM inventory.stock_move m
+WHERE m.merchant_id = $1 AND m.item_id = $2
+  AND (sqlc.narg('location_id')::uuid IS NULL OR m.location_id = sqlc.narg('location_id'))
+  AND sqlc.narg('from_date')::date IS NOT NULL
+  AND m.move_date < sqlc.narg('from_date')
+  AND (sqlc.narg('to_date')::date IS NULL OR m.move_date <= sqlc.narg('to_date'));
+
+-- name: ListStockCardMoves :many
+SELECT m.id, m.move_date, m.created_at, m.move_type, m.location_id, m.lot_id,
+       m.source, m.status, m.quantity, m.unit_cost, m.ref_type, m.ref_id, m.reason,
+       l.batch_no, l.expiry_date
+FROM inventory.stock_move m
+JOIN inventory.lot l ON l.id = m.lot_id
+WHERE m.merchant_id = $1 AND m.item_id = $2
+  AND (sqlc.narg('location_id')::uuid IS NULL OR m.location_id = sqlc.narg('location_id'))
+  AND (sqlc.narg('from_date')::date IS NULL OR m.move_date >= sqlc.narg('from_date'))
+  AND (sqlc.narg('to_date')::date IS NULL OR m.move_date <= sqlc.narg('to_date'))
+ORDER BY m.move_date, m.created_at, m.id;
+
+-- name: GetMerchantNearExpiryMonths :one
+SELECT near_expiry_months_1, near_expiry_months_2
+FROM inventory.merchant_setting
+WHERE merchant_id = $1;
+
+-- name: ListNearExpiryTotals :many
+SELECT l.expiry_date, SUM(b.quantity)::numeric AS quantity,
+       ROUND(SUM(b.quantity * COALESCE(ic.avg_cost, 0)), 2)::numeric AS value
+FROM inventory.stock_balance b
+JOIN inventory.lot l ON l.id = b.lot_id
+LEFT JOIN inventory.item_cost ic ON ic.merchant_id = b.merchant_id AND ic.item_id = b.item_id
+WHERE b.merchant_id = $1 AND b.quantity > 0 AND l.expiry_date IS NOT NULL
+GROUP BY l.expiry_date
+ORDER BY l.expiry_date;
+
+-- name: ListStockReorderRows :many
+SELECT sl.location_id, sl.item_id, sl.min_qty, sl.max_qty,
+       i.code AS item_code, i.name AS item_name,
+       COALESCE((SELECT SUM(b.quantity) FROM inventory.stock_balance b
+                 WHERE b.merchant_id = sl.merchant_id AND b.location_id = sl.location_id
+                   AND b.item_id = sl.item_id AND b.status = 'available'), 0)::numeric AS available_qty
+FROM inventory.stock_level sl
+JOIN inventory.item i ON i.id = sl.item_id
+WHERE sl.merchant_id = $1
+ORDER BY sl.location_id, i.code;;

@@ -42,6 +42,12 @@ func RegisterStockRoutes(rg *gin.RouterGroup) {
 	rg.POST("/goods-receipts/:id/post", PostGoodsReceiptHandler)
 	rg.POST("/goods-receipts/:id/void", VoidGoodsReceiptHandler)
 
+	// Stock reports (Task 6, spec §4.6) — read-only, PermStockView.
+	rg.GET("/merchants/:id/stock", StockOnHandHandler)
+	rg.GET("/merchants/:id/stock/near-expiry", StockNearExpiryHandler)
+	rg.GET("/merchants/:id/stock/reorder", StockReorderHandler)
+	rg.GET("/merchants/:id/stock-card", StockCardHandler)
+
 	// Stock operations (Task 5, spec §4.3–4.5).
 	rg.POST("/merchants/:id/stock/usage", StockUsageHandler)
 	rg.POST("/merchants/:id/stock/transfers", StockTransferHandler)

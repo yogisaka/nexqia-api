@@ -68,6 +68,7 @@ type stockMoveInput struct {
 	Reason         string
 	OverrideReason string
 	RefID          pgtype.UUID
+	ReversalOf     pgtype.UUID // set on reversal moves (spec §4.1.7)
 	MoveDate       time.Time
 	ReceivedAt     time.Time // only used when the balance row is created here
 }
@@ -137,6 +138,7 @@ func applyStockMove(ctx context.Context, q *sqlcgen.Queries, merchantID, company
 		UnitCost:       in.UnitCost,
 		RefType:        pgText(in.RefType),
 		RefID:          in.RefID,
+		ReversalOf:     in.ReversalOf,
 		Reason:         pgText(in.Reason),
 		OverrideReason: pgText(in.OverrideReason),
 		CreatedBy:      userID,
