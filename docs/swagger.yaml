@@ -702,6 +702,8 @@ definitions:
     - merchant_id
     - name
     type: object
+  server.createSupplierRequest:
+    type: object
   server.departmentCodeMapItem:
     properties:
       code:
@@ -921,6 +923,8 @@ definitions:
         type: string
     required:
     - format
+    type: object
+  server.patchSupplierRequest:
     type: object
   server.patientAllergyRequest:
     properties:
@@ -1259,6 +1263,69 @@ definitions:
         items:
           $ref: '#/definitions/server.serviceRuleInput'
         type: array
+    type: object
+  server.receiptLineRequest:
+    properties:
+      batch_no:
+        type: string
+      bonus_pack_qty:
+        type: string
+      expiry_date:
+        type: string
+      item_id:
+        type: string
+      item_unit_id:
+        type: string
+      line_discount_percent:
+        type: string
+      pack_content:
+        type: string
+      pack_price:
+        type: string
+      pack_qty:
+        type: string
+      short_shelf_life_reason:
+        type: string
+    required:
+    - item_id
+    - item_unit_id
+    - pack_qty
+    type: object
+  server.receiptRequest:
+    properties:
+      freight:
+        type: string
+      invoice_date:
+        type: string
+      invoice_discount:
+        type: string
+      invoice_no:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/server.receiptLineRequest'
+        minItems: 1
+        type: array
+      location_id:
+        type: string
+      note:
+        type: string
+      received_on:
+        type: string
+      row_version:
+        type: integer
+      source:
+        type: string
+      supplier_id:
+        type: string
+      vat_included:
+        type: boolean
+      vat_percent:
+        type: string
+    required:
+    - lines
+    - location_id
+    - received_on
     type: object
   server.receivableAdjustmentRequest:
     properties:
@@ -1929,6 +1996,13 @@ definitions:
         type: string
     type: object
   server.voidChargeRequest:
+    properties:
+      reason:
+        type: string
+    required:
+    - reason
+    type: object
+  server.voidReceiptRequest:
     properties:
       reason:
         type: string
@@ -4849,6 +4923,121 @@ paths:
       summary: Set the reference price (HNA+PPN) of a formulary entry
       tags:
       - inventory
+  /goods-receipts/{id}:
+    get:
+      parameters:
+      - description: Receipt UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Fetch one goods receipt with its lines
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Receipt UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Receipt draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.receiptRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace a draft receipt (header + full line replace)
+      tags:
+      - inventory
+  /goods-receipts/{id}/post:
+    post:
+      parameters:
+      - description: Receipt UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Post a draft goods receipt (lots, balances, HPP, reference price)
+      tags:
+      - inventory
+  /goods-receipts/{id}/void:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Receipt UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Void reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.voidReceiptRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Void a posted goods receipt (reversal moves + HPP rollback)
+      tags:
+      - inventory
   /healthz:
     get:
       produces:
@@ -5827,6 +6016,65 @@ paths:
       summary: Add a company item to a merchant's formulary
       tags:
       - inventory
+  /merchants/{id}/goods-receipts:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by status
+        in: query
+        name: status
+        type: string
+      - description: received_on >= (YYYY-MM-DD)
+        in: query
+        name: from
+        type: string
+      - description: received_on <= (YYYY-MM-DD)
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's goods receipts
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Receipt draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.receiptRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a goods-receipt draft with lines
+      tags:
+      - inventory
   /merchants/{id}/locations:
     get:
       parameters:
@@ -6532,6 +6780,26 @@ paths:
       summary: List service items under a merchant
       tags:
       - tariff
+  /merchants/{id}/suppliers:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the suppliers visible to a merchant (company + its own)
+      tags:
+      - inventory
   /patient-allergies/{id}:
     delete:
       parameters:
@@ -10482,6 +10750,84 @@ paths:
       summary: List the merchant's security setting changes
       tags:
       - settings
+  /suppliers:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Supplier fields
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createSupplierRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a merchant-level or company-level supplier
+      tags:
+      - inventory
+  /suppliers/{id}:
+    delete:
+      parameters:
+      - description: Supplier UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a supplier
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Supplier UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Supplier fields
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.patchSupplierRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a supplier (optimistic locking)
+      tags:
+      - inventory
   /terminology/code-systems:
     get:
       description: Profile is a JSON object (spec 2026-10-01-terminology-import §5);

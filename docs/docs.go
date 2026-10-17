@@ -4503,6 +4503,190 @@ const docTemplate = `{
                 }
             }
         },
+        "/goods-receipts/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Fetch one goods receipt with its lines",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Receipt UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Replace a draft receipt (header + full line replace)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Receipt UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Receipt draft",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.receiptRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/goods-receipts/{id}/post": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Post a draft goods receipt (lots, balances, HPP, reference price)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Receipt UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/goods-receipts/{id}/void": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Void a posted goods receipt (reversal moves + HPP rollback)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Receipt UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Void reason",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.voidReceiptRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/healthz": {
             "get": {
                 "produces": [
@@ -6063,6 +6247,100 @@ const docTemplate = `{
                 }
             }
         },
+        "/merchants/{id}/goods-receipts": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "List a merchant's goods receipts",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "received_on \u003e= (YYYY-MM-DD)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "received_on \u003c= (YYYY-MM-DD)",
+                        "name": "to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Create a goods-receipt draft with lines",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Receipt draft",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.receiptRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/merchants/{id}/locations": {
             "get": {
                 "security": [
@@ -7174,6 +7452,39 @@ const docTemplate = `{
                         "description": "Page offset",
                         "name": "offset",
                         "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/suppliers": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "List the suppliers visible to a merchant (company + its own)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -13358,6 +13669,132 @@ const docTemplate = `{
                 }
             }
         },
+        "/suppliers": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Create a merchant-level or company-level supplier",
+                "parameters": [
+                    {
+                        "description": "Supplier fields",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createSupplierRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/suppliers/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Soft-delete a supplier",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Supplier UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Update a supplier (optimistic locking)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Supplier UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Supplier fields",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.patchSupplierRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/terminology/code-systems": {
             "get": {
                 "security": [
@@ -15062,6 +15499,9 @@ const docTemplate = `{
                 }
             }
         },
+        "server.createSupplierRequest": {
+            "type": "object"
+        },
         "server.departmentCodeMapItem": {
             "type": "object",
             "required": [
@@ -15393,6 +15833,9 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
+        },
+        "server.patchSupplierRequest": {
+            "type": "object"
         },
         "server.patientAllergyRequest": {
             "type": "object",
@@ -15904,6 +16347,99 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/server.serviceRuleInput"
                     }
+                }
+            }
+        },
+        "server.receiptLineRequest": {
+            "type": "object",
+            "required": [
+                "item_id",
+                "item_unit_id",
+                "pack_qty"
+            ],
+            "properties": {
+                "batch_no": {
+                    "type": "string"
+                },
+                "bonus_pack_qty": {
+                    "type": "string"
+                },
+                "expiry_date": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "string"
+                },
+                "item_unit_id": {
+                    "type": "string"
+                },
+                "line_discount_percent": {
+                    "type": "string"
+                },
+                "pack_content": {
+                    "type": "string"
+                },
+                "pack_price": {
+                    "type": "string"
+                },
+                "pack_qty": {
+                    "type": "string"
+                },
+                "short_shelf_life_reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.receiptRequest": {
+            "type": "object",
+            "required": [
+                "lines",
+                "location_id",
+                "received_on"
+            ],
+            "properties": {
+                "freight": {
+                    "type": "string"
+                },
+                "invoice_date": {
+                    "type": "string"
+                },
+                "invoice_discount": {
+                    "type": "string"
+                },
+                "invoice_no": {
+                    "type": "string"
+                },
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/server.receiptLineRequest"
+                    }
+                },
+                "location_id": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "received_on": {
+                    "type": "string"
+                },
+                "row_version": {
+                    "type": "integer"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "supplier_id": {
+                    "type": "string"
+                },
+                "vat_included": {
+                    "type": "boolean"
+                },
+                "vat_percent": {
+                    "type": "string"
                 }
             }
         },
@@ -16917,6 +17453,17 @@ const docTemplate = `{
             }
         },
         "server.voidChargeRequest": {
+            "type": "object",
+            "required": [
+                "reason"
+            ],
+            "properties": {
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.voidReceiptRequest": {
             "type": "object",
             "required": [
                 "reason"
