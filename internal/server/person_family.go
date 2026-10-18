@@ -4,9 +4,12 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
@@ -35,6 +38,54 @@ type personFamilyRequest struct {
 	PositionConceptID      string `json:"position_concept_id"`
 	JobConceptID           string `json:"job_concept_id"`
 	IsResponsiblePerson    bool   `json:"is_responsible_person"`
+}
+
+// familyMerchantLocation resolves the caller's active merchant timezone
+// (X-Merchant-ID header) for the birth_date future check — contract "zona
+// merchant" (spec 2026-10-07-form-validation-stage2 §4.2). Missing or invalid
+// header falls back to merchantTZ's default (Asia/Jakarta) like every other
+// merchant-day computation.
+func familyMerchantLocation(c *gin.Context) *time.Location {
+	merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
+	loc, err := merchantLocation(c.Request.Context(), sqlcgen.New(TxFromContext(c)), merchantID)
+	if err != nil {
+		loc, _ = time.LoadLocation(defaultMerchantTimezone)
+	}
+	return loc
+}
+
+// validatePersonFamilyRules runs the stage-2 per-field rules (spec
+// 2026-10-07-form-validation-stage2 §4.2) on a bound family payload.
+// birthDate must already be parsed (optDate) — only non-empty dates are
+// checked against today in the merchant's timezone (loc).
+func validatePersonFamilyRules(req personFamilyRequest, birthDate pgtype.Date, loc *time.Location) map[string]string {
+	fields := map[string]string{}
+	if req.RelationshipConceptID == "" {
+		fields["relationship_concept_id"] = "Hubungan keluarga wajib dipilih"
+	}
+	if req.IsResponsiblePerson && strings.TrimSpace(req.Phone) == "" {
+		fields["phone"] = "Nomor HP penanggung jawab wajib diisi"
+	} else if req.Phone != "" && !validPhoneID(req.Phone) {
+		fields["phone"] = "Nomor HP tidak valid (contoh 081234567890)"
+	}
+	if req.Email != "" && !validEmail(req.Email) {
+		fields["email"] = "Email tidak valid"
+	}
+	if birthDate.Valid {
+		// Compare calendar dates: optDate parses to UTC midnight, so "today"
+		// is the merchant-local calendar date rebuilt as a UTC midnight
+		// instant (the merchant-local midnight instant itself would be up to
+		// 9h behind and wrongly reject birth dates of today).
+		y, m, d := time.Now().In(loc).Date()
+		today := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+		if birthDate.Time.After(today) {
+			fields["birth_date"] = "Tanggal lahir tidak boleh di masa depan"
+		}
+	}
+	if req.Gender != "" && req.Gender != "male" && req.Gender != "female" {
+		fields["gender"] = "Jenis kelamin tidak valid"
+	}
+	return fields
 }
 
 // ListPersonFamiliesHandler godoc
@@ -83,13 +134,16 @@ func CreatePersonFamilyHandler(c *gin.Context) {
 		return
 	}
 	var req personFamilyRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	birthDate, err := optDate(req.BirthDate)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid birth_date, expected YYYY-MM-DD"})
+		fieldErr(c, "invalid birth_date, expected YYYY-MM-DD", "birth_date", "Format tanggal YYYY-MM-DD")
+		return
+	}
+	if fields := validatePersonFamilyRules(req, birthDate, familyMerchantLocation(c)); len(fields) > 0 {
+		respondFieldErrors(c, "validation_failed", fields)
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
@@ -153,13 +207,16 @@ func UpdatePersonFamilyHandler(c *gin.Context) {
 		return
 	}
 	var req personFamilyRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	birthDate, err := optDate(req.BirthDate)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid birth_date, expected YYYY-MM-DD"})
+		fieldErr(c, "invalid birth_date, expected YYYY-MM-DD", "birth_date", "Format tanggal YYYY-MM-DD")
+		return
+	}
+	if fields := validatePersonFamilyRules(req, birthDate, familyMerchantLocation(c)); len(fields) > 0 {
+		respondFieldErrors(c, "validation_failed", fields)
 		return
 	}
 	family, err := q.UpdatePersonFamily(c.Request.Context(), sqlcgen.UpdatePersonFamilyParams{

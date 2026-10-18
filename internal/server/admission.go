@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -127,6 +129,15 @@ func PayerSummaryHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": summary, "meta": gin.H{}})
 }
 
+// specialPatientTypeValues mirrors the four allowed B5 statuses (spec
+// 2026-10-07-form-validation-stage2 §4.1).
+var specialPatientTypeValues = map[string]bool{
+	"Tidak": true, "BPJS": true, "Pensiunan": true, "Lainnya": true,
+}
+
+// bpjsCardPattern is the JKN card number format: 13 digits (spec §4.1).
+var bpjsCardPattern = regexp.MustCompile(`^[0-9]{13}$`)
+
 type createAdmissionRequest struct {
 	PersonID           string `json:"person_id" binding:"required"`
 	DepartmentID       string `json:"department_id" binding:"required"`
@@ -170,25 +181,24 @@ func CreateAdmissionHandler(c *gin.Context) {
 		return
 	}
 	var req createAdmissionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	personID, ok := parseUUID(req.PersonID)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person_id"})
+		fieldErr(c, "invalid person_id", "person_id", "Pilihan tidak valid")
 		return
 	}
 	departmentID, ok := parseUUID(req.DepartmentID)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid department_id"})
+		fieldErr(c, "invalid department_id", "department_id", "Pilihan tidak valid")
 		return
 	}
 	var primaryPayerID pgtype.UUID
 	if req.PrimaryPayerID != "" {
 		id, ok := parseUUID(req.PrimaryPayerID)
 		if !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid primary_payer_id"})
+			fieldErr(c, "invalid primary_payer_id", "primary_payer_id", "Pilihan tidak valid")
 			return
 		}
 		primaryPayerID = id
@@ -199,6 +209,38 @@ func CreateAdmissionHandler(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	q := sqlcgen.New(TxFromContext(c))
+
+	// Payer type must be known before any write so the BPJS card number check
+	// (spec 2026-10-07-form-validation-stage2 §4.1) can reject bad payloads
+	// before the admission row exists. The later flow resolution reuses this
+	// value instead of querying again.
+	payerType := ""
+	if primaryPayerID.Valid {
+		pt, err := q.GetPayerType(ctx, primaryPayerID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			respondInternalError(c, err)
+			return
+		}
+		payerType = pt
+	}
+
+	// New per-field checks (spec §4.1), collected and answered before any
+	// write happens.
+	fields := map[string]string{}
+	if req.NeedsCompanion && strings.TrimSpace(req.CompanionName) == "" {
+		fields["companion_name"] = "Nama pendamping wajib diisi bila butuh pendamping"
+	}
+	if req.SpecialPatientType != "" && !specialPatientTypeValues[req.SpecialPatientType] {
+		fields["special_patient_type"] = "Status pasien istimewa tidak valid"
+	}
+	if strings.TrimSpace(req.PolicyNumber) != "" && payerType == "bpjs" &&
+		!bpjsCardPattern.MatchString(strings.TrimSpace(req.PolicyNumber)) {
+		fields["policy_number"] = "Nomor kartu BPJS harus 13 digit angka"
+	}
+	if len(fields) > 0 {
+		respondFieldErrors(c, "validation_failed", fields)
+		return
+	}
 
 	// A merged person must not get new admissions (trg_person_not_merged
 	// would abort the insert with a bare 500): resolve the live person
@@ -230,7 +272,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 	if req.ScheduleID != "" {
 		scheduleID, ok := parseUUID(req.ScheduleID)
 		if !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid schedule_id"})
+			fieldErr(c, "invalid schedule_id", "schedule_id", "Pilihan tidak valid")
 			return
 		}
 		pattern, err := q.GetPhysicianScheduleForUpdate(ctx, scheduleID)
@@ -391,20 +433,13 @@ func CreateAdmissionHandler(c *gin.Context) {
 	// default flow when the merchant has none), create the journey, and issue
 	// the first stage's ticket. These writes come after the admission insert,
 	// so every failure must c.Error(err) to roll the whole request back.
-	payerType := ""
-	if primaryPayerID.Valid {
-		payerType, err = q.GetPayerType(ctx, primaryPayerID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			c.Error(err)
-			respondInternalError(c, err)
-			return
-		}
-	}
+	// payerType was already resolved before the admission insert (BPJS card
+	// validation), so no second GetPayerType call is needed here.
 	var explicitFlowID pgtype.UUID
 	if req.FlowID != "" {
 		fid, ok := parseUUID(req.FlowID)
 		if !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid flow_id"})
+			fieldErr(c, "invalid flow_id", "flow_id", "Pilihan tidak valid")
 			return
 		}
 		explicitFlowID = fid
@@ -556,8 +591,7 @@ func UpdateAdmissionHandler(c *gin.Context) {
 		return
 	}
 	var req updateAdmissionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	var dischargeAt pgtype.Timestamptz
