@@ -75,8 +75,7 @@ type createAppUserRequest struct {
 func CreateAppUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createAppUserRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSONOrFields(c, &req) {
 			return
 		}
 		companyID, ok := parseUUID(req.CompanyID)
@@ -249,8 +248,7 @@ func UpdateAppUserHandler(c *gin.Context) {
 		return
 	}
 	var req updateAppUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	personID, ok := parseUUID(req.PersonID)
@@ -317,8 +315,7 @@ func UpdateAppUserPasswordHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 			return
 		}
 		var req updateAppUserPasswordRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSONOrFields(c, &req) {
 			return
 		}
 		hash, err := hasher.Hash(c.Request.Context(), req.Password)
@@ -418,8 +415,7 @@ type createRoleRequest struct {
 // @Router /roles [post]
 func CreateRoleHandler(c *gin.Context) {
 	var req createRoleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	companyID, ok := parseUUID(req.CompanyID)
@@ -565,8 +561,7 @@ func UpdateRoleHandler(c *gin.Context) {
 		return
 	}
 	var req updateRoleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	role, err := q.UpdateRole(c.Request.Context(), sqlcgen.UpdateRoleParams{
@@ -703,8 +698,7 @@ func AddRolePermissionHandler(c *gin.Context) {
 		return
 	}
 	var req addRolePermissionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	permissionID, ok := parseUUID(req.PermissionID)
@@ -809,8 +803,7 @@ func AddUserMerchantRoleHandler(c *gin.Context) {
 		return
 	}
 	var req addUserMerchantRoleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	merchantID, ok := parseUUID(req.MerchantID)

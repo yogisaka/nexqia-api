@@ -153,8 +153,7 @@ func UpdateCompanyHandler(c *gin.Context) {
 		return
 	}
 	var req updateCompanyRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
@@ -223,8 +222,15 @@ type createMerchantRequest struct {
 func CreateMerchantHandler(cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req createMerchantRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSONOrFields(c, &req) {
+			return
+		}
+		switch req.Timezone {
+		case "Asia/Jakarta", "Asia/Makassar", "Asia/Jayapura":
+		default:
+			respondFieldErrors(c, "validation_failed", map[string]string{
+				"timezone": "Zona waktu harus WIB, WITA, atau WIT",
+			})
 			return
 		}
 		companyID, ok := parseUUID(req.CompanyID)
@@ -440,8 +446,15 @@ func UpdateMerchantHandler(c *gin.Context) {
 		return
 	}
 	var req updateMerchantRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
+		return
+	}
+	switch req.Timezone {
+	case "Asia/Jakarta", "Asia/Makassar", "Asia/Jayapura":
+	default:
+		respondFieldErrors(c, "validation_failed", map[string]string{
+			"timezone": "Zona waktu harus WIB, WITA, atau WIT",
+		})
 		return
 	}
 	merchant, err := q.UpdateMerchant(c.Request.Context(), sqlcgen.UpdateMerchantParams{
