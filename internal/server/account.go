@@ -111,8 +111,7 @@ func UpdateMeHandler(c *gin.Context) {
 		return
 	}
 	var req updateMeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
@@ -129,7 +128,7 @@ func UpdateMeHandler(c *gin.Context) {
 	if req.FullName != nil {
 		newFullName = strings.TrimSpace(*req.FullName)
 		if newFullName == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "full_name cannot be empty"})
+			fieldErr(c, "full_name cannot be empty", "full_name", "Wajib diisi")
 			return
 		}
 		if !user.PersonID.Valid {
@@ -146,7 +145,7 @@ func UpdateMeHandler(c *gin.Context) {
 			addr, err := mail.ParseAddress(trimmed)
 			// addr.Address == trimmed also rejects "Name <a@b.c>" display-name forms.
 			if err != nil || addr.Address != trimmed {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
+				fieldErr(c, "invalid email format", "email", "Email tidak valid")
 				return
 			}
 		}
@@ -154,6 +153,13 @@ func UpdateMeHandler(c *gin.Context) {
 	}
 	if req.Phone != nil {
 		trimmed := strings.TrimSpace(*req.Phone)
+		// Empty after trimming = clear the phone (unchanged behavior); a
+		// non-empty value must be a valid Indonesian mobile number
+		// (spec 2026-10-07-form-validation-stage2 §4.3).
+		if trimmed != "" && !validPhoneID(trimmed) {
+			fieldErr(c, "validation_failed", "phone", "Nomor HP tidak valid (contoh 081234567890)")
+			return
+		}
 		params.Phone = pgtype.Text{String: trimmed, Valid: trimmed != ""}
 	}
 	if _, err := q.UpdateOwnAppUserContact(c.Request.Context(), params); err != nil {
@@ -215,8 +221,7 @@ func ChangePasswordHandler(hasher *auth.PasswordHasher, limiter *ratelimit.Limit
 			return
 		}
 		var req changePasswordRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSONOrFields(c, &req) {
 			return
 		}
 		userID := AuthUserID(c)
@@ -231,7 +236,8 @@ func ChangePasswordHandler(hasher *auth.PasswordHasher, limiter *ratelimit.Limit
 			return
 		}
 		if req.NewPassword == req.CurrentPassword {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "new password must differ from the current password"})
+			fieldErr(c, "new password must differ from the current password",
+				"new_password", "Kata sandi baru harus berbeda dari kata sandi lama")
 			return
 		}
 		q := sqlcgen.New(TxFromContext(c))

@@ -1090,8 +1090,10 @@ func RevokeSessionHandler(c *gin.Context) {
 
 var (
 	registerUsernameFormat = regexp.MustCompile(`^[a-z0-9.]+$`)
-	registerPhoneFormat    = regexp.MustCompile(`^(\+62|0)[0-9]{9,13}$`)
-	registerEmailFormat    = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+	// Still used by createPlatformCompanyRequest.validate (platform.go) —
+	// registration (registerRequest.validate) now validates via validPhoneID.
+	registerPhoneFormat = regexp.MustCompile(`^(\+62|0)[0-9]{9,13}$`)
+	registerEmailFormat = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 )
 
 type registerRequest struct {
@@ -1104,18 +1106,22 @@ type registerRequest struct {
 	PasswordConfirmation string `json:"password_confirmation" binding:"required"`
 }
 
-func (r registerRequest) validate() string {
+// validate checks the registration payload's format rules. It returns the old
+// global error text (clients/tests depend on it) plus the offending field so
+// RegisterHandler can attach a per-field message
+// (spec 2026-10-07-form-validation-stage2 §4.5). Empty field = valid.
+func (r registerRequest) validate() (msg string, field string) {
 	switch {
 	case !registerUsernameFormat.MatchString(r.Username):
-		return "username must contain only lowercase letters, digits, and dots"
+		return "username must contain only lowercase letters, digits, and dots", "username"
 	case !registerEmailFormat.MatchString(r.Email):
-		return "invalid email format"
-	case !registerPhoneFormat.MatchString(r.Phone):
-		return "invalid phone number format"
+		return "invalid email format", "email"
+	case !validPhoneID(r.Phone):
+		return "invalid phone number format", "phone"
 	case r.Password != r.PasswordConfirmation:
-		return "password and password_confirmation do not match"
+		return "password and password_confirmation do not match", "password_confirmation"
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -1140,12 +1146,22 @@ func RegisterHandler(pool *pgxpool.Pool, cfg config.Config, hasher *auth.Passwor
 		}
 
 		var req registerRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if !bindJSONOrFields(c, &req) {
 			return
 		}
-		if msg := req.validate(); msg != "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		if msg, field := req.validate(); msg != "" {
+			var fieldMsg string
+			switch field {
+			case "username":
+				fieldMsg = "Hanya huruf kecil, angka, dan titik"
+			case "email":
+				fieldMsg = "Email tidak valid"
+			case "phone":
+				fieldMsg = "Nomor HP tidak valid (contoh 081234567890)"
+			default:
+				fieldMsg = "Konfirmasi kata sandi tidak sama"
+			}
+			fieldErr(c, msg, field, fieldMsg)
 			return
 		}
 		deviceID, deviceLabel, ip, err := deviceHeaders(c)
