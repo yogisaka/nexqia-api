@@ -62,11 +62,11 @@ func formatTimeOfDay(t pgtype.Time) string {
 // effective_from. Shared by the create/update schedule handlers.
 func checkScheduleRanges(c *gin.Context, start, end pgtype.Time, effectiveFrom, effectiveTo pgtype.Date) bool {
 	if end.Microseconds <= start.Microseconds {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "end_time must be after start_time"})
+		fieldErr(c, "end_time must be after start_time", "end_time", "Jam selesai harus setelah jam mulai")
 		return false
 	}
 	if effectiveTo.Valid && effectiveTo.Time.Before(effectiveFrom.Time) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "effective_to must be on or after effective_from"})
+		fieldErr(c, "effective_to must be on or after effective_from", "effective_to", "Tanggal akhir tidak boleh sebelum tanggal mulai")
 		return false
 	}
 	return true
@@ -114,7 +114,7 @@ func resolveScheduleRoom(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.U
 	}
 	loc, err := q.GetLocationByID(c.Request.Context(), roomID)
 	if err != nil || loc.MerchantID != merchantID || loc.Kind != "room" || !locationHasFunction(loc, "practice") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "room must be a practice room"})
+		fieldErr(c, "room must be a practice room", "room_id", "Pilih ruang praktik")
 		return pgtype.UUID{}, false
 	}
 	return roomID, true
@@ -234,8 +234,7 @@ type createPhysicianScheduleRequest struct {
 // @Router /physician-schedules [post]
 func CreatePhysicianScheduleHandler(c *gin.Context) {
 	var req createPhysicianScheduleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	merchantID, ok := parseUUID(req.MerchantID)
@@ -262,22 +261,22 @@ func CreatePhysicianScheduleHandler(c *gin.Context) {
 	}
 	startTime, err := parseTimeOfDay(req.StartTime)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time, expected HH:MM"})
+		fieldErr(c, "invalid start_time, expected HH:MM", "start_time", "Format jam HH:MM")
 		return
 	}
 	endTime, err := parseTimeOfDay(req.EndTime)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time, expected HH:MM"})
+		fieldErr(c, "invalid end_time, expected HH:MM", "end_time", "Format jam HH:MM")
 		return
 	}
 	effectiveFrom, err := optDate(req.EffectiveFrom)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_from, expected YYYY-MM-DD"})
+		fieldErr(c, "invalid effective_from, expected YYYY-MM-DD", "effective_from", "Format tanggal YYYY-MM-DD")
 		return
 	}
 	effectiveTo, err := optDate(req.EffectiveTo)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_to, expected YYYY-MM-DD"})
+		fieldErr(c, "invalid effective_to, expected YYYY-MM-DD", "effective_to", "Format tanggal YYYY-MM-DD")
 		return
 	}
 	if !checkScheduleRanges(c, startTime, endTime, effectiveFrom, effectiveTo) {
@@ -455,28 +454,27 @@ func UpdatePhysicianScheduleHandler(c *gin.Context) {
 		return
 	}
 	var req updatePhysicianScheduleRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	startTime, err := parseTimeOfDay(req.StartTime)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time, expected HH:MM"})
+		fieldErr(c, "invalid start_time, expected HH:MM", "start_time", "Format jam HH:MM")
 		return
 	}
 	endTime, err := parseTimeOfDay(req.EndTime)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time, expected HH:MM"})
+		fieldErr(c, "invalid end_time, expected HH:MM", "end_time", "Format jam HH:MM")
 		return
 	}
 	effectiveFrom, err := optDate(req.EffectiveFrom)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_from, expected YYYY-MM-DD"})
+		fieldErr(c, "invalid effective_from, expected YYYY-MM-DD", "effective_from", "Format tanggal YYYY-MM-DD")
 		return
 	}
 	effectiveTo, err := optDate(req.EffectiveTo)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_to, expected YYYY-MM-DD"})
+		fieldErr(c, "invalid effective_to, expected YYYY-MM-DD", "effective_to", "Format tanggal YYYY-MM-DD")
 		return
 	}
 	if !checkScheduleRanges(c, startTime, endTime, effectiveFrom, effectiveTo) {

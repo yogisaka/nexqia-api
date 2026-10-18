@@ -51,8 +51,7 @@ type createPhysicianLeaveRequest struct {
 // @Router /physician-leaves [post]
 func CreatePhysicianLeaveHandler(c *gin.Context) {
 	var req createPhysicianLeaveRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	merchantID, ok := parseUUID(req.MerchantID)
@@ -70,16 +69,16 @@ func CreatePhysicianLeaveHandler(c *gin.Context) {
 	}
 	dateFrom, ok := parseScheduleDate(req.DateFrom)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date_from, expected YYYY-MM-DD"})
+		fieldErr(c, "invalid date_from, expected YYYY-MM-DD", "date_from", "Format tanggal YYYY-MM-DD")
 		return
 	}
 	dateTo, ok := parseScheduleDate(req.DateTo)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date_to, expected YYYY-MM-DD"})
+		fieldErr(c, "invalid date_to, expected YYYY-MM-DD", "date_to", "Format tanggal YYYY-MM-DD")
 		return
 	}
 	if dateTo.Before(dateFrom) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "date_to must be on or after date_from"})
+		fieldErr(c, "date_to must be on or after date_from", "date_to", "Tanggal akhir tidak boleh sebelum tanggal mulai")
 		return
 	}
 	var substituteID pgtype.UUID
@@ -98,7 +97,7 @@ func CreatePhysicianLeaveHandler(c *gin.Context) {
 			ID: substituteID, MerchantID: merchantID,
 		}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "substitute physician not found in merchant"})
+				fieldErr(c, "substitute physician not found in merchant", "substitute_physician_id", "Dokter pengganti tidak ditemukan di klinik ini")
 				return
 			}
 			respondInternalError(c, err)
@@ -432,8 +431,7 @@ func ResolveLeaveAffectedHandler(c *gin.Context) {
 		return
 	}
 	var req resolveLeaveAffectedRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))

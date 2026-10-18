@@ -94,8 +94,7 @@ type createPhysicianRequest struct {
 // @Router /physicians [post]
 func CreatePhysicianHandler(c *gin.Context) {
 	var req createPhysicianRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	merchantID, ok := parseUUID(req.MerchantID)
@@ -253,8 +252,7 @@ func UpdatePhysicianHandler(c *gin.Context) {
 		return
 	}
 	var req updatePhysicianRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	physician, err := q.UpdatePhysician(c.Request.Context(), sqlcgen.UpdatePhysicianParams{
