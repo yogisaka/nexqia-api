@@ -98,6 +98,32 @@ func TestPersonRegistration_Exemption(t *testing.T) {
 	}
 }
 
+// TestPersonRegistration_ExemptionNoteSpaces — an "other" exemption note that
+// is blank after trimming must fail validation with 400, not reach the DB
+// CHECK chk_person_nik_exemption_note (review fix 2026-10-17).
+func TestPersonRegistration_ExemptionNoteSpaces(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "regpat.note", "081234580007")
+
+	rec := personRegistrationPost(t, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Reg Note Spaces Patient", "gender": "male", "profile": "patient",
+		"birth_date": "1990-01-01", "nik_exemption": "other", "nik_exemption_note": "   ",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp personRegistrationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Fields["nik_exemption_note"] != "Jelaskan alasan tanpa NIK" {
+		t.Fatalf("fields[nik_exemption_note] = %q, want %q", resp.Fields["nik_exemption_note"], "Jelaskan alasan tanpa NIK")
+	}
+}
+
 // TestPersonRegistration_DuplicateGate — a strong candidate (birth date +
 // gender + similar name) blocks with 409 possible_duplicate; resubmitting with
 // a duplicate_override_reason creates the person and records a dismissed pair.

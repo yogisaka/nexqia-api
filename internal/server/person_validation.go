@@ -91,7 +91,7 @@ func validatePerson(req personRequest, today time.Time) (fields map[string]strin
 	if req.NIKExemption != "" && !nikExemptionValues[req.NIKExemption] {
 		fields["nik_exemption"] = "Alasan tanpa NIK tidak valid"
 	}
-	if req.NIKExemption == "other" && req.NIKExemptionNote == "" {
+	if req.NIKExemption == "other" && strings.TrimSpace(req.NIKExemptionNote) == "" {
 		fields["nik_exemption_note"] = "Jelaskan alasan tanpa NIK"
 	}
 

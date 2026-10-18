@@ -80,6 +80,17 @@ func TestValidatePatient(t *testing.T) {
 		}
 	})
 
+	t.Run("exemption_other_note_spaces", func(t *testing.T) {
+		// Blank after trimming must fail validation (review fix 2026-10-17).
+		fields, _ := validatePerson(personRequest{
+			Profile: "patient", FullName: "Budi", Gender: "male",
+			BirthDate: "1990-01-01", NIKExemption: "other", NIKExemptionNote: "   ",
+		}, today)
+		if fields["nik_exemption_note"] != "Jelaskan alasan tanpa NIK" {
+			t.Fatalf("fields[nik_exemption_note] = %q", fields["nik_exemption_note"])
+		}
+	})
+
 	t.Run("future_birth", func(t *testing.T) {
 		fields, _ := validatePerson(personRequest{
 			Profile: "patient", FullName: "Budi", Gender: "male",
