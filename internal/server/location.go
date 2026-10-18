@@ -61,13 +61,12 @@ type createLocationRequest struct {
 // @Router /locations [post]
 func CreateLocationHandler(c *gin.Context) {
 	var req createLocationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	merchantID, ok := parseUUID(req.MerchantID)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid merchant_id"})
+		fieldErr(c, "invalid merchant_id", "merchant_id", "Pilihan tidak valid")
 		return
 	}
 	// Same cross-tenant IDOR rule as departments: check against the body's
@@ -79,7 +78,7 @@ func CreateLocationHandler(c *gin.Context) {
 	if req.ParentID != "" {
 		p, ok := parseUUID(req.ParentID)
 		if !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid parent_id"})
+			fieldErr(c, "invalid parent_id", "parent_id", "Pilihan tidak valid")
 			return
 		}
 		parentID = p
@@ -254,8 +253,7 @@ func UpdateLocationHandler(c *gin.Context) {
 		return
 	}
 	var req updateLocationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	// kind is intentionally absent from the UPDATE — it cannot be changed.
@@ -267,7 +265,7 @@ func UpdateLocationHandler(c *gin.Context) {
 		} else {
 			p, ok := parseUUID(*req.ParentID)
 			if !ok {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid parent_id"})
+				fieldErr(c, "invalid parent_id", "parent_id", "Pilihan tidak valid")
 				return
 			}
 			parentID = p
@@ -402,9 +400,12 @@ func respondLocationError(c *gin.Context, err error) bool {
 	if errors.As(err, &pgErr) && pgErr.Code == "23514" {
 		switch pgErr.ConstraintName {
 		case "chk_location_functions_room":
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "functions are only for rooms"})
+			fieldErr(c, "functions are only for rooms", "functions", "Fungsi hanya untuk ruangan")
 		case "chk_location_site_position":
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "site requires latitude and longitude"})
+			respondFieldErrors(c, "site requires latitude and longitude", map[string]string{
+				"latitude":  "Wajib diisi untuk lokasi site",
+				"longitude": "Wajib diisi untuk lokasi site",
+			})
 		default:
 			if strings.HasPrefix(pgErr.ConstraintName, "chk_location_") {
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid location data"})

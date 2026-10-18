@@ -55,13 +55,12 @@ type createDepartmentRequest struct {
 // @Router /departments [post]
 func CreateDepartmentHandler(c *gin.Context) {
 	var req createDepartmentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	merchantID, ok := parseUUID(req.MerchantID)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid merchant_id"})
+		fieldErr(c, "invalid merchant_id", "merchant_id", "Pilihan tidak valid")
 		return
 	}
 	// Check permission against the body's merchant_id, not X-Merchant-ID —
@@ -186,8 +185,7 @@ func UpdateDepartmentHandler(c *gin.Context) {
 		return
 	}
 	var req updateDepartmentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	department, err := q.UpdateDepartment(c.Request.Context(), sqlcgen.UpdateDepartmentParams{
@@ -329,8 +327,7 @@ func ReplaceDepartmentCodeMapsHandler(c *gin.Context) {
 		return
 	}
 	var req replaceDepartmentCodeMapsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSONOrFields(c, &req) {
 		return
 	}
 	// Validate everything before the first write so a bad item cannot leave a
@@ -342,7 +339,7 @@ func ReplaceDepartmentCodeMapsHandler(c *gin.Context) {
 			return
 		}
 		if item.Code == "" || strings.TrimSpace(item.Code) == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "code is required"})
+			fieldErr(c, "code is required", "code", "Wajib diisi")
 			return
 		}
 		if seen[item.System] {
