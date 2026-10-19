@@ -17,6 +17,7 @@ import (
 	"github.com/yogisaka/nexqia-api/internal/config"
 	"github.com/yogisaka/nexqia-api/internal/mfa"
 	"github.com/yogisaka/nexqia-api/internal/ratelimit"
+	"github.com/yogisaka/nexqia-api/internal/storage"
 	"github.com/yogisaka/nexqia-api/internal/version"
 )
 
@@ -108,6 +109,15 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// 2026-09-29-merchant-security-settings-design.md §7).
 	RegisterSecuritySettingsRoutes(locked, hasher, limiter, redisClient, cfg)
 	RegisterPersonRoutes(locked, cfg)
+	// Patient document upload/download (spec 2026-10-17-patient-documents
+	// §5.1): object storage adapter built once at startup. An invalid
+	// PATIENT_DOC_MAX_MB fails the start; an empty S3_BUCKET keeps booting
+	// with a disabled adapter that answers 503 on document endpoints (K7).
+	objStore, err := storage.NewFromEnv()
+	if err != nil {
+		panic(err)
+	}
+	RegisterPersonDocumentRoutes(locked, objStore)
 	RegisterPersonFamilyRoutes(locked)
 	RegisterPatientAllergyRoutes(locked)
 	RegisterTerminologyRoutes(locked)
