@@ -93,7 +93,7 @@ RETURNING *;
 
 -- name: UpdateQueueFlow :one
 UPDATE operations.queue_flow
-SET name = $2, is_default = $3, is_active = $4, updated_by = $5
+SET name = $2, is_default = $3, is_active = $4, service_types = $5, department_ids = $6, updated_by = $7
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 

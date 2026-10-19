@@ -181,6 +181,22 @@ func optInt2Ptr(p *int32) pgtype.Int2 {
 	return pgtype.Int2{Int16: int16(*p), Valid: true}
 }
 
+// validServiceTypes reports whether types is a non-empty subset of the
+// service types allowed on a queue flow (mirrors the enum in spec §3.1).
+func validServiceTypes(types []string) bool {
+	if len(types) == 0 {
+		return false
+	}
+	for _, t := range types {
+		switch t {
+		case "umum", "bpjs", "asuransi":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 type createQueueFlowRequest struct {
 	MerchantID    string       `json:"merchant_id" binding:"required"`
 	Name          string       `json:"name" binding:"required"`
@@ -193,6 +209,7 @@ type createQueueFlowRequest struct {
 
 // CreateQueueFlowHandler godoc
 // @Summary Create a queue flow, optionally with its stages
+// @Description service_types must be a non-empty subset of umum, bpjs, asuransi.
 // @Tags queue-flow
 // @Accept json
 // @Produce json
@@ -225,6 +242,10 @@ func CreateQueueFlowHandler(c *gin.Context) {
 	serviceTypes := req.ServiceTypes
 	if len(serviceTypes) == 0 {
 		serviceTypes = []string{"umum", "bpjs", "asuransi"}
+	}
+	if !validServiceTypes(serviceTypes) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "service_types must be a non-empty subset of umum, bpjs, asuransi"})
+		return
 	}
 	deptIDs := make([]pgtype.UUID, 0, len(req.DepartmentIDs))
 	for _, raw := range req.DepartmentIDs {
@@ -311,13 +332,18 @@ func ListQueueFlowsHandler(c *gin.Context) {
 }
 
 type updateQueueFlowRequest struct {
-	Name      *string `json:"name"`
-	IsDefault *bool   `json:"is_default"`
-	IsActive  *bool   `json:"is_active"`
+	Name          *string   `json:"name"`
+	IsDefault     *bool     `json:"is_default"`
+	IsActive      *bool     `json:"is_active"`
+	ServiceTypes  *[]string `json:"service_types"`
+	DepartmentIDs *[]string `json:"department_ids"`
 }
 
 // UpdateQueueFlowHandler godoc
 // @Summary Update a queue flow
+// @Description Merge-patches the flow: fields left out keep their current
+// @Description value (unsent fields are preserved), including service_types
+// @Description and department_ids (empty department_ids list = all polis).
 // @Tags queue-flow
 // @Accept json
 // @Produce json
@@ -325,6 +351,7 @@ type updateQueueFlowRequest struct {
 // @Param id path string true "Flow UUID"
 // @Param request body updateQueueFlowRequest true "Flow fields"
 // @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
 // @Failure 404 {object} apiErrorResponse
 // @Router /queue-flows/{id} [patch]
 func UpdateQueueFlowHandler(c *gin.Context) {
@@ -356,10 +383,41 @@ func UpdateQueueFlowHandler(c *gin.Context) {
 	if req.Name != nil {
 		name = *req.Name
 	}
+	// Start from the loaded flow so every unsent field is preserved, then
+	// override with the request fields that are present (nil = not sent).
+	isDefault := flow.IsDefault
+	if req.IsDefault != nil {
+		isDefault = *req.IsDefault
+	}
+	isActive := flow.IsActive
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+	serviceTypes := flow.ServiceTypes
+	if req.ServiceTypes != nil {
+		if !validServiceTypes(*req.ServiceTypes) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "service_types must be a non-empty subset of umum, bpjs, asuransi"})
+			return
+		}
+		serviceTypes = *req.ServiceTypes
+	}
+	deptIDs := flow.DepartmentIds
+	if req.DepartmentIDs != nil {
+		parsed := make([]pgtype.UUID, 0, len(*req.DepartmentIDs))
+		for _, raw := range *req.DepartmentIDs {
+			id, ok := parseUUID(raw)
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid department_ids entry"})
+				return
+			}
+			parsed = append(parsed, id)
+		}
+		deptIDs = parsed
+	}
 	updated, err := q.UpdateQueueFlow(ctx, sqlcgen.UpdateQueueFlowParams{
 		ID: id, Name: name,
-		IsDefault: req.IsDefault != nil && *req.IsDefault,
-		IsActive:  req.IsActive == nil || *req.IsActive,
+		IsDefault: isDefault, IsActive: isActive,
+		ServiceTypes: serviceTypes, DepartmentIds: deptIDs,
 		UpdatedBy: AuthUserID(c),
 	})
 	if isUniqueViolation(err) {

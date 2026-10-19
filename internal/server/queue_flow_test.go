@@ -304,3 +304,125 @@ func TestCounter_StageBinding(t *testing.T) {
 		t.Fatalf("PATCH must keep queue_type, got %v", updated["queue_type"])
 	}
 }
+
+// TestQueueFlow_UpdateScope covers the PATCH merge-patch contract (plan
+// 2026-10-08-queue-settings-redesign §3.1): unsent fields are preserved,
+// service_types/department_ids become editable, and validation is enforced.
+func TestQueueFlow_UpdateScope(t *testing.T) {
+	env := qeNewEnv(t, "scope")
+
+	// 1. Create a flow from the simple preset, then promote it to default.
+	code, resp := qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/from-preset/simple",
+		map[string]string{"merchant_id": env.merchantID})
+	if code != http.StatusCreated {
+		t.Fatalf("preset simple expected 201, got %d: %v", code, resp)
+	}
+	flowID := resp["data"].(map[string]any)["id"].(string)
+
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{"is_default": true})
+	if code != http.StatusOK {
+		t.Fatalf("PATCH is_default expected 200, got %d: %v", code, resp)
+	}
+	if d := resp["data"].(map[string]any); d["is_default"] != true {
+		t.Fatalf("PATCH is_default not applied: %v", d)
+	}
+
+	// 2. Rename only — is_default and is_active must survive.
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{"name": "Alur Baru"})
+	if code != http.StatusOK {
+		t.Fatalf("PATCH name expected 200, got %d: %v", code, resp)
+	}
+	d := resp["data"].(map[string]any)
+	if d["name"] != "Alur Baru" || d["is_default"] != true || d["is_active"] != true {
+		t.Fatalf("PATCH must keep unsent fields (is_default, is_active), got %v", d)
+	}
+
+	// 3. Deactivate, then rename again — is_active must stay false.
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{"is_active": false})
+	if code != http.StatusOK {
+		t.Fatalf("PATCH is_active=false expected 200, got %d: %v", code, resp)
+	}
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{"name": "Alur Lagi"})
+	if code != http.StatusOK {
+		t.Fatalf("PATCH name 2 expected 200, got %d: %v", code, resp)
+	}
+	if d = resp["data"].(map[string]any); d["name"] != "Alur Lagi" || d["is_active"] != false {
+		t.Fatalf("PATCH must keep is_active=false, got %v", d)
+	}
+
+	// 4. Scope fields are editable: set both, then clear department_ids only.
+	deptID := "11111111-1111-1111-1111-111111111111"
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{
+		"service_types": []string{"umum"}, "department_ids": []string{deptID},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("PATCH scope expected 200, got %d: %v", code, resp)
+	}
+	d = resp["data"].(map[string]any)
+	if got, ok := d["service_types"].([]any); !ok || len(got) != 1 || got[0] != "umum" {
+		t.Fatalf("expected service_types [umum], got %v", d["service_types"])
+	}
+	if got, ok := d["department_ids"].([]any); !ok || len(got) != 1 || got[0] != deptID {
+		t.Fatalf("expected department_ids [%s], got %v", deptID, d["department_ids"])
+	}
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{
+		"department_ids": []string{},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("PATCH empty department_ids expected 200, got %d: %v", code, resp)
+	}
+	d = resp["data"].(map[string]any)
+	if got, ok := d["department_ids"].([]any); !ok || len(got) != 0 {
+		t.Fatalf("expected empty department_ids, got %v", d["department_ids"])
+	}
+	if got, ok := d["service_types"].([]any); !ok || len(got) != 1 || got[0] != "umum" {
+		t.Fatalf("empty department_ids must keep service_types [umum], got %v", d["service_types"])
+	}
+
+	// 5. Invalid scope fields → 400 and the stored scope is untouched.
+	const scopeErr = "service_types must be a non-empty subset of umum, bpjs, asuransi"
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{
+		"service_types": []string{},
+	})
+	if code != http.StatusBadRequest || resp["error"] != scopeErr {
+		t.Fatalf("empty service_types: expected 400 %q, got %d: %v", scopeErr, code, resp)
+	}
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{
+		"service_types": []string{"vip"},
+	})
+	if code != http.StatusBadRequest || resp["error"] != scopeErr {
+		t.Fatalf("vip service_types: expected 400 %q, got %d: %v", scopeErr, code, resp)
+	}
+	code, resp = qeRequest(t, env, http.MethodPatch, "/api/v1/queue-flows/"+flowID, map[string]any{
+		"department_ids": []string{"bukan-uuid"},
+	})
+	if code != http.StatusBadRequest || resp["error"] != "invalid department_ids entry" {
+		t.Fatalf("bad department_ids: expected 400, got %d: %v", code, resp)
+	}
+	// GET list: the failed PATCHes must not have changed service_types.
+	code, resp = qeRequest(t, env, http.MethodGet, "/api/v1/merchants/"+env.merchantID+"/queue-flows", nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET list expected 200, got %d: %v", code, resp)
+	}
+	var found bool
+	for _, e := range resp["data"].([]any) {
+		f := e.(map[string]any)
+		if f["id"] == flowID {
+			found = true
+			if got, ok := f["service_types"].([]any); !ok || len(got) != 1 || got[0] != "umum" {
+				t.Fatalf("failed PATCHes must not change service_types, got %v", f["service_types"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("flow %s missing from list", flowID)
+	}
+
+	// 6. POST with an invalid service_types value → same 400 message.
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows", map[string]any{
+		"merchant_id": env.merchantID, "name": "Alur X", "service_types": []string{"vip"},
+	})
+	if code != http.StatusBadRequest || resp["error"] != scopeErr {
+		t.Fatalf("POST vip service_types: expected 400 %q, got %d: %v", scopeErr, code, resp)
+	}
+}

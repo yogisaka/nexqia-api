@@ -12264,6 +12264,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "service_types must be a non-empty subset of umum, bpjs, asuransi.",
                 "consumes": [
                     "application/json"
                 ],
@@ -12409,6 +12410,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Merge-patches the flow: fields left out keep their current\nvalue (unsent fields are preserved), including service_types\nand department_ids (empty department_ids list = all polis).",
                 "consumes": [
                     "application/json"
                 ],
@@ -12442,6 +12444,12 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
                         }
                     },
                     "404": {
@@ -18429,6 +18437,12 @@ const docTemplate = `{
         "server.updateQueueFlowRequest": {
             "type": "object",
             "properties": {
+                "department_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "is_active": {
                     "type": "boolean"
                 },
@@ -18437,6 +18451,12 @@ const docTemplate = `{
                 },
                 "name": {
                     "type": "string"
+                },
+                "service_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
