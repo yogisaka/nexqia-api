@@ -216,8 +216,16 @@ func TestPatientCoverage_Guarantors(t *testing.T) {
 	status, out = qeRequest(t, env, http.MethodPatch, "/api/v1/merchants/"+env.merchantID+"/billing-profile",
 		map[string]any{"bpjs_cooperation": "fktp_capitation"})
 	payMapData(t, status, out, http.StatusOK)
+	// Private plans exist; a guarantor referencing a coverage with a plan but
+	// without an explicit plan_id must inherit the coverage's plan.
+	privPlanID := pcCreatePlan(t, env, privID, "PL-G")
+	status, out = pcPost(t, env, personID, map[string]any{
+		"payer_id": privID, "plan_id": privPlanID, "member_number": "MB-G3",
+	})
+	privCov := payMapData(t, status, out, http.StatusCreated)
+	privCovID, _ := privCov["id"].(string)
 	status, out = put([]map[string]any{
-		{"payer_id": privID, "guarantor_name": "Asuransi Gantung"},
+		{"payer_id": privID, "guarantor_name": "Asuransi Gantung", "coverage_id": privCovID},
 		{"payer_id": bpjsID, "coverage_id": covAID, "policy_number": "POL-1"},
 	})
 	if status != http.StatusOK {
@@ -232,6 +240,10 @@ func TestPatientCoverage_Guarantors(t *testing.T) {
 	if g0["payer_id"] != bpjsID || g0["sequence"] != float64(1) ||
 		g0["coverage_id"] != covAID || g0["policy_number"] != "POL-1" {
 		t.Fatalf("guarantor[0] = %v", g0)
+	}
+	// plan_id inherited from the coverage (request omits plan_id).
+	if g1["plan_id"] != privPlanID {
+		t.Fatalf("guarantor[1].plan_id = %v, want %s", g1["plan_id"], privPlanID)
 	}
 	if g1["payer_id"] != privID || g1["sequence"] != float64(2) || g1["guarantor_name"] != "Asuransi Gantung" {
 		t.Fatalf("guarantor[1] = %v", g1)

@@ -588,6 +588,7 @@ func PutAdmissionGuarantorsHandler(c *gin.Context) {
 			return
 		}
 		var coverageID pgtype.UUID
+		var covPlanID pgtype.UUID
 		if g.CoverageID != "" {
 			covID, okID := parseUUID(g.CoverageID)
 			if !okID {
@@ -609,10 +610,17 @@ func PutAdmissionGuarantorsHandler(c *gin.Context) {
 				return
 			}
 			coverageID = covID
+			covPlanID = cov.PlanID
 		}
 		planID, okPlan := resolveCoveragePlan(c, q, payer, g.PlanID)
 		if !okPlan {
 			return
+		}
+		// A guarantor without an explicit plan inherits the plan of its
+		// coverage (the same fallback recomputeAccount applies) so annual
+		// usage matching on admission_guarantor.plan_id stays correct.
+		if !planID.Valid {
+			planID = covPlanID
 		}
 		items = append(items, gItem{in: g, payer: payer, coverageID: coverageID, planID: planID})
 	}
