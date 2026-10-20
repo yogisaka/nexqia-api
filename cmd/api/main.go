@@ -49,6 +49,7 @@ func main() {
 
 	// Integration queue worker (internal/connect); adapters register in C2.
 	connectRegistry := connect.NewRegistry()
+	connectRegistry.Register(connect.ProviderSatusehat, connect.NewSatusehatAdapter())
 	slog.Info("connect worker started")
 	go connect.RunWorker(ctx, pool, connectRegistry, cfg)
 
