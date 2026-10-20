@@ -240,12 +240,20 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 			if remaining <= 0 {
 				break
 			}
-			u, uc, g, err := grossAt(p.PriceListID)
+			_, _, gP, err := grossAt(p.PriceListID) // contract-rate cap (spec 2026-10-19 §4.2)
 			if err != nil {
 				return splitResult{}, err
 			}
 			cover := remaining
 			var notes []string
+
+			// Contract-rate cap: the payer bears at most its contract rate; the
+			// difference stays in `remaining` and flows to the next payer/patient
+			// (user decision 2026-10-19 — pass-through, NOT a facility discount).
+			if diff := remaining - gP; diff > 0 {
+				cover -= diff
+				notes = append(notes, "contract rate")
+			}
 
 			discount := int64(0)
 			if bp := p.DiscountBP[ch.ItemID]; bp > 0 {
@@ -346,12 +354,12 @@ func splitAccount(charges []splitCharge, payers []splitPayer, defaultListID stri
 			if cover > 0 || len(notes) > 0 {
 				parts = append(parts, splitPart{
 					Party: "payer", PayerID: p.PayerID, PriceListID: p.PriceListID,
-					UnitCents: u, GrossCents: g, DiscountCents: discount,
+					UnitCents: unit, GrossCents: gross, DiscountCents: discount,
 					AmountCents: cover, Note: joinNotes(notes),
-					Components: componentShare(uc, g, cover),
+					Components: componentShare(comps, gross, cover),
 				})
-				// Contractual discount is waived (absorbed by the facility),
-				// not passed on to the next payer or the patient.
+				// Rule discounts are waived (absorbed by the facility); the contract-
+				// rate difference is NOT subtracted — it flows onward (spec 2026-10-19 §4.2).
 				remaining -= cover + discount
 				if cover > 0 {
 					carried = true
