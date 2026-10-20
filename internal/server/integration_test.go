@@ -150,11 +150,12 @@ func TestSatusehatConfigPutGet(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("PUT config = %d %v", status, out)
 	}
-	if out["configured"] != true || out["credential_set"] != true || out["is_active"] != true {
+	data, _ := out["data"].(map[string]any)
+	if data["configured"] != true || data["credential_set"] != true || data["is_active"] != true {
 		t.Fatalf("PUT response = %v", out)
 	}
-	if out["base_url"] != "https://satu.test" {
-		t.Fatalf("base_url = %v", out["base_url"])
+	if data["base_url"] != "https://satu.test" {
+		t.Fatalf("base_url = %v", data["base_url"])
 	}
 	raw, _ := json.Marshal(out)
 	if strings.Contains(string(raw), "cs-1") || strings.Contains(string(raw), "client_id") || strings.Contains(string(raw), "client_secret") {
@@ -163,7 +164,8 @@ func TestSatusehatConfigPutGet(t *testing.T) {
 
 	// GET shape matches the PUT response.
 	status, out = qeRequest(t, env, http.MethodGet, satConfigPath(env.merchantID), nil)
-	if status != http.StatusOK || out["credential_set"] != true || out["configured"] != true {
+	data, _ = out["data"].(map[string]any)
+	if status != http.StatusOK || data["credential_set"] != true || data["configured"] != true {
 		t.Fatalf("GET config = %d %v", status, out)
 	}
 
@@ -217,7 +219,8 @@ func TestSatusehatSyncOrgLocation(t *testing.T) {
 	}
 
 	status, out = qeRequest(t, env, http.MethodPost, satConfigPath(env.merchantID)+"/sync", nil)
-	if status != http.StatusOK || out["enqueued"] != float64(3) || out["organization"] != float64(1) || out["locations"] != float64(2) {
+	data, _ := out["data"].(map[string]any)
+	if status != http.StatusOK || data["enqueued"] != float64(3) || data["organization"] != float64(1) || data["locations"] != float64(2) {
 		t.Fatalf("POST sync = %d %v", status, out)
 	}
 
@@ -280,7 +283,8 @@ func TestSatusehatSyncOrgLocation(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("GET status = %d %v", status, out)
 	}
-	resources, _ := out["resources"].([]any)
+	data, _ = out["data"].(map[string]any)
+	resources, _ := data["resources"].([]any)
 	if len(resources) != 3 {
 		t.Fatalf("status resources = %d, want 3: %v", len(resources), out)
 	}
@@ -292,7 +296,8 @@ func TestSatusehatSyncOrgLocation(t *testing.T) {
 		t.Fatalf("fail map row: %v", err)
 	}
 	status, out = qeRequest(t, env, http.MethodPost, satConfigPath(env.merchantID)+"/sync", nil)
-	if status != http.StatusOK || out["enqueued"] != float64(3) {
+	data, _ = out["data"].(map[string]any)
+	if status != http.StatusOK || data["enqueued"] != float64(3) {
 		t.Fatalf("POST sync (a) = %d %v", status, out)
 	}
 	st, _ := satMapState(t, ctx, env, "core.location", siteID, "Location")

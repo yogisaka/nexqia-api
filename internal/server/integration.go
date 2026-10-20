@@ -64,7 +64,7 @@ func satusehatConfigResponse(c *gin.Context, merchantID pgtype.UUID) bool {
 	q := sqlcgen.New(TxFromContext(c))
 	row, err := q.GetSatusehatConfigByMerchant(c.Request.Context(), merchantID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusOK, gin.H{"configured": false})
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"configured": false}, "meta": gin.H{}})
 		return true
 	}
 	if err != nil {
@@ -79,13 +79,13 @@ func satusehatConfigResponse(c *gin.Context, merchantID pgtype.UUID) bool {
 	if row.BaseUrl.Valid {
 		baseURL = row.BaseUrl.String
 	}
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"configured":     true,
 		"base_url":       baseURL,
 		"config":         cfgJSON,
 		"is_active":      row.IsActive,
 		"credential_set": row.CredentialSet,
-	})
+	}, "meta": gin.H{}})
 	return true
 }
 
@@ -279,11 +279,11 @@ func postSatusehatSyncHandler() gin.HandlerFunc {
 				return
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
 			"enqueued":     1 + len(locations),
 			"organization": 1,
 			"locations":    len(locations),
-		})
+		}, "meta": gin.H{}})
 	}
 }
 
@@ -326,6 +326,6 @@ func getSatusehatStatusHandler() gin.HandlerFunc {
 				"updated_at":         r.UpdatedAt,
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{"resources": resources})
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"resources": resources}, "meta": gin.H{}})
 	}
 }
