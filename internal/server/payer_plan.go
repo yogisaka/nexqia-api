@@ -33,6 +33,9 @@ var facilityTypes = map[string]bool{
 	"praktik_dokter_gigi": true, "praktik_bidan": true, "puskesmas": true, "rumah_sakit": true,
 }
 
+// hospitalClasses — klasifikasi RS Permenkes 6/2026 Ps 12.
+var hospitalClasses = map[string]bool{"paripurna": true, "utama": true, "madya": true, "dasar": true}
+
 var bpjsCooperationTypes = map[string]bool{"none": true, "fktp_capitation": true, "fktp_network": true, "fkrtl": true}
 
 // numStr2 renders a numeric column as a 2-decimal decimal string.
@@ -997,13 +1000,17 @@ type updateBillingProfileRequest struct {
 	BpjsCooperation    *string `json:"bpjs_cooperation"`
 	BpjsNetworkParent  *string `json:"bpjs_network_parent"`
 	DefaultPriceListID *string `json:"default_price_list_id"`
+	HospitalClass      *string `json:"hospital_class"`
 }
 
 // billingProfileJSON renders the facility/BPJS profile subset of a merchant.
 func billingProfileJSON(m sqlcgen.CoreMerchant) gin.H {
-	var facilityType, networkParent, priceListID any
+	var facilityType, networkParent, priceListID, hospitalClass any
 	if m.FacilityType.Valid {
 		facilityType = m.FacilityType.String
+	}
+	if m.HospitalClass.Valid {
+		hospitalClass = m.HospitalClass.String
 	}
 	if m.BpjsNetworkParent.Valid {
 		networkParent = m.BpjsNetworkParent.String
@@ -1016,6 +1023,7 @@ func billingProfileJSON(m sqlcgen.CoreMerchant) gin.H {
 		"bpjs_cooperation":      m.BpjsCooperation,
 		"bpjs_network_parent":   networkParent,
 		"default_price_list_id": priceListID,
+		"hospital_class":        hospitalClass,
 	}
 }
 
@@ -1067,6 +1075,20 @@ func UpdateMerchantBillingProfileHandler(c *gin.Context) {
 			facilityType = pgtype.Text{String: *req.FacilityType, Valid: true}
 		}
 	}
+	hospitalClass := merchant.HospitalClass
+	if req.HospitalClass != nil {
+		if *req.HospitalClass == "" {
+			hospitalClass = pgtype.Text{}
+		} else if !(facilityType.Valid && facilityType.String == "rumah_sakit") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "hospital_class requires facility_type rumah_sakit"})
+			return
+		} else if !hospitalClasses[*req.HospitalClass] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid hospital_class"})
+			return
+		} else {
+			hospitalClass = pgtype.Text{String: *req.HospitalClass, Valid: true}
+		}
+	}
 	cooperation := merchant.BpjsCooperation
 	if req.BpjsCooperation != nil {
 		if !bpjsCooperationTypes[*req.BpjsCooperation] {
@@ -1087,6 +1109,10 @@ func UpdateMerchantBillingProfileHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "network FKTP needs the parent FKTP"})
 		return
 	}
+	if hospitalClass.Valid && !(facilityType.Valid && facilityType.String == "rumah_sakit") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hospital_class requires facility_type rumah_sakit"})
+		return
+	}
 	priceListID := merchant.DefaultPriceListID
 	if req.DefaultPriceListID != nil {
 		parsed, okList := resolvePayerPriceList(c, q, merchantID, *req.DefaultPriceListID)
@@ -1098,6 +1124,7 @@ func UpdateMerchantBillingProfileHandler(c *gin.Context) {
 	updated, err := q.UpdateMerchantBillingProfile(c.Request.Context(), sqlcgen.UpdateMerchantBillingProfileParams{
 		ID: merchantID, FacilityType: facilityType, BpjsCooperation: cooperation,
 		BpjsNetworkParent: networkParent, DefaultPriceListID: priceListID,
+		HospitalClass: hospitalClass,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError

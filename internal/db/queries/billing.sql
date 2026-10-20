@@ -133,11 +133,13 @@ JOIN core.template t ON t.id = tpi.template_id
 WHERE si.merchant_id = $1 AND si.deleted_at IS NULL
   AND t.code = 'bpjs_nonkapitasi_2023' AND t.kind = 'price_list';
 
--- Merchant billing profile (facility BPJS profile, 000068 §3.1).
+-- Merchant billing profile (facility BPJS profile, 000068 §3.1; RS
+-- classification Permenkes 6/2026 Ps 12).
 
 -- name: UpdateMerchantBillingProfile :one
 UPDATE core.merchant
-SET facility_type = $2, bpjs_cooperation = $3, bpjs_network_parent = $4, default_price_list_id = $5
+SET facility_type = $2, bpjs_cooperation = $3, bpjs_network_parent = $4, default_price_list_id = $5,
+    hospital_class = $6
 WHERE id = $1
 RETURNING *;
 

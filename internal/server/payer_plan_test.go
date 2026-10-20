@@ -505,6 +505,9 @@ func TestPayer_BillingProfile(t *testing.T) {
 	if profile["facility_type"] != "klinik_pratama" || profile["bpjs_cooperation"] != "none" {
 		t.Fatalf("profile after facility patch = %v", profile)
 	}
+	if v, ok := profile["hospital_class"]; !ok || v != nil {
+		t.Fatalf("hospital_class on fresh merchant = %v (ok=%v)", v, ok)
+	}
 
 	// fktp_network without parent → 400 with the exact contract message.
 	status, out = qeRequest(t, env, http.MethodPatch, "/api/v1/merchants/"+env.merchantID+"/billing-profile",
@@ -540,6 +543,77 @@ func TestPayer_BillingProfile(t *testing.T) {
 	}
 	if merchant["BpjsNetworkParent"] != "Puskesmas Sukamaju" || merchant["DefaultPriceListID"] != listID {
 		t.Fatalf("merchant payload = %v", merchant)
+	}
+}
+
+// TestMerchantHospitalClass — hospital_class PATCH (Permenkes 6/2026 Ps 12):
+// valid values only on rumah_sakit merchants, clearing works, and the DB
+// CHECK constraint backstops direct app_runtime writes.
+func TestMerchantHospitalClass(t *testing.T) {
+	env := payNewEnv(t, "hospclass")
+	patchProfile := func(body map[string]any) (int, map[string]any) {
+		return qeRequest(t, env, http.MethodPatch, "/api/v1/merchants/"+env.merchantID+"/billing-profile", body)
+	}
+
+	// (b) hospital_class while facility is not yet RS → 400 (fresh merchant,
+	// before (a) turns it into a rumah_sakit).
+	status, out := patchProfile(map[string]any{"hospital_class": "super"})
+	if status != http.StatusBadRequest || plErrorMsg(out) != "hospital_class requires facility_type rumah_sakit" {
+		t.Fatalf("patch (b) = %d %v", status, out)
+	}
+
+	// (a) RS + hospital_class → 200, echoed in PATCH and GET.
+	status, out = patchProfile(map[string]any{"facility_type": "rumah_sakit", "hospital_class": "utama"})
+	profile := payMapData(t, status, out, http.StatusOK)
+	if profile["hospital_class"] != "utama" {
+		t.Fatalf("patch (a) = %d %v", status, profile)
+	}
+	status, out = qeRequest(t, env, http.MethodGet, "/api/v1/merchants/"+env.merchantID, nil)
+	merchant := payMapData(t, status, out, http.StatusOK)
+	if merchant["HospitalClass"] != "utama" {
+		t.Fatalf("merchant after (a) = %v", merchant)
+	}
+
+	// (c) class together with a non-RS facility_type → 400.
+	status, out = patchProfile(map[string]any{"hospital_class": "paripurna", "facility_type": "klinik_utama"})
+	if status != http.StatusBadRequest || plErrorMsg(out) != "hospital_class requires facility_type rumah_sakit" {
+		t.Fatalf("patch (c) = %d %v", status, out)
+	}
+
+	// (d) facility_type → non-RS while class remains set → 400.
+	status, out = patchProfile(map[string]any{"facility_type": "klinik_utama"})
+	if status != http.StatusBadRequest || plErrorMsg(out) != "hospital_class requires facility_type rumah_sakit" {
+		t.Fatalf("patch (d) = %d %v", status, out)
+	}
+
+	// (e) facility downgraded AND class cleared together → 200, null class.
+	status, out = patchProfile(map[string]any{"facility_type": "klinik_utama", "hospital_class": ""})
+	profile = payMapData(t, status, out, http.StatusOK)
+	if profile["facility_type"] != "klinik_utama" || profile["hospital_class"] != nil {
+		t.Fatalf("patch (e) = %d %v", status, profile)
+	}
+
+	// (f) unknown class value → 400 (merchant back on rumah_sakit first).
+	status, out = patchProfile(map[string]any{"facility_type": "rumah_sakit"})
+	payMapData(t, status, out, http.StatusOK)
+	status, out = patchProfile(map[string]any{"hospital_class": "besar"})
+	if status != http.StatusBadRequest || plErrorMsg(out) != "invalid hospital_class" {
+		t.Fatalf("patch (f) = %d %v", status, out)
+	}
+
+	// Back to a non-RS facility for the DB backstop; class is cleared (nil).
+	status, out = patchProfile(map[string]any{"facility_type": "klinik_utama"})
+	payMapData(t, status, out, http.StatusOK)
+
+	// (g) DB backstop: direct app_runtime write of a class on a non-RS
+	// merchant is rejected by chk_merchant_hospital_class.
+	ctx := context.Background()
+	tx := runtimeTenantTx(t, ctx, env.pool, env.companyID, env.merchantID)
+	savepointExec(t, ctx, tx, "hospital_class on klinik",
+		"chk_merchant_hospital_class",
+		"UPDATE core.merchant SET hospital_class = 'utama' WHERE id = $1", env.merchantID)
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback backstop tx: %v", err)
 	}
 }
 
