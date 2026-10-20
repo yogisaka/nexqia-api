@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,6 +43,9 @@ func setupConsentEnv(t *testing.T, username string) *consentEnv {
 	tenant := v1.Group("", server.TenantMiddleware(pool))
 	protected := tenant.Group("", server.AuthMiddleware(testJWTSecret))
 	server.RegisterPersonConsentRoutes(protected)
+	// Document routes with a fake store, so tests can upload a referenced
+	// person_document (pattern: setupDocEnv in person_document_test.go).
+	server.RegisterPersonDocumentRoutes(protected, newFakeObjectStorage(1<<20))
 
 	companyID, merchantID, userID, token, refreshCookie := seedAccountOwner(t, ctx, pool, seedRouter, username, docPhone())
 	createPersonViaAPI(t, seedRouter, token, companyID, merchantID, "Consent Person "+username, "female")
@@ -138,7 +142,9 @@ func TestPersonConsentRecord(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(list.Data) != 1 || list.Data[0]["method"] != "form_signed" {
+	// Creation (Task 3) already wrote one data_processing consent; the list
+	// must hold it plus the row just recorded, newest first.
+	if len(list.Data) != 2 || list.Data[0]["id"] != c["id"] {
 		t.Fatalf("unexpected list: %+v", list.Data)
 	}
 
@@ -157,7 +163,8 @@ func TestPersonConsentRecord(t *testing.T) {
 	}
 }
 
-// TestPersonConsentLatestEmpty — no consent yet → {"consent": null}.
+// TestPersonConsentLatestEmpty — create-person (Task 3) auto-records a
+// data_processing consent, so latest returns that creation row.
 func TestPersonConsentLatestEmpty(t *testing.T) {
 	e := setupConsentEnv(t, "consentempty.owner")
 	rec := consentRequest(e, http.MethodGet, "/api/v1/persons/"+e.personID+"/consents/latest", nil)
@@ -170,8 +177,12 @@ func TestPersonConsentLatestEmpty(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode latest: %v", err)
 	}
-	if body.Consent != nil {
-		t.Fatalf("expected null consent, got %+v", body.Consent)
+	if body.Consent == nil {
+		t.Fatalf("expected the creation consent, got null")
+	}
+	if body.Consent["consent_type"] != "data_processing" ||
+		body.Consent["text_version"] != validConsentVersion || body.Consent["method"] != "form_signed" {
+		t.Fatalf("unexpected creation consent: %+v", body.Consent)
 	}
 }
 
@@ -193,14 +204,84 @@ func TestPersonConsentRecordValidation(t *testing.T) {
 		t.Fatalf("unknown consent_type expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Nothing may have been written by the rejected attempts.
+	// Only the creation consent (Task 3) exists; rejected attempts must add
+	// nothing.
 	var n int
 	if err := e.pool.QueryRow(context.Background(),
 		"SELECT count(*) FROM core.person_consent WHERE person_id = $1", e.personID).Scan(&n); err != nil {
 		t.Fatalf("count consents: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("rejected attempts must write nothing, got %d rows", n)
+	if n != 1 {
+		t.Fatalf("rejected attempts must write nothing beyond the creation row, got %d rows", n)
+	}
+}
+
+// consentUploadDoc uploads a 'ktp' document for personID via the seed router
+// (multipart pattern: docUpload in person_document_test.go) and returns its id.
+func consentUploadDoc(t *testing.T, e *consentEnv, personID string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", "ktp.pdf")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fw.Write(testPDF); err != nil {
+		t.Fatalf("write file part: %v", err)
+	}
+	if err := mw.WriteField("document_type", "ktp"); err != nil {
+		t.Fatalf("write document_type: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/persons/"+personID+"/documents", &buf)
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	req.Header.Set("X-Company-ID", e.companyID)
+	req.Header.Set("X-Merchant-ID", e.merchantID)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	e.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("document upload expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Document struct {
+			ID string `json:"id"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	return body.Document.ID
+}
+
+// TestPersonConsentRecordForeignDocument — person_document_id belonging to
+// another person of the same merchant → 400 and nothing is written.
+func TestPersonConsentRecordForeignDocument(t *testing.T) {
+	e := setupConsentEnv(t, "consentdoc.owner")
+	ctx := context.Background()
+	createPersonViaAPI(t, e.seedRouter, e.token, e.companyID, e.merchantID, "Consent Person B consentdoc.owner", "female")
+	personB, _ := latestPerson(t, ctx, e.pool, e.companyID, "Consent Person B consentdoc.owner")
+	foreignDocID := consentUploadDoc(t, e, personB)
+
+	body, _ := json.Marshal(map[string]string{
+		"consent_type": "data_processing", "text_version": validConsentVersion,
+		"method": "form_signed", "person_document_id": foreignDocID,
+	})
+	rec := consentRequest(e, http.MethodPost, "/api/v1/persons/"+e.personID+"/consents", body)
+	if rec.Code != http.StatusBadRequest || consentError(t, rec) != "dokumen tidak valid untuk pasien ini" {
+		t.Fatalf("foreign document expected 400 dokumen tidak valid untuk pasien ini, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The creation consent remains the only row — the rejected attempt wrote nothing.
+	var n int
+	if err := e.pool.QueryRow(ctx,
+		"SELECT count(*) FROM core.person_consent WHERE person_id = $1", e.personID).Scan(&n); err != nil {
+		t.Fatalf("count consents: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("rejected attempt must write nothing beyond the creation row, got %d rows", n)
 	}
 }
 

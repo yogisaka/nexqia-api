@@ -125,6 +125,18 @@ func CreatePersonConsentHandler(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person_document_id"})
 			return
 		}
+		// The referenced document must exist and belong to this person
+		// (pattern: fetchPersonDocument in person_document.go — isolation is
+		// enforced in the handler, not just RLS).
+		doc, err := q.GetPersonDocumentByID(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && doc.PersonID != personID) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "dokumen tidak valid untuk pasien ini"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
 		documentID = id
 	}
 	if _, err := q.CreatePersonConsent(ctx, sqlcgen.CreatePersonConsentParams{
