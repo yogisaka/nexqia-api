@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -71,6 +72,19 @@ func (a *SatusehatAdapter) Send(ctx context.Context, req SendRequest) (SendRespo
 		}
 	}
 
+	if req.ResourceType == "Patient" {
+		found, resp, err := a.findPatientByIDentifier(ctx, req, token)
+		if err != nil {
+			return SendResponse{}, err
+		}
+		if found {
+			return resp, nil
+		}
+		// Bundle kosong (atau search gagal) ⇒ lanjut POST create: id lokal
+		// yang sudah dikenal tidak dipakai untuk PUT karena IHS-nya tidak ada.
+		req.KnownResourceID = ""
+	}
+
 	var url string
 	method := http.MethodPost
 	if req.KnownResourceID == "" {
@@ -110,6 +124,68 @@ func (a *SatusehatAdapter) Send(ctx context.Context, req SendRequest) (SendRespo
 		resourceID = parsed.ID
 	}
 	return SendResponse{ResourceID: resourceID, HTTPStatus: httpResp.StatusCode, Body: body}, nil
+}
+
+// findPatientByIDentifier resolves an existing Patient IHS via the FHIR
+// search endpoint (GET ?identifier=<system>|<value>) BEFORE creating: 2xx +
+// non-empty Bundle entry ⇒ found (ResourceID = entry[0].resource.id, no POST).
+// The identifier comes from req.IdentifierSystem/IdentifierValue when set,
+// otherwise it is parsed from req.Payload (identifier[0]) — the C1 worker
+// does not set the fields explicitly.
+func (a *SatusehatAdapter) findPatientByIDentifier(ctx context.Context, req SendRequest, token string) (bool, SendResponse, error) {
+	system, value := req.IdentifierSystem, req.IdentifierValue
+	if system == "" || value == "" {
+		var p struct {
+			Identifier []satusehatIdentifier `json:"identifier"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err == nil && len(p.Identifier) > 0 {
+			if system == "" {
+				system = p.Identifier[0].System
+			}
+			if value == "" {
+				value = p.Identifier[0].Value
+			}
+		}
+	}
+	if system == "" || value == "" {
+		return false, SendResponse{}, fmt.Errorf("satusehat: patient identifier required")
+	}
+	searchURL := fmt.Sprintf("%s/fhir-r4/v1/Patient?identifier=%s", req.BaseURL, url.QueryEscape(system+"|"+value))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return false, SendResponse{}, err
+	}
+	if token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+	}
+	httpResp, err := a.httpClient.Do(httpReq)
+	if err != nil {
+		return false, SendResponse{}, err
+	}
+	defer httpResp.Body.Close()
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return false, SendResponse{}, err
+	}
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return false, SendResponse{}, nil
+	}
+	var bundle struct {
+		Entry []struct {
+			Resource struct {
+				ID string `json:"id"`
+			} `json:"resource"`
+		} `json:"entry"`
+	}
+	if err := json.Unmarshal(body, &bundle); err != nil || len(bundle.Entry) == 0 ||
+		bundle.Entry[0].Resource.ID == "" {
+		return false, SendResponse{}, nil
+	}
+	return true, SendResponse{
+		ResourceID: bundle.Entry[0].Resource.ID,
+		HTTPStatus: httpResp.StatusCode,
+		Body:       body,
+	}, nil
 }
 
 // token returns a cached access token or fetches a new one; the cache key
@@ -263,6 +339,52 @@ func BuildLocationPayload(in LocationInput) []byte {
 	}
 	if in.Latitude != nil && in.Longitude != nil {
 		p.Position = &satusehatPosition{Longitude: *in.Longitude, Latitude: *in.Latitude}
+	}
+	b, _ := json.Marshal(p)
+	return b
+}
+
+// PatientIdentifierSystemNik is the FHIR identifier.system for the Indonesian
+// NIK (Permenkes 6/2026 Fase C3).
+const PatientIdentifierSystemNik = "https://fhir.kemkes.go.id/id/nik"
+
+// PatientInput is the local data needed for one Patient payload. NIK must
+// already be the DECRYPTED plaintext (handler-side decryptNIK); ciphertext is
+// never accepted here (temuan review 1).
+type PatientInput struct {
+	NIK       string // 16 digit plaintext
+	FullName  string
+	Gender    string // "male"/"female" langsung dari kolom
+	BirthDate string // YYYY-MM-DD atau ""
+}
+
+type patientName struct {
+	Use  string `json:"use"`
+	Text string `json:"text"`
+}
+
+type patientPayload struct {
+	ResourceType string                `json:"resourceType"`
+	Identifier   []satusehatIdentifier `json:"identifier"`
+	Name         []patientName         `json:"name"`
+	Gender       string                `json:"gender"`
+	BirthDate    string                `json:"birthDate,omitempty"`
+}
+
+// BuildPatientPayload builds the FHIR Patient JSON; birthDate is omitted when
+// empty, gender passes through as-is (male/female).
+func BuildPatientPayload(in PatientInput) []byte {
+	p := patientPayload{
+		ResourceType: "Patient",
+		Identifier: []satusehatIdentifier{{
+			System: PatientIdentifierSystemNik,
+			Value:  in.NIK,
+		}},
+		Name:   []patientName{{Use: "official", Text: in.FullName}},
+		Gender: in.Gender,
+	}
+	if in.BirthDate != "" {
+		p.BirthDate = in.BirthDate
 	}
 	b, _ := json.Marshal(p)
 	return b

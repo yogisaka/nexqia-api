@@ -78,6 +78,23 @@ SELECT id, fhir_resource_id, sync_status
 FROM connect.satusehat_resource_map
 WHERE local_table = $1 AND local_id = $2 AND fhir_resource_type = $3;
 
+-- name: GetPersonForSatusehat :one
+-- Kolom nik = CIPHERTEXT pgcrypto base64 (000006:7,81) — HANYA input
+-- decryptNIK di handler; DILARANG dipakai langsung di payload FHIR
+-- (temuan review 1).
+SELECT id, company_id, nik, full_name, gender, birth_date
+FROM core.person WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: GetSatusehatResourceMapByID :one
+SELECT id, merchant_id, local_table, local_id, fhir_resource_type,
+       fhir_resource_id, sync_status
+FROM connect.satusehat_resource_map WHERE id = $1;
+
+-- name: RetrySatusehatResourceMap :exec
+UPDATE connect.satusehat_resource_map
+SET sync_status = 'pending', last_error = NULL, locked_until = NULL
+WHERE id = $1 AND sync_status = 'failed';
+
 -- name: InsertIntegrationRequestLog :exec
 INSERT INTO connect.integration_request_log
     (company_id, merchant_id, provider_id, endpoint, request_payload, response_payload, http_status, status, duration_ms)

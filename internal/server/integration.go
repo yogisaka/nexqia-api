@@ -32,6 +32,8 @@ func RegisterIntegrationRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	rg.PUT("/merchants/:id/integration/satusehat", putSatusehatConfigHandler(cfg))
 	rg.POST("/merchants/:id/integration/satusehat/sync", postSatusehatSyncHandler())
 	rg.GET("/merchants/:id/integration/satusehat/status", getSatusehatStatusHandler())
+	rg.POST("/persons/:id/satusehat/sync", postPersonSatusehatSyncHandler(cfg))
+	rg.POST("/integration/satusehat/resources/:id/retry", postSatusehatRetryHandler())
 }
 
 // loadSatusehatMerchant resolves the path merchant (404 when missing) and
@@ -327,5 +329,124 @@ func getSatusehatStatusHandler() gin.HandlerFunc {
 			})
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{"resources": resources}, "meta": gin.H{}})
+	}
+}
+
+// PostPersonSatusehatSyncHandler godoc
+// @Summary Enqueue one patient for SATUSEHAT Patient (IHS) sync
+// @Description Decrypts the person NIK, builds the FHIR Patient payload, and upserts a pending connect.satusehat_resource_map row ('core.person'/'Patient').
+// @Tags integration
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Person UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /persons/{id}/satusehat/sync [post]
+func postPersonSatusehatSyncHandler(cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !RequirePermission(c, PermIntegrationConfigManage) {
+			return
+		}
+		id, ok := parseUUID(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+		tx := TxFromContext(c)
+		q := sqlcgen.New(tx)
+		row, err := q.GetPersonForSatusehat(c.Request.Context(), id)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && row.CompanyID != AuthCompanyID(c)) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
+		cfgRow, err := q.GetSatusehatConfigByMerchant(c.Request.Context(), merchantID)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !cfgRow.IsActive) {
+			c.JSON(http.StatusConflict, gin.H{"error": "satusehat integration not configured"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		nikPlain, err := decryptNIK(c.Request.Context(), tx, row.Nik, cfg.NIKEncryptionKey)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if nikPlain == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "person has no NIK"})
+			return
+		}
+		birthDate := ""
+		if row.BirthDate.Valid {
+			birthDate = row.BirthDate.Time.Format("2006-01-02")
+		}
+		payload := connect.BuildPatientPayload(connect.PatientInput{
+			NIK: nikPlain, FullName: row.FullName, Gender: row.Gender.String, BirthDate: birthDate,
+		})
+		mapRowID, err := q.UpsertSatusehatResourceMap(c.Request.Context(), sqlcgen.UpsertSatusehatResourceMapParams{
+			CompanyID: row.CompanyID, MerchantID: merchantID,
+			LocalTable: "core.person", LocalID: row.ID,
+			FhirResourceType: "Patient", Column6: payload,
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"map_id": mapRowID.String(), "sync_status": "pending",
+		}, "meta": gin.H{}})
+	}
+}
+
+// PostSatusehatRetryHandler godoc
+// @Summary Retry one failed SATUSEHAT resource-map row
+// @Description Resets a failed map row back to pending (last_error/lock cleared); only rows of the caller's merchant and only failed rows qualify.
+// @Tags integration
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Resource map UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /integration/satusehat/resources/{id}/retry [post]
+func postSatusehatRetryHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := parseUUID(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+		tx := TxFromContext(c)
+		q := sqlcgen.New(tx)
+		activeMerchant, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
+		row, err := q.GetSatusehatResourceMapByID(c.Request.Context(), id)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && row.MerchantID != activeMerchant) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "resource map not found"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if !RequirePermissionForMerchant(c, PermIntegrationConfigManage, row.MerchantID) {
+			return
+		}
+		if row.SyncStatus != "failed" {
+			c.JSON(http.StatusConflict, gin.H{"error": "only failed resources can be retried"})
+			return
+		}
+		if err := q.RetrySatusehatResourceMap(c.Request.Context(), id); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"sync_status": "pending"}, "meta": gin.H{}})
 	}
 }

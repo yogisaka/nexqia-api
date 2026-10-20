@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,6 +89,7 @@ func satNewEnv(t *testing.T, label string) *qeEnv {
 	redisClient := newTestRedisClient(t, ctx)
 	cfg := testConfig()
 	cfg.IntegrationCredentialKey = "test-key"
+	cfg.NIKEncryptionKey = "test-nik-key"
 	cfg.ConnectBatchSize = 10
 	router := server.NewRouter(pool, redisClient, cfg)
 	phone := fmt.Sprintf("0812398%05d", qePhoneSeq.Add(1))
@@ -401,5 +404,235 @@ func TestSatusehatRequiresPermission(t *testing.T) {
 	status, out = qeRequest(t, env, http.MethodGet, satConfigPath(env.merchantID)+"/status", nil)
 	if status != http.StatusForbidden {
 		t.Fatalf("GET status without permission = %d %v", status, out)
+	}
+}
+
+// satSeedPerson inserts a person for the Patient sync tests; nikPlain ""
+// seeds a NIK-less person (NULL nik). The NIK is stored ENCRYPTED following
+// seed/001_core_seed.sql:70 — the handler must decrypt, never pass the
+// ciphertext through.
+func satSeedPerson(t *testing.T, ctx context.Context, env *qeEnv, nikPlain string) string {
+	t.Helper()
+	var id string
+	var err error
+	if nikPlain == "" {
+		err = env.pool.QueryRow(ctx,
+			"INSERT INTO core.person (company_id, full_name, gender, birth_date) VALUES ($1, $2, 'male', '1990-01-01') RETURNING id::text",
+			env.companyID, "Pasien Satusehat").Scan(&id)
+	} else {
+		err = env.pool.QueryRow(ctx,
+			"INSERT INTO core.person (company_id, nik, full_name, gender, birth_date) VALUES ($1, encode(pgp_sym_encrypt($2, 'test-nik-key'), 'base64'), $3, 'male', '1990-01-01') RETURNING id::text",
+			env.companyID, nikPlain, "Pasien Satusehat").Scan(&id)
+	}
+	if err != nil {
+		t.Fatalf("seed person: %v", err)
+	}
+	return id
+}
+
+// satPersonSyncPath is the patient sync endpoint path for one person.
+func satPersonSyncPath(personID string) string {
+	return "/api/v1/persons/" + personID + "/satusehat/sync"
+}
+
+// satRetryPath is the resource-map retry endpoint path.
+func satRetryPath(mapID string) string {
+	return "/api/v1/integration/satusehat/resources/" + mapID + "/retry"
+}
+
+// satMerchantMapID returns the id of the merchant Organization map row.
+func satMerchantMapID(t *testing.T, ctx context.Context, env *qeEnv) string {
+	t.Helper()
+	var id string
+	if err := env.pool.QueryRow(ctx,
+		"SELECT id::text FROM connect.satusehat_resource_map WHERE merchant_id = $1 AND local_table = 'core.merchant' AND fhir_resource_type = 'Organization'",
+		env.merchantID).Scan(&id); err != nil {
+		t.Fatalf("read merchant map id: %v", err)
+	}
+	return id
+}
+
+// TestSatusehatPatientSync — patient sync enqueues a pending Patient map with
+// a payload carrying the DECRYPTED NIK; the worker finds the IHS via search
+// (1 GET, 0 POST) when the Bundle has an entry (a), a NIK-less person answers
+// 400 (b), and an empty Bundle falls through to POST create (c).
+func TestSatusehatPatientSync(t *testing.T) {
+	ctx := context.Background()
+	env := satNewEnv(t, "patient")
+	nikPlain := "3174020190880001"
+	personID := satSeedPerson(t, ctx, env, nikPlain)
+
+	// (a) Search stub: GET Patient → Bundle with one entry (ihs-123); any POST
+	// is recorded so the test can assert it never happens.
+	var getSearches int64
+	var posts int64
+	var gotQuery string
+	searchMux := http.NewServeMux()
+	searchMux.HandleFunc("/oauth2/v1/accesstoken", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-p", "expires_in": 3600})
+	})
+	searchMux.HandleFunc("/fhir-r4/v1/Patient", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			atomic.AddInt64(&getSearches, 1)
+			gotQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"resourceType":"Bundle","entry":[{"resource":{"resourceType":"Patient","id":"ihs-123"}}]}`))
+			return
+		}
+		atomic.AddInt64(&posts, 1)
+		_, _ = w.Write([]byte(`{"id":"should-not-post"}`))
+	})
+	searchSrv := httptest.NewServer(searchMux)
+	defer searchSrv.Close()
+
+	if status, out := satPutConfig(t, env, searchSrv.URL); status != http.StatusOK {
+		t.Fatalf("PUT config = %d %v", status, out)
+	}
+	status, out := qeRequest(t, env, http.MethodPost, satPersonSyncPath(personID), nil)
+	data, _ := out["data"].(map[string]any)
+	if status != http.StatusOK || data["sync_status"] != "pending" || data["map_id"] == "" {
+		t.Fatalf("(a) POST sync = %d %v", status, out)
+	}
+	if st, _ := satMapState(t, ctx, env, "core.person", personID, "Patient"); st != "pending" {
+		t.Fatalf("(a) map status after sync = %s, want pending", st)
+	}
+
+	wCfg := config.Config{ConnectBatchSize: 10, IntegrationCredentialKey: "test-key"}
+	registry := connect.NewRegistry()
+	registry.Register(connect.ProviderSatusehat, connect.NewSatusehatAdapter())
+	if _, err := connect.RunOnce(ctx, env.pool, registry, wCfg); err != nil {
+		t.Fatalf("(a) RunOnce: %v", err)
+	}
+	st, fhirID := satMapState(t, ctx, env, "core.person", personID, "Patient")
+	if st != "synced" || fhirID != "ihs-123" {
+		t.Fatalf("(a) map after run = %s/%s, want synced/ihs-123", st, fhirID)
+	}
+	if n := atomic.LoadInt64(&getSearches); n != 1 {
+		t.Fatalf("(a) search GETs = %d, want 1", n)
+	}
+	if n := atomic.LoadInt64(&posts); n != 0 {
+		t.Fatalf("(a) POSTs = %d, want 0 (IHS found via search)", n)
+	}
+	// The search URL must carry the PLAINTEXT NIK after the system|value
+	// separator (%7C), never the ciphertext/base64.
+	if !strings.Contains(gotQuery, url.QueryEscape("https://fhir.kemkes.go.id/id/nik|"+nikPlain)) {
+		t.Fatalf("(a) search query = %s, want it to contain %q", gotQuery, "|"+nikPlain)
+	}
+	var payloadNIK string
+	if err := env.pool.QueryRow(ctx,
+		"SELECT last_payload->'identifier'->0->>'value' FROM connect.satusehat_resource_map WHERE local_table = 'core.person' AND local_id = $1",
+		personID).Scan(&payloadNIK); err != nil || payloadNIK != nikPlain {
+		t.Fatalf("(a) last_payload NIK = %q (err %v), want plaintext %s", payloadNIK, err, nikPlain)
+	}
+
+	// (b) Person WITHOUT a NIK answers 400 with the literal message.
+	noNikID := satSeedPerson(t, ctx, env, "")
+	status, out = qeRequest(t, env, http.MethodPost, satPersonSyncPath(noNikID), nil)
+	if status != http.StatusBadRequest || out["error"] != "person has no NIK" {
+		t.Fatalf("(b) POST sync (no NIK) = %d %v", status, out)
+	}
+
+	// (c) Empty Bundle search → fall through to POST create (ihs-new).
+	createMux := http.NewServeMux()
+	createMux.HandleFunc("/oauth2/v1/accesstoken", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-c", "expires_in": 3600})
+	})
+	createMux.HandleFunc("/fhir-r4/v1/Patient", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"resourceType":"Bundle","entry":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ihs-new"}`))
+	})
+	createSrv := httptest.NewServer(createMux)
+	defer createSrv.Close()
+	if status, out := satPutConfig(t, env, createSrv.URL); status != http.StatusOK {
+		t.Fatalf("(c) PUT config = %d %v", status, out)
+	}
+	status, out = qeRequest(t, env, http.MethodPost, satPersonSyncPath(personID), nil)
+	if status != http.StatusOK {
+		t.Fatalf("(c) POST sync = %d %v", status, out)
+	}
+	if _, err := connect.RunOnce(ctx, env.pool, registry, wCfg); err != nil {
+		t.Fatalf("(c) RunOnce: %v", err)
+	}
+	st, fhirID = satMapState(t, ctx, env, "core.person", personID, "Patient")
+	if st != "synced" || fhirID != "ihs-new" {
+		t.Fatalf("(c) map after run = %s/%s, want synced/ihs-new", st, fhirID)
+	}
+}
+
+// TestSatusehatRetry — a failed map row (worker + stub error) resets to
+// pending with last_error NULL via the retry endpoint; a synced row answers
+// 409 and another merchant's row answers 404.
+func TestSatusehatRetry(t *testing.T) {
+	ctx := context.Background()
+	env := satNewEnv(t, "retry")
+
+	// Erroring stub: every FHIR call answers 500 so the worker fails the row.
+	errMux := http.NewServeMux()
+	errMux.HandleFunc("/oauth2/v1/accesstoken", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-e", "expires_in": 3600})
+	})
+	errMux.HandleFunc("/fhir-r4/v1/", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	errSrv := httptest.NewServer(errMux)
+	defer errSrv.Close()
+
+	if status, out := satPutConfig(t, env, errSrv.URL); status != http.StatusOK {
+		t.Fatalf("PUT config = %d %v", status, out)
+	}
+	if status, out := qeRequest(t, env, http.MethodPost, satConfigPath(env.merchantID)+"/sync", nil); status != http.StatusOK {
+		t.Fatalf("POST sync = %d %v", status, out)
+	}
+	wCfg := config.Config{ConnectBatchSize: 10, IntegrationCredentialKey: "test-key"}
+	registry := connect.NewRegistry()
+	registry.Register(connect.ProviderSatusehat, connect.NewSatusehatAdapter())
+	if _, err := connect.RunOnce(ctx, env.pool, registry, wCfg); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	mapID := satMerchantMapID(t, ctx, env)
+	if st, _ := satMapState(t, ctx, env, "core.merchant", env.merchantID, "Organization"); st != "failed" {
+		t.Fatalf("map status after failing run = %s, want failed", st)
+	}
+
+	// Retry: failed → pending, last_error cleared.
+	status, out := qeRequest(t, env, http.MethodPost, satRetryPath(mapID), nil)
+	data, _ := out["data"].(map[string]any)
+	if status != http.StatusOK || data["sync_status"] != "pending" {
+		t.Fatalf("POST retry = %d %v", status, out)
+	}
+	var lastErr *string
+	var st string
+	if err := env.pool.QueryRow(ctx,
+		"SELECT sync_status, last_error FROM connect.satusehat_resource_map WHERE id = $1", mapID).Scan(&st, &lastErr); err != nil {
+		t.Fatalf("read map after retry: %v", err)
+	}
+	if st != "pending" || lastErr != nil {
+		t.Fatalf("map after retry = %s/%v, want pending/<nil>", st, lastErr)
+	}
+
+	// Synced row: retry answers 409 with the literal message.
+	if _, err := env.pool.Exec(ctx,
+		"UPDATE connect.satusehat_resource_map SET sync_status = 'synced', fhir_resource_id = 'ihs-x' WHERE id = $1", mapID); err != nil {
+		t.Fatalf("mark synced: %v", err)
+	}
+	status, out = qeRequest(t, env, http.MethodPost, satRetryPath(mapID), nil)
+	if status != http.StatusConflict || out["error"] != "only failed resources can be retried" {
+		t.Fatalf("POST retry (synced) = %d %v", status, out)
+	}
+
+	// Another merchant's map: retry answers 404.
+	env2 := satNewEnv(t, "retry2")
+	if status, out := satPutConfig(t, env2, errSrv.URL); status != http.StatusOK {
+		t.Fatalf("env2 PUT config = %d %v", status, out)
+	}
+	if status, out := qeRequest(t, env2, http.MethodPost, satConfigPath(env2.merchantID)+"/sync", nil); status != http.StatusOK {
+		t.Fatalf("env2 POST sync = %d %v", status, out)
+	}
+	otherMapID := satMerchantMapID(t, ctx, env2)
+	status, out = qeRequest(t, env, http.MethodPost, satRetryPath(otherMapID), nil)
+	if status != http.StatusNotFound || out["error"] != "resource map not found" {
+		t.Fatalf("POST retry (other merchant) = %d %v", status, out)
 	}
 }
