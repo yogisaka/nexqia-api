@@ -147,6 +147,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// X-Company-ID/X-Merchant-ID so RLS has a tenant context.
 	tenant.GET("/display/boards/:id/feed", RateLimitDisplayMiddleware(limiter, cfg), DisplayBoardFeedHandler)
 	RegisterAuditRoutes(locked, cfg)
+	RegisterIntegrationRoutes(locked, cfg)
 
 	platform := v1.Group("/platform", PlatformTxMiddleware(pool))
 	RegisterPlatformRoutes(platform, pool, limiter, cfg, hasher, enc)
