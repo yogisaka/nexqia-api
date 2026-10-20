@@ -16,6 +16,7 @@ import (
 
 	"github.com/yogisaka/nexqia-api/internal/cache"
 	"github.com/yogisaka/nexqia-api/internal/config"
+	"github.com/yogisaka/nexqia-api/internal/connect"
 	"github.com/yogisaka/nexqia-api/internal/mail"
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
@@ -45,6 +46,11 @@ func main() {
 	// Outbox email worker (internal/mail) lives in the API process and stops with it.
 	slog.Info("email worker started", "driver", cfg.MailDriver)
 	go mail.RunWorker(ctx, pool, mail.NewSender(cfg), cfg)
+
+	// Integration queue worker (internal/connect); adapters register in C2.
+	connectRegistry := connect.NewRegistry()
+	slog.Info("connect worker started")
+	go connect.RunWorker(ctx, pool, connectRegistry, cfg)
 
 	router := server.NewRouter(pool, redisClient, cfg)
 	srv := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: router}

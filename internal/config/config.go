@@ -150,6 +150,15 @@ type Config struct {
 	MailBatchSize           int
 	MailMaxAttempts         int
 	MailOutboxRetentionDays int
+
+	// ConnectPollIntervalSeconds/ConnectBatchSize — integration queue worker
+	// tunables: poll period and maximum satusehat_resource_map rows claimed per
+	// poll. IntegrationCredentialKey (env INTEGRATION_CREDENTIAL_KEY) is the PGP
+	// key used to decrypt stored integration credentials inside the claim
+	// function; it may be empty (C2 refuses to store credentials with 503).
+	ConnectPollIntervalSeconds int
+	ConnectBatchSize           int
+	IntegrationCredentialKey   string
 }
 
 func Load() Config {
@@ -222,6 +231,10 @@ func Load() Config {
 		MailBatchSize:           getEnvInt("MAIL_BATCH_SIZE", 20),
 		MailMaxAttempts:         getEnvInt("MAIL_MAX_ATTEMPTS", 5),
 		MailOutboxRetentionDays: getEnvInt("MAIL_OUTBOX_RETENTION_DAYS", 30),
+
+		ConnectPollIntervalSeconds: getEnvInt("CONNECT_POLL_INTERVAL_SECONDS", 10),
+		ConnectBatchSize:           getEnvInt("CONNECT_BATCH_SIZE", 20),
+		IntegrationCredentialKey:   getEnv("INTEGRATION_CREDENTIAL_KEY", ""),
 	}
 	// Fail fast at startup: an idle fence the API would have to half-enforce is
 	// worse than refusing to boot (spec 2026-09-29-merchant-security-settings §3).
@@ -274,6 +287,8 @@ func validateMail(cfg Config) error {
 		{"MAIL_BATCH_SIZE", cfg.MailBatchSize},
 		{"MAIL_MAX_ATTEMPTS", cfg.MailMaxAttempts},
 		{"MAIL_OUTBOX_RETENTION_DAYS", cfg.MailOutboxRetentionDays},
+		{"CONNECT_POLL_INTERVAL_SECONDS", cfg.ConnectPollIntervalSeconds},
+		{"CONNECT_BATCH_SIZE", cfg.ConnectBatchSize},
 	} {
 		if f.value <= 0 {
 			return fmt.Errorf("%s must be > 0, got %d", f.name, f.value)

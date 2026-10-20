@@ -4,8 +4,10 @@
 -- here. The worker reads satusehat_resource_map ONLY through the SECURITY
 -- DEFINER claim function — RLS tenant GUC never sticks to pool connections.
 
--- name: ClaimSatusehatMaps :many
-SELECT * FROM connect.claim_satusehat_maps($1, $2, $3);
+-- The worker claims rows via pool.Query against connect.claim_satusehat_maps
+-- (SECURITY DEFINER, RETURNS TABLE) — sqlc cannot type that result, so the
+-- claim scan lives in internal/connect/worker.go.
+-- UpdateLocationSatusehatID already lives in location.sql.
 
 -- name: MarkSatusehatMapSynced :exec
 UPDATE connect.satusehat_resource_map
