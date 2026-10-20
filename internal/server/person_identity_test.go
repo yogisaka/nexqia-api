@@ -20,7 +20,7 @@ func TestPersonIdentity_NIKUnique(t *testing.T) {
 
 	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "nik.owner", "081234577001")
 
-	body, _ := json.Marshal(map[string]string{"full_name": "NIK Dup One", "gender": "male", "nik": "3201234567890001"})
+	body := personCreatePayload(map[string]string{"full_name": "NIK Dup One", "gender": "male", "nik": "3201234567890001"})
 	if rec := accountRequest(router, http.MethodPost, "/api/v1/persons", token, companyID, merchantID, body); rec.Code != http.StatusCreated {
 		t.Fatalf("first create with NIK expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -36,7 +36,7 @@ func TestPersonIdentity_NIKUnique(t *testing.T) {
 	}
 
 	// Updating a different person onto the same NIK → 409 too.
-	patchBody, _ := json.Marshal(map[string]string{"full_name": "NIK Dup Two", "gender": "male"})
+	patchBody := personCreatePayload(map[string]string{"full_name": "NIK Dup Two", "gender": "male"})
 	if rec := accountRequest(router, http.MethodPost, "/api/v1/persons", token, companyID, merchantID, patchBody); rec.Code != http.StatusCreated {
 		t.Fatalf("second person create expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}

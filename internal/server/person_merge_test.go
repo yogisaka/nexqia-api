@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,10 +25,7 @@ import (
 // the generated id + MRN from the DB.
 func mergeCreatePerson(t *testing.T, ctx context.Context, pool *pgxpool.Pool, router *gin.Engine, token, companyID, merchantID string, fields map[string]string) (id, mrn string) {
 	t.Helper()
-	body, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatalf("marshal person: %v", err)
-	}
+	body := personCreatePayload(fields)
 	rec := accountRequest(router, http.MethodPost, "/api/v1/persons", token, companyID, merchantID, body)
 	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
 		t.Fatalf("create person %v expected 2xx, got %d: %s", fields["full_name"], rec.Code, rec.Body.String())
@@ -667,6 +665,262 @@ func TestPersonMerge_UnmergeSameIdentity(t *testing.T) {
 	}
 	if got := getNIK(aID); got != "3201010101900001" {
 		t.Fatalf("restored A nik = %q, want original", got)
+	}
+}
+
+// mergeSeedConsent inserts one data_processing consent row directly for
+// personID (owner tx + tenant GUCs, pattern TestPersonConsentImmutable).
+func mergeSeedConsent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, companyID, merchantID, personID, userID, method string) string {
+	t.Helper()
+	tx := runtimeTenantTx(t, ctx, pool, companyID, merchantID)
+	var consentID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.person_consent
+			(company_id, merchant_id, person_id, consent_type, text_version, method, granted_by)
+		VALUES ($1,$2,$3,'data_processing',$4,$5,$6) RETURNING id::text`,
+		companyID, merchantID, personID, validConsentVersion, method, userID).Scan(&consentID); err != nil {
+		t.Fatalf("insert person_consent: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit consent: %v", err)
+	}
+	return consentID
+}
+
+// mergeDocRouter wires the document routes with a fake storage against an
+// existing tenant so documents can be uploaded for merge seeding (pattern
+// setupDocEnv, person_document_test.go).
+func mergeDocRouter(t *testing.T, pool *pgxpool.Pool, token, companyID, merchantID string) *docEnv {
+	t.Helper()
+	docRouter := gin.New()
+	docRouter.Use(server.Recovery(os.Stdout))
+	v1 := docRouter.Group("/api/v1")
+	tenant := v1.Group("", server.TenantMiddleware(pool))
+	protected := tenant.Group("", server.AuthMiddleware(testJWTSecret))
+	server.RegisterPersonDocumentRoutes(protected, newFakeObjectStorage(10<<20))
+	return &docEnv{pool: pool, router: docRouter, token: token,
+		companyID: companyID, merchantID: merchantID}
+}
+
+// TestCreatePersonRequiresConsent — POST /persons without consent → 400 with
+// the literal message AND no person row (single tx); with a valid consent →
+// 201, the consent is echoed and readable via GET latest; a
+// person_document_id reference resolves (FK valid).
+func TestCreatePersonRequiresConsent(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := mergeTestRouter(t, ctx, pool)
+
+	companyID, merchantID, _, token, _ := seedAccountOwner(t, ctx, pool, router, "consentgate.owner", "081234602001")
+
+	// Without consent → 400 literal, person not saved.
+	body, _ := json.Marshal(map[string]any{"full_name": "Consent Gate No", "gender": "male"})
+	rec := accountRequest(router, http.MethodPost, "/api/v1/persons", token, companyID, merchantID, body)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "consent wajib saat mendaftarkan pasien baru") {
+		t.Fatalf("missing consent expected 400 consent wajib saat mendaftarkan pasien baru, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.person WHERE full_name = 'Consent Gate No'").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rejected request must not save a person, got %d rows (%v)", n, err)
+	}
+
+	// Valid consent → 201 + echoed consent + readable via GET latest.
+	body, _ = json.Marshal(map[string]any{
+		"full_name": "Consent Gate Yes", "gender": "male",
+		"consent": map[string]any{"method": "verbal", "text_version": validConsentVersion},
+	})
+	rec = accountRequest(router, http.MethodPost, "/api/v1/persons", token, companyID, merchantID, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create with consent expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Consent map[string]any `json:"consent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode 201 body: %v", err)
+	}
+	if created.Consent["method"] != "verbal" || created.Consent["text_version"] != validConsentVersion {
+		t.Fatalf("unexpected consent echo: %+v", created.Consent)
+	}
+	personID, _ := latestPerson(t, ctx, pool, companyID, "Consent Gate Yes")
+	if created.Data.ID == "" || created.Data.ID != personID {
+		t.Fatalf("data.id %q should resolve to the created person %q", created.Data.ID, personID)
+	}
+	rec = accountRequest(router, http.MethodGet, "/api/v1/persons/"+personID+"/consents/latest", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET latest expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var latest struct {
+		Consent map[string]any `json:"consent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &latest); err != nil {
+		t.Fatalf("decode latest: %v", err)
+	}
+	if latest.Consent == nil || latest.Consent["person_id"] != personID || latest.Consent["method"] != "verbal" {
+		t.Fatalf("latest must return the gating consent, got %+v", latest.Consent)
+	}
+
+	// person_document_id pointer → FK must resolve: upload a real document,
+	// then reference it from the consent block.
+	de := mergeDocRouter(t, pool, token, companyID, merchantID)
+	up := docUpload(t, de, personID, "ktp", "KTP", "consent-gate.pdf", testPDF)
+	if up.Code != http.StatusCreated {
+		t.Fatalf("document upload expected 201, got %d: %s", up.Code, up.Body.String())
+	}
+	var doc struct {
+		Document struct {
+			ID string `json:"id"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(up.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	body, _ = json.Marshal(map[string]any{
+		"full_name": "Consent Gate Doc", "gender": "male",
+		"consent": map[string]any{"method": "form_signed", "text_version": validConsentVersion, "person_document_id": doc.Document.ID},
+	})
+	rec = accountRequest(router, http.MethodPost, "/api/v1/persons", token, companyID, merchantID, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create with person_document_id expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var withDoc struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Consent map[string]any `json:"consent"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &withDoc); err != nil {
+		t.Fatalf("decode 201 body: %v", err)
+	}
+	if withDoc.Consent["person_document_id"] != doc.Document.ID {
+		t.Fatalf("consent.person_document_id = %v, want %s", withDoc.Consent["person_document_id"], doc.Document.ID)
+	}
+}
+
+// mergeMovedIDs converts a decoded JSON array value to a string slice.
+func mergeMovedIDs(t *testing.T, v any) []string {
+	t.Helper()
+	raw, ok := v.([]any)
+	if !ok {
+		t.Fatalf("expected JSON array, got %v", v)
+	}
+	out := make([]string, len(raw))
+	for i, e := range raw {
+		s, ok := e.(string)
+		if !ok {
+			t.Fatalf("expected string element, got %v", e)
+		}
+		out[i] = s
+	}
+	return out
+}
+
+// TestPersonMergeMovesDocumentsAndConsents — a real handler merge between two
+// persons moves the merged person's core.person_document and core.person_consent
+// rows to the survivor (re-applied core.person_merge_move, migration 000074),
+// records both in person_merge_log.moved with the right counts, and unmerge
+// restores exactly the recorded rows.
+func TestPersonMergeMovesDocumentsAndConsents(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := mergeTestRouter(t, ctx, pool)
+
+	companyID, merchantID, userID, token, _ := seedAccountOwner(t, ctx, pool, router, "mergegc.owner", "081234602002")
+
+	// A = survivor (no NIK), B = merged (with NIK) — identity check lands ok,
+	// matching the FullFlow pattern.
+	aID, _ := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge GC Alpha", "gender": "female", "birth_date": "1980-01-01",
+		"phone": "081111110201",
+	})
+	bID, bMRN := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge GC Beta", "gender": "female", "birth_date": "1980-01-01",
+		"nik": "3201010101800201",
+	})
+
+	// Seed one document + one extra consent on the merged person.
+	de := mergeDocRouter(t, pool, token, companyID, merchantID)
+	up := docUpload(t, de, bID, "ktp", "KTP", "merge-gc.pdf", testPDF)
+	if up.Code != http.StatusCreated {
+		t.Fatalf("document upload expected 201, got %d: %s", up.Code, up.Body.String())
+	}
+	var doc struct {
+		Document struct {
+			ID string `json:"id"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(up.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	consentID := mergeSeedConsent(t, ctx, pool, companyID, merchantID, bID, userID, "verbal")
+
+	preview := mergePreview(t, router, token, companyID, merchantID, aID, bID)
+	mergeRec := mergeExec(t, router, token, companyID, merchantID, map[string]any{
+		"survivor_id": aID, "merged_id": bID, "reason": "duplikat",
+		"expected_row_versions": map[string]any{
+			"survivor": mergeSide(t, preview, "survivor")["row_version"],
+			"merged":   mergeSide(t, preview, "merged")["row_version"],
+		},
+		"confirm_mrn":   bMRN,
+		"field_choices": map[string]string{"full_name": "survivor"},
+	})
+	if mergeRec.Code != http.StatusOK {
+		t.Fatalf("merge expected 200, got %d: %s", mergeRec.Code, mergeRec.Body.String())
+	}
+	logID := mergeRespData(t, mergeRec)["log_id"].(string)
+
+	// Both rows now belong to the survivor.
+	var docOwner, consentOwner string
+	if err := pool.QueryRow(ctx, "SELECT person_id::text FROM core.person_document WHERE id = $1", doc.Document.ID).Scan(&docOwner); err != nil {
+		t.Fatalf("query moved document: %v", err)
+	}
+	if docOwner != aID {
+		t.Fatalf("document owner = %s, want survivor %s", docOwner, aID)
+	}
+	if err := pool.QueryRow(ctx, "SELECT person_id::text FROM core.person_consent WHERE id = $1", consentID).Scan(&consentOwner); err != nil {
+		t.Fatalf("query moved consent: %v", err)
+	}
+	if consentOwner != aID {
+		t.Fatalf("consent owner = %s, want survivor %s", consentOwner, aID)
+	}
+
+	// The merge log records both moves. B carries 2 consents (the gating
+	// consent from its creation + the seeded one) and 1 document.
+	var moved map[string]any
+	if err := pool.QueryRow(ctx, "SELECT moved::jsonb FROM core.person_merge_log WHERE id = $1", logID).Scan(&moved); err != nil {
+		t.Fatalf("query merge log: %v", err)
+	}
+	docIDs := mergeMovedIDs(t, moved["core.person_document"])
+	consentIDs := mergeMovedIDs(t, moved["core.person_consent"])
+	if len(docIDs) != 1 || docIDs[0] != doc.Document.ID {
+		t.Fatalf("moved[core.person_document] = %v, want [%s]", moved["core.person_document"], doc.Document.ID)
+	}
+	if len(consentIDs) != 2 {
+		t.Fatalf("moved[core.person_consent] = %v, want 2 ids (gating + seeded)", consentIDs)
+	}
+	found := false
+	for _, id := range consentIDs {
+		if id == consentID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("moved[core.person_consent] %v must contain seeded consent %s", consentIDs, consentID)
+	}
+
+	// Unmerge restores the recorded rows to the merged person.
+	rec := mergeUnmerge(t, router, token, companyID, merchantID, logID, "salah gabung")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unmerge expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := pool.QueryRow(ctx, "SELECT person_id::text FROM core.person_document WHERE id = $1", doc.Document.ID).Scan(&docOwner); err != nil || docOwner != bID {
+		t.Fatalf("document owner after unmerge = %s (%v), want %s", docOwner, err, bID)
+	}
+	if err := pool.QueryRow(ctx, "SELECT person_id::text FROM core.person_consent WHERE id = $1", consentID).Scan(&consentOwner); err != nil || consentOwner != bID {
+		t.Fatalf("consent owner after unmerge = %s (%v), want %s", consentOwner, err, bID)
 	}
 }
 

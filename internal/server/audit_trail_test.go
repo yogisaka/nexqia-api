@@ -61,12 +61,25 @@ func auditRowsForRecord(t *testing.T, q auditQuerier, recordID string) []auditLo
 	return out
 }
 
+// personCreatePayload marshals the person fields plus the consent block that
+// POST /persons requires since consent gating (plan C Task 3) — shared by
+// registration, identity, merge and audit tests (single definition, no dup).
+func personCreatePayload(fields map[string]string) []byte {
+	m := map[string]any{}
+	for k, v := range fields {
+		m[k] = v
+	}
+	m["consent"] = map[string]string{"method": "form_signed", "text_version": validConsentVersion}
+	b, _ := json.Marshal(m)
+	return b
+}
+
 // createPersonViaAPI creates a person through the real POST /persons endpoint
 // (person_id is resolved from the DB afterwards — the response shape of
 // pgtype.UUID fields is not this test's concern).
 func createPersonViaAPI(t *testing.T, router *gin.Engine, token, companyID, merchantID, fullName, gender string) *httptest.ResponseRecorder {
 	t.Helper()
-	body, _ := json.Marshal(map[string]string{"full_name": fullName, "gender": gender})
+	body := personCreatePayload(map[string]string{"full_name": fullName, "gender": gender})
 	rec := accountRequest(router, http.MethodPost, "/api/v1/persons", token, companyID, merchantID, body)
 	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
 		t.Fatalf("create person expected 2xx, got %d: %s", rec.Code, rec.Body.String())

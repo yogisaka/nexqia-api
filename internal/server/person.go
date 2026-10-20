@@ -42,31 +42,40 @@ func RegisterPersonRoutes(rg *gin.RouterGroup, cfg config.Config) {
 }
 
 type personRequest struct {
-	Profile                 string `json:"profile"`
-	NIKExemption            string `json:"nik_exemption"`
-	NIKExemptionNote        string `json:"nik_exemption_note"`
-	DuplicateOverrideReason string `json:"duplicate_override_reason"`
-	NIK                     string `json:"nik"`
-	MedicalRecordNo         string `json:"medical_record_no"`
-	FullName                string `json:"full_name" binding:"required"`
-	BirthDate               string `json:"birth_date"`
-	BirthPlace              string `json:"birth_place"`
-	Gender                  string `json:"gender" binding:"required"`
-	BloodType               string `json:"blood_type"`
-	MaritalStatus           string `json:"marital_status"`
-	ReligionConceptID       string `json:"religion_concept_id"`
-	EducationConceptID      string `json:"education_concept_id"`
-	EthnicityConceptID      string `json:"ethnicity_concept_id"`
-	RegionVillageConceptID  string `json:"region_village_concept_id"`
-	CitizenshipConceptID    string `json:"citizenship_concept_id"`
-	IdentityTypeConceptID   string `json:"identity_type_concept_id"`
-	JobConceptID            string `json:"job_concept_id"`
-	MaritalStatusConceptID  string `json:"marital_status_concept_id"`
-	BloodTypeConceptID      string `json:"blood_type_concept_id"`
-	Phone                   string `json:"phone"`
-	Email                   string `json:"email"`
-	Address                 string `json:"address"`
-	FamilyID                string `json:"family_id"`
+	Profile                 string        `json:"profile"`
+	NIKExemption            string        `json:"nik_exemption"`
+	NIKExemptionNote        string        `json:"nik_exemption_note"`
+	DuplicateOverrideReason string        `json:"duplicate_override_reason"`
+	NIK                     string        `json:"nik"`
+	MedicalRecordNo         string        `json:"medical_record_no"`
+	FullName                string        `json:"full_name" binding:"required"`
+	BirthDate               string        `json:"birth_date"`
+	BirthPlace              string        `json:"birth_place"`
+	Gender                  string        `json:"gender" binding:"required"`
+	BloodType               string        `json:"blood_type"`
+	MaritalStatus           string        `json:"marital_status"`
+	ReligionConceptID       string        `json:"religion_concept_id"`
+	EducationConceptID      string        `json:"education_concept_id"`
+	EthnicityConceptID      string        `json:"ethnicity_concept_id"`
+	RegionVillageConceptID  string        `json:"region_village_concept_id"`
+	CitizenshipConceptID    string        `json:"citizenship_concept_id"`
+	IdentityTypeConceptID   string        `json:"identity_type_concept_id"`
+	JobConceptID            string        `json:"job_concept_id"`
+	MaritalStatusConceptID  string        `json:"marital_status_concept_id"`
+	BloodTypeConceptID      string        `json:"blood_type_concept_id"`
+	Phone                   string        `json:"phone"`
+	Email                   string        `json:"email"`
+	Address                 string        `json:"address"`
+	FamilyID                string        `json:"family_id"`
+	Consent                 *consentInput `json:"consent"`
+}
+
+// consentInput is the data-processing consent block required on POST /persons
+// (plan C Task 3); PATCH /persons stays consent-free for legacy patients.
+type consentInput struct {
+	Method           string  `json:"method"`
+	TextVersion      string  `json:"text_version"`
+	PersonDocumentID *string `json:"person_document_id"`
 }
 
 func optText(s string) pgtype.Text {
@@ -189,6 +198,16 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid profile"})
 			return
 		}
+		// Consent gating (plan C Task 3): rejected before any write so the
+		// transaction leaves no rows behind.
+		if req.Consent == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "consent wajib saat mendaftarkan pasien baru"})
+			return
+		}
+		if !allowedConsentMethods[req.Consent.Method] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "metode persetujuan tidak dikenal"})
+			return
+		}
 		fields, warnings := validatePerson(req, time.Now())
 		if len(fields) > 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "validation_failed", "fields": fields})
@@ -211,13 +230,24 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		q := sqlcgen.New(tx)
+		// The submitted text_version must match the active consent_text (spec
+		// §5.3) — still read-only, so a 400 here writes nothing.
+		consentText, err := q.GetActiveConsentText(c.Request.Context(), "data_processing")
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && consentText.Version != req.Consent.TextVersion) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "versi teks persetujuan tidak dikenal"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
 		mrn := req.MedicalRecordNo
 		if mrn == "" {
 			// Merchant is optional here — person creation isn't merchant-bound
 			// (core.person is company-level). When present it's used to resolve
 			// a per-merchant MRN format override; absent just falls back to the
 			// company default.
-			merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
 			mrn, err = generateMedicalRecordNo(c.Request.Context(), q, AuthCompanyID(c), merchantID)
 			if err != nil {
 				respondInternalError(c, err)
@@ -309,6 +339,26 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 		person.Nik = optText(req.NIK) // echo the plaintext just submitted, avoid a decrypt round-trip
+		var documentID pgtype.UUID
+		if req.Consent.PersonDocumentID != nil {
+			id, okDoc := parseUUID(*req.Consent.PersonDocumentID)
+			if !okDoc {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person_document_id"})
+				return
+			}
+			documentID = id
+		}
+		// Same-transaction consent insert (plan C Task 3): granted_by = context
+		// user, granted_at = now, merchant from context; a failure here rolls
+		// the person insert back with it.
+		if _, err := q.CreatePersonConsent(c.Request.Context(), sqlcgen.CreatePersonConsentParams{
+			CompanyID: AuthCompanyID(c), MerchantID: merchantID, PersonID: person.ID,
+			ConsentType: "data_processing", TextVersion: req.Consent.TextVersion, Method: req.Consent.Method,
+			PersonDocumentID: documentID, GrantedBy: AuthUserID(c),
+		}); err != nil {
+			respondInternalError(c, err)
+			return
+		}
 		if err := setNIKExemption(c.Request.Context(), tx, person.ID, req.NIKExemption, req.NIKExemptionNote); err != nil {
 			respondInternalError(c, err)
 			return
@@ -324,7 +374,20 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 				return
 			}
 		}
-		c.JSON(http.StatusCreated, gin.H{"data": person, "meta": gin.H{}, "warnings": warnings})
+		consentRow, err := q.GetLatestPersonConsent(c.Request.Context(), person.ID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		loc, err := merchantLocation(c.Request.Context(), q, merchantID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"data": person, "consent": consentPayload(
+			consentRow.ID, consentRow.PersonID, consentRow.ConsentType, consentRow.TextVersion,
+			consentRow.Method, consentRow.PersonDocumentID, consentRow.GrantedAt, consentRow.GrantedBy,
+			consentRow.GrantedByName, loc), "meta": gin.H{}, "warnings": warnings})
 	}
 }
 

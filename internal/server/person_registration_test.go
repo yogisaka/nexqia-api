@@ -36,7 +36,7 @@ type duplicateCandidatesResponse struct {
 
 func personRegistrationPost(t *testing.T, router *gin.Engine, token, companyID, merchantID string, body map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
-	payload, _ := json.Marshal(body)
+	payload := personCreatePayload(body)
 	return accountRequest(router, http.MethodPost, "/api/v1/persons", token, companyID, merchantID, payload)
 }
 
