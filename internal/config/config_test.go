@@ -254,6 +254,7 @@ func TestValidateMail(t *testing.T) {
 		MailDriver: "smtp", SMTPHost: "smtp.gmail.com", SMTPPort: 587, SMTPUsername: "a@gmail.com",
 		SMTPPassword: "app-password", SMTPFrom: "a@gmail.com",
 		MailPollIntervalSeconds: 10, MailBatchSize: 20, MailMaxAttempts: 5, MailOutboxRetentionDays: 30,
+		ConnectPollIntervalSeconds: 10, ConnectBatchSize: 20,
 	}
 	logOnly := valid
 	logOnly.MailDriver, logOnly.SMTPHost, logOnly.SMTPUsername, logOnly.SMTPPassword, logOnly.SMTPFrom = "log", "", "", "", ""
