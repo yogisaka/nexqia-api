@@ -48,6 +48,9 @@ SELECT count(*) FROM core.location WHERE parent_id = $1 AND deleted_at IS NULL;
 -- name: CountActiveBedsByParent :one
 SELECT count(*) FROM core.location WHERE parent_id = $1 AND kind = 'bed' AND deleted_at IS NULL;
 
+-- name: UpdateLocationSatusehatID :exec
+UPDATE core.location SET satusehat_location_id = $2 WHERE id = $1;
+
 -- name: SoftDeleteLocation :exec
 UPDATE core.location
 SET deleted_at = now(), deleted_by = $2
