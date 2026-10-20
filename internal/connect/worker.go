@@ -34,7 +34,7 @@ type claimedRow struct {
 	FhirResourceType pgtype.Text
 	FhirResourceID   pgtype.Text
 	LastPayload      []byte
-	BaseURL          string
+	BaseURL          pgtype.Text // DDL nullable; scan non-string to survive NULL
 	Config           []byte
 	CredentialJSON   pgtype.Text
 }
@@ -103,7 +103,7 @@ func processRow(ctx context.Context, pool *pgxpool.Pool, adapter IntegrationAdap
 	req := SendRequest{
 		CompanyID:       row.CompanyID.String(),
 		MerchantID:      row.MerchantID.String(),
-		BaseURL:         row.BaseURL,
+		BaseURL:         row.BaseURL.String,
 		Config:          row.Config,
 		Credential:      row.CredentialJSON.String,
 		ResourceType:    row.FhirResourceType.String,
@@ -146,7 +146,10 @@ func processRow(ctx context.Context, pool *pgxpool.Pool, adapter IntegrationAdap
 		}); err != nil {
 			return err
 		}
-		if row.LocalTable == "core.location" && row.FhirResourceType.String == "Location" {
+		// Writeback only when the final fhir id is non-empty: writing NULL
+		// would clobber an existing satusehat_location_id.
+		if row.LocalTable == "core.location" && row.FhirResourceType.String == "Location" &&
+			resourceID.Valid && resourceID.String != "" {
 			if err := q.UpdateLocationSatusehatID(ctx, sqlcgen.UpdateLocationSatusehatIDParams{
 				ID: row.LocalID, SatusehatLocationID: resourceID,
 			}); err != nil {

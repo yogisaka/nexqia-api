@@ -106,7 +106,7 @@ CREATE TRIGGER trg_satusehat_resource_map_tenant_check BEFORE INSERT OR UPDATE O
     FOR EACH ROW EXECUTE FUNCTION trg_check_tenant_consistency();
 
 INSERT INTO connect.integration_provider (id, code, name, protocol) VALUES
-    ('00000000-0000-0000-0007-000000000001', 'satusehat', 'SATUSEHAT (Kemenkes)', 'fhir')
+    ('00000000-0000-0000-0017-000000000001', 'satusehat', 'SATUSEHAT (Kemenkes)', 'fhir')
 ON CONFLICT (code) DO NOTHING;
 
 -- Grant blanket DULU (tabel + partisi buatan partman) ...
