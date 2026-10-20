@@ -109,6 +109,8 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// 2026-09-29-merchant-security-settings-design.md §7).
 	RegisterSecuritySettingsRoutes(locked, hasher, limiter, redisClient, cfg)
 	RegisterPersonRoutes(locked, cfg)
+	// Patient data-processing consent (spec 2026-10-17-patient-documents §5.3).
+	RegisterPersonConsentRoutes(locked)
 	// Patient document upload/download (spec 2026-10-17-patient-documents
 	// §5.1): object storage adapter built once at startup. An invalid
 	// PATIENT_DOC_MAX_MB fails the start; an empty S3_BUCKET keeps booting
