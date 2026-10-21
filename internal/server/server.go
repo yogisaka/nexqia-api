@@ -147,6 +147,8 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// X-Company-ID/X-Merchant-ID so RLS has a tenant context.
 	tenant.GET("/display/boards/:id/feed", RateLimitDisplayMiddleware(limiter, cfg), DisplayBoardFeedHandler)
 	RegisterAuditRoutes(locked, cfg)
+	// Patient safety incident core API (spec 2026-10-20-permenkes-6-2026 §4 Fase B).
+	RegisterIncidentRoutes(locked)
 	RegisterIntegrationRoutes(locked, cfg)
 
 	platform := v1.Group("/platform", PlatformTxMiddleware(pool))

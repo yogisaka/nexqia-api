@@ -1,5 +1,12 @@
 basePath: /api/v1
 definitions:
+  server.addIncidentEntryRequest:
+    properties:
+      body:
+        type: string
+      kind:
+        type: string
+    type: object
   server.addMerchantFormularyRequest:
     properties:
       default_location_id:
@@ -322,6 +329,27 @@ definitions:
     - code
     - merchant_id
     - name
+    type: object
+  server.createIncidentRequest:
+    properties:
+      admission_id:
+        type: string
+      anonymous:
+        type: boolean
+      grading:
+        type: string
+      incident_type:
+        type: string
+      location:
+        type: string
+      narrative:
+        type: string
+      occurred_at:
+        type: string
+      patient_impact:
+        type: string
+      person_id:
+        type: string
     type: object
   server.createInventoryItemRequest:
     properties:
@@ -1886,6 +1914,13 @@ definitions:
         type: boolean
       row_version:
         type: integer
+    type: object
+  server.updateIncidentStatusRequest:
+    properties:
+      note:
+        type: string
+      status:
+        type: string
     type: object
   server.updateInventoryItemRequest:
     properties:
@@ -5405,6 +5440,201 @@ paths:
       summary: Liveness check
       tags:
       - system
+  /incident-gradings:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the incident grading catalog (NCC MERP A–I with ICPS outcomes)
+      tags:
+      - incident
+  /incident-types:
+    get:
+      description: Override-aware; only active categories are returned (data-driven
+        — no hard-coded enum).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the effective incident type catalog for the active merchant
+      tags:
+      - incident
+  /incidents:
+    get:
+      parameters:
+      - description: dilaporkan|feedback|closed
+        in: query
+        name: status
+        type: string
+      - description: Incident type code
+        in: query
+        name: incident_type
+        type: string
+      - description: Grading code
+        in: query
+        name: grading
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List patient safety incidents of the active merchant (newest first)
+      tags:
+      - incident
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Incident report
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createIncidentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Report a patient safety incident (incident + report entry, one tx)
+      tags:
+      - incident
+  /incidents/{id}:
+    get:
+      parameters:
+      - description: Incident UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get one incident with its append-only kronologi
+      tags:
+      - incident
+  /incidents/{id}/entries:
+    post:
+      consumes:
+      - application/json
+      description: kind is limited to comment|correction — feedback/status entries
+        are written only by PATCH /status.
+      parameters:
+      - description: Incident UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Kronologi entry
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.addIncidentEntryRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Append a comment/correction to the incident kronologi (append-only)
+      tags:
+      - incident
+  /incidents/{id}/status:
+    patch:
+      consumes:
+      - application/json
+      description: closed requires the feedback loop first; feedback requires a note
+        (spec §6 loop tutup).
+      parameters:
+      - description: Incident UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Target status + optional note
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateIncidentStatusRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Advance the incident status (dilaporkan → feedback → closed)
+      tags:
+      - incident
   /integration/satusehat/resources/{id}/retry:
     post:
       description: Resets a failed map row back to pending (last_error/lock cleared);

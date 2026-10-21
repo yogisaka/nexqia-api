@@ -4881,6 +4881,314 @@
                 }
             }
         },
+        "/incident-gradings": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "incident"
+                ],
+                "summary": "List the incident grading catalog (NCC MERP A–I with ICPS outcomes)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/incident-types": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Override-aware; only active categories are returned (data-driven — no hard-coded enum).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "incident"
+                ],
+                "summary": "List the effective incident type catalog for the active merchant",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/incidents": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "incident"
+                ],
+                "summary": "List patient safety incidents of the active merchant (newest first)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "dilaporkan|feedback|closed",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Incident type code",
+                        "name": "incident_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Grading code",
+                        "name": "grading",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "incident"
+                ],
+                "summary": "Report a patient safety incident (incident + report entry, one tx)",
+                "parameters": [
+                    {
+                        "description": "Incident report",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createIncidentRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/incidents/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "incident"
+                ],
+                "summary": "Get one incident with its append-only kronologi",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Incident UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/incidents/{id}/entries": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "kind is limited to comment|correction — feedback/status entries are written only by PATCH /status.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "incident"
+                ],
+                "summary": "Append a comment/correction to the incident kronologi (append-only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Incident UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Kronologi entry",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.addIncidentEntryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/incidents/{id}/status": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "closed requires the feedback loop first; feedback requires a note (spec §6 loop tutup).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "incident"
+                ],
+                "summary": "Advance the incident status (dilaporkan → feedback → closed)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Incident UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Target status + optional note",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updateIncidentStatusRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/integration/satusehat/resources/{id}/retry": {
             "post": {
                 "security": [
@@ -16068,6 +16376,17 @@
         }
     },
     "definitions": {
+        "server.addIncidentEntryRequest": {
+            "type": "object",
+            "properties": {
+                "body": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                }
+            }
+        },
         "server.addMerchantFormularyRequest": {
             "type": "object",
             "required": [
@@ -16549,6 +16868,38 @@
                     "type": "string"
                 },
                 "specialty_concept_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.createIncidentRequest": {
+            "type": "object",
+            "properties": {
+                "admission_id": {
+                    "type": "string"
+                },
+                "anonymous": {
+                    "type": "boolean"
+                },
+                "grading": {
+                    "type": "string"
+                },
+                "incident_type": {
+                    "type": "string"
+                },
+                "location": {
+                    "type": "string"
+                },
+                "narrative": {
+                    "type": "string"
+                },
+                "occurred_at": {
+                    "type": "string"
+                },
+                "patient_impact": {
+                    "type": "string"
+                },
+                "person_id": {
                     "type": "string"
                 }
             }
@@ -18886,6 +19237,17 @@
                 },
                 "row_version": {
                     "type": "integer"
+                }
+            }
+        },
+        "server.updateIncidentStatusRequest": {
+            "type": "object",
+            "properties": {
+                "note": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
                 }
             }
         },
