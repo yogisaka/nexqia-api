@@ -827,6 +827,52 @@ definitions:
     - code
     - system
     type: object
+  server.destructionLineRequest:
+    properties:
+      base_qty:
+        type: string
+      from_status:
+        type: string
+      item_id:
+        type: string
+      lot_id:
+        type: string
+      source:
+        type: string
+    required:
+    - base_qty
+    - from_status
+    - item_id
+    - lot_id
+    - source
+    type: object
+  server.destructionRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/server.destructionLineRequest'
+        minItems: 1
+        type: array
+      location_id:
+        type: string
+      method:
+        type: string
+      note:
+        type: string
+      occurred_on:
+        type: string
+      row_version:
+        type: integer
+      witnesses:
+        items:
+          type: string
+        type: array
+    required:
+    - lines
+    - location_id
+    - method
+    - occurred_on
+    type: object
   server.diagnosisConfigRequest:
     properties:
       code_system:
@@ -925,6 +971,46 @@ definitions:
     - company_id
     - reason
     - username
+    type: object
+  server.interMerchantTransferLineRequest:
+    properties:
+      base_qty:
+        type: string
+      item_id:
+        type: string
+      lot_id:
+        type: string
+      source:
+        type: string
+      status:
+        type: string
+    required:
+    - base_qty
+    - item_id
+    - lot_id
+    - source
+    - status
+    type: object
+  server.interMerchantTransferRequest:
+    properties:
+      from_location_id:
+        type: string
+      lines:
+        items:
+          $ref: '#/definitions/server.interMerchantTransferLineRequest'
+        minItems: 1
+        type: array
+      note:
+        type: string
+      to_location_id:
+        type: string
+      to_merchant_id:
+        type: string
+    required:
+    - from_location_id
+    - lines
+    - to_location_id
+    - to_merchant_id
     type: object
   server.itemIngredientInput:
     properties:
@@ -1967,6 +2053,44 @@ definitions:
     - location_id
     - quantity
     type: object
+  server.supplierReturnLineRequest:
+    properties:
+      base_qty:
+        type: string
+      item_id:
+        type: string
+      lot_id:
+        type: string
+      source:
+        type: string
+      unit_cost:
+        type: string
+    required:
+    - base_qty
+    - item_id
+    - lot_id
+    - source
+    type: object
+  server.supplierReturnRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/server.supplierReturnLineRequest'
+        minItems: 1
+        type: array
+      note:
+        type: string
+      reason:
+        type: string
+      row_version:
+        type: integer
+      supplier_id:
+        type: string
+    required:
+    - lines
+    - reason
+    - supplier_id
+    type: object
   server.switchMerchantRequest:
     properties:
       merchant_id:
@@ -2437,6 +2561,11 @@ definitions:
         type: string
     required:
     - reason
+    type: object
+  server.voidOutboundRequest:
+    properties:
+      reason:
+        type: string
     type: object
   server.voidReceiptRequest:
     properties:
@@ -5060,6 +5189,121 @@ paths:
       summary: Replace a department's whole external code map set
       tags:
       - department
+  /destructions/{id}:
+    get:
+      parameters:
+      - description: Destruction UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Fetch one destruction with its lines
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Destruction UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Destruction draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.destructionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace a draft destruction (header + full line replace)
+      tags:
+      - inventory
+  /destructions/{id}/post:
+    post:
+      parameters:
+      - description: Destruction UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Post a draft destruction (destruction moves; narcotics report guard)
+      tags:
+      - inventory
+  /destructions/{id}/void:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Destruction UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Void reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.voidOutboundRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Void a posted destruction (positive reversal moves, HPP untouched)
+      tags:
+      - inventory
   /display-boards:
     post:
       consumes:
@@ -5983,6 +6227,84 @@ paths:
       summary: Retry one failed SATUSEHAT resource-map row
       tags:
       - integration
+  /inter-merchant-transfers/{id}:
+    get:
+      parameters:
+      - description: Transfer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Fetch one inter-merchant transfer with its lines
+      tags:
+      - inventory
+  /inter-merchant-transfers/{id}/cancel:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Transfer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cancel an in-transit transfer (stock + HPP back at the sender)
+      tags:
+      - inventory
+  /inter-merchant-transfers/{id}/receive:
+    post:
+      parameters:
+      - description: Transfer UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Receive an in-transit transfer (transfer_in moves + HPP at receiver)
+      tags:
+      - inventory
   /inventory/item-units/{id}:
     patch:
       consumes:
@@ -6431,6 +6753,30 @@ paths:
       summary: Recall (or release) a lot company-wide
       tags:
       - inventory
+  /lots/{id}/recall-report:
+    get:
+      parameters:
+      - description: Lot UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 'Lot recall report: lot, balances and issue usages across the company'
+      tags:
+      - inventory
   /merchant-roles/{id}:
     delete:
       parameters:
@@ -6751,6 +7097,53 @@ paths:
       summary: List departments under a merchant
       tags:
       - department
+  /merchants/{id}/destructions:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's destructions
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Destruction draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.destructionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a destruction draft (berita acara fields included)
+      tags:
+      - inventory
   /merchants/{id}/diagnosis-config:
     delete:
       parameters:
@@ -7184,6 +7577,62 @@ paths:
       summary: Re-enqueue merchant Organization and Location resources
       tags:
       - integration
+  /merchants/{id}/inter-merchant-transfers:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by status (sent|received|cancelled)
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a sender merchant's inter-merchant transfers (?status=sent = in
+        transit)
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Sender merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Transfer shipment
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.interMerchantTransferRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Send an inter-merchant transfer (status sent, transfer_out moves)
+      tags:
+      - inventory
   /merchants/{id}/inventory-settings:
     get:
       parameters:
@@ -8365,6 +8814,54 @@ paths:
       security:
       - BearerAuth: []
       summary: Issue stock for usage (FEFO) or an admission
+      tags:
+      - inventory
+  /merchants/{id}/supplier-returns:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's supplier returns
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Return draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.supplierReturnRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a supplier-return draft (unit_cost prefilled from the lot's
+        last receipt)
       tags:
       - inventory
   /merchants/{id}/suppliers:
@@ -12999,6 +13496,117 @@ paths:
       security:
       - BearerAuth: []
       summary: 'Post a draft stock count: one count move per differing line'
+      tags:
+      - inventory
+  /supplier-returns/{id}:
+    get:
+      parameters:
+      - description: Return UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Fetch one supplier return with its lines
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Return UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Return draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.supplierReturnRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace a draft supplier return (header + full line replace)
+      tags:
+      - inventory
+  /supplier-returns/{id}/post:
+    post:
+      parameters:
+      - description: Return UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Post a draft supplier return (supplier_return moves + HPP reversal)
+      tags:
+      - inventory
+  /supplier-returns/{id}/void:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Return UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Void reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.voidOutboundRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Void a posted supplier return (reversal moves + HPP re-applied)
       tags:
       - inventory
   /suppliers:
