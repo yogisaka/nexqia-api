@@ -386,7 +386,7 @@ func StockTransferHandler(c *gin.Context) {
 			if !okS {
 				return
 			}
-			if err := moveSerialsForTransfer(c.Request.Context(), q, merchantID, merchantID, toID, itemID, serials); err != nil {
+			if err := moveSerialsForTransfer(c.Request.Context(), q, TxFromContext(c), merchantID, merchantID, toID, itemID, serials); err != nil {
 				if !respondIdentityError(c, err) {
 					respondInternalError(c, err)
 				}

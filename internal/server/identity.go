@@ -123,8 +123,12 @@ func enforceSerialIssue(ctx context.Context, q *sqlcgen.Queries, merchantID, loc
 
 // moveSerialsForTransfer validates the requested serial numbers like
 // enforceSerialIssue (in_stock at the source location) and moves them to the
-// target merchant/location; the status stays in_stock (spec §6.2 #2).
-func moveSerialsForTransfer(ctx context.Context, q *sqlcgen.Queries, fromMerchant, toMerchant, toLocationID, itemID pgtype.UUID, serialNos []string) error {
+// target merchant/location; the status stays in_stock (spec §6.2 #2). tx is
+// the request transaction behind q, used to flip the transaction-scoped RLS
+// merchant GUC: the UPDATE writes rows owned by the receiving merchant, so
+// serial_isolation (WITH CHECK = USING) rejects it while the GUC still names
+// the sender (pola setMerchantGUC).
+func moveSerialsForTransfer(ctx context.Context, q *sqlcgen.Queries, tx pgx.Tx, fromMerchant, toMerchant, toLocationID, itemID pgtype.UUID, serialNos []string) error {
 	rows, err := q.GetSerialsByIDs(ctx, sqlcgen.GetSerialsByIDsParams{
 		MerchantID: fromMerchant, ItemID: itemID, SerialNos: serialNos,
 	})
@@ -139,6 +143,16 @@ func moveSerialsForTransfer(ctx context.Context, q *sqlcgen.Queries, fromMerchan
 			return errSerialNotInStock
 		}
 	}
+	// Validate under the sender's GUC first, then flip to the receiver for
+	// the cross-merchant UPDATE. On any later error the whole request tx
+	// rolls back (set_config is transaction-scoped), so a restore is only
+	// needed on the success path.
+	if toMerchant != fromMerchant {
+		if _, err := tx.Exec(ctx,
+			"SELECT set_config('app.current_merchant_id', $1, true)", toMerchant.String()); err != nil {
+			return err
+		}
+	}
 	n, err := q.MoveSerialsForTransfer(ctx, sqlcgen.MoveSerialsForTransferParams{
 		ToMerchantID: toMerchant, ToLocationID: toLocationID,
 		FromMerchantID: fromMerchant, ItemID: itemID, SerialNos: serialNos,
@@ -148,6 +162,12 @@ func moveSerialsForTransfer(ctx context.Context, q *sqlcgen.Queries, fromMerchan
 	}
 	if n != int64(len(serialNos)) {
 		return errSerialNotInStock
+	}
+	if toMerchant != fromMerchant {
+		if _, err := tx.Exec(ctx,
+			"SELECT set_config('app.current_merchant_id', $1, true)", fromMerchant.String()); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -1786,7 +1786,7 @@ func CreateInterMerchantTransferHandler(c *gin.Context) {
 		if !okS {
 			return
 		}
-		if err := moveSerialsForTransfer(c.Request.Context(), q, fromMerchantID, toMerchantID, toLocationID, l.ItemID, serials); err != nil {
+		if err := moveSerialsForTransfer(c.Request.Context(), q, TxFromContext(c), fromMerchantID, toMerchantID, toLocationID, l.ItemID, serials); err != nil {
 			if !respondIdentityError(c, err) {
 				respondInternalError(c, err)
 			}

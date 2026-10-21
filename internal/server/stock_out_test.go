@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
@@ -560,6 +563,78 @@ func TestInterMerchantTransferLifecycle(t *testing.T) {
 	status, out = grRequest(t, e, http.MethodGet, "/api/v1/merchants/"+e.merchantID+"/inter-merchant-transfers?status=sent", nil)
 	if status != http.StatusOK || len(out["data"].([]any)) != 0 {
 		t.Fatalf("in-transit list = %d %v", status, out["data"])
+	}
+}
+
+// TestInterMerchantTransferSerialCrossMerchant — IMT of a track_serial item
+// moves the serials to the receiving merchant at send time (status stays
+// in_stock, location = target). The cross-merchant UPDATE passes
+// serial_isolation only because the handler flips the RLS merchant GUC to the
+// receiver inside the request tx; without the flip it fails with 42501.
+func TestInterMerchantTransferSerialCrossMerchant(t *testing.T) {
+	ctx := context.Background()
+	e, merchantB, locB, itemID, lotID, _ := soIMTSeed(t, "snimt", "081234620117")
+
+	// Switch the seeded item to track_serial and register 2 serials at the
+	// sender's location (tx under merchant A's GUC).
+	tx := runtimeTenantTx(t, ctx, e.pool, e.companyID, e.merchantID)
+	if _, err := tx.Exec(ctx,
+		`UPDATE inventory.item SET track_serial = true, row_version = row_version + 1 WHERE id = $1`,
+		mustParseUUID(t, itemID)); err != nil {
+		t.Fatalf("set track_serial: %v", err)
+	}
+	var userID pgtype.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM core.app_user WHERE username = $1`, "sr.snimt").Scan(&userID); err != nil {
+		t.Fatalf("find seed user: %v", err)
+	}
+	q := sqlcgen.New(tx)
+	for _, sn := range []string{"SN-IMT-1", "SN-IMT-2"} {
+		if _, err := q.InsertSerial(ctx, sqlcgen.InsertSerialParams{
+			CompanyID: mustParseUUID(t, e.companyID), MerchantID: mustParseUUID(t, e.merchantID),
+			ItemID: mustParseUUID(t, itemID), SerialNo: sn,
+			LocationID: mustParseUUID(t, e.locationID), CreatedBy: userID,
+		}); err != nil {
+			t.Fatalf("insert serial %s: %v", sn, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit serial seed: %v", err)
+	}
+
+	status, out := grRequest(t, e, http.MethodPost, "/api/v1/merchants/"+e.merchantID+"/inter-merchant-transfers",
+		map[string]any{
+			"to_merchant_id": merchantB, "from_location_id": e.locationID, "to_location_id": locB,
+			"lines": []map[string]any{{
+				"item_id": itemID, "lot_id": lotID, "source": "purchase",
+				"status": "available", "base_qty": "2",
+				"serial_ids": []string{"SN-IMT-1", "SN-IMT-2"},
+			}},
+		})
+	if status != http.StatusCreated {
+		t.Fatalf("send expected 201, got %d: %v", status, out)
+	}
+
+	// Serials now belong to merchant B, in_stock at the target location;
+	// query under B's GUC — RLS hides them from the sender.
+	tx = runtimeTenantTx(t, ctx, e.pool, e.companyID, merchantB)
+	for _, sn := range []string{"SN-IMT-1", "SN-IMT-2"} {
+		var merchantNow, locNow, statusNow string
+		if err := tx.QueryRow(ctx, `
+			SELECT merchant_id::text, location_id::text, status
+			FROM inventory.serial WHERE item_id = $1 AND serial_no = $2`,
+			mustParseUUID(t, itemID), sn).Scan(&merchantNow, &locNow, &statusNow); err != nil {
+			t.Fatalf("read serial %s as receiver: %v", sn, err)
+		}
+		if merchantNow != merchantB {
+			t.Fatalf("%s merchant_id = %s, want receiver %s", sn, merchantNow, merchantB)
+		}
+		if locNow != locB || statusNow != "in_stock" {
+			t.Fatalf("%s = location %s status %s, want %s in_stock", sn, locNow, statusNow, locB)
+		}
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback read tx: %v", err)
 	}
 }
 

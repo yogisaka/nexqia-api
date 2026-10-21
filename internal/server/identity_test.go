@@ -404,7 +404,7 @@ func TestSerialMovesWithTransfer(t *testing.T) {
 			t.Fatalf("insert serial %s: %v", sn, err)
 		}
 	}
-	if err := moveSerialsForTransfer(ctx, q, w.merchant, w.merchant, toLocation, item,
+	if err := moveSerialsForTransfer(ctx, q, tx, w.merchant, w.merchant, toLocation, item,
 		[]string{"SN-T1", "SN-T2"}); err != nil {
 		t.Fatalf("moveSerialsForTransfer: %v", err)
 	}
