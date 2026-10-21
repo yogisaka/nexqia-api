@@ -580,7 +580,17 @@ func PostSupplierReturnHandler(c *gin.Context) {
 		milli, _ := numericToMilli(l.BaseQty)
 		plans = append(plans, returnPlan{Line: l, Allocs: allocs, NeedMilli: milli})
 	}
-	moveDate := time.Now().UTC()
+	// Moves follow the merchant's business day (txDayStart), not UTC now.
+	loc, err := merchantLocation(c.Request.Context(), q, r.MerchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	moveDate, err := txDayStart(c.Request.Context(), q, loc)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	for _, p := range plans {
 		// HPP reversal is once per line with the line total (not per move).
 		if p.Line.Source == "purchase" {
@@ -721,7 +731,17 @@ func VoidSupplierReturnHandler(c *gin.Context) {
 			return
 		}
 	}
-	moveDate := time.Now().UTC()
+	// Reversal moves follow the merchant's business day (txDayStart).
+	retLoc, err := merchantLocation(c.Request.Context(), q, r.MerchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	moveDate, err := txDayStart(c.Request.Context(), q, retLoc)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	for _, m := range moves {
 		if _, err := applyStockMove(c.Request.Context(), q, r.MerchantID, r.CompanyID, AuthUserID(c), stockMoveInput{
 			Key:        stockKey{LocationID: m.LocationID, LotID: m.LotID, Source: m.Source, Status: "available"},
@@ -1221,7 +1241,17 @@ func PostDestructionHandler(c *gin.Context) {
 			Line: l, Item: item, UnitCost: unitCost, BalID: row.ID, NeedMilli: needMilli,
 		})
 	}
-	moveDate := time.Now().UTC()
+	// Moves follow the merchant's business day (txDayStart), not UTC now.
+	dLoc, err := merchantLocation(c.Request.Context(), q, d.MerchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	moveDate, err := txDayStart(c.Request.Context(), q, dLoc)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	for _, p := range plans {
 		if _, err := applyStockMove(c.Request.Context(), q, d.MerchantID, d.CompanyID, AuthUserID(c), stockMoveInput{
 			Key:      stockKey{LocationID: d.LocationID, LotID: p.Line.LotID, Source: p.Line.Source, Status: p.Line.FromStatus},
@@ -1294,7 +1324,17 @@ func VoidDestructionHandler(c *gin.Context) {
 	if !okM {
 		return
 	}
-	moveDate := time.Now().UTC()
+	// Reversal moves follow the merchant's business day (txDayStart).
+	desLoc, err := merchantLocation(c.Request.Context(), q, d.MerchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	moveDate, err := txDayStart(c.Request.Context(), q, desLoc)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	for _, m := range moves {
 		if _, err := applyStockMove(c.Request.Context(), q, d.MerchantID, d.CompanyID, AuthUserID(c), stockMoveInput{
 			Key:        stockKey{LocationID: m.LocationID, LotID: m.LotID, Source: m.Source, Status: m.Status},
@@ -1488,6 +1528,17 @@ func CreateInterMerchantTransferHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid to_merchant_id"})
 		return
 	}
+	// The target merchant must belong to the sender's company (IMT is an
+	// intra-company document; company-wide numbering and HPP assume it).
+	toMerchant, err := q.GetMerchantByID(c.Request.Context(), toMerchantID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && toMerchant.CompanyID != AuthCompanyID(c)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "target merchant outside your company"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	fromLocationID, okFL := parseUUID(req.FromLocationID)
 	toLocationID, okTL := parseUUID(req.ToLocationID)
 	if !okFL || !okTL {
@@ -1564,7 +1615,17 @@ func CreateInterMerchantTransferHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	moveDate := time.Now().UTC()
+	// transfer_out moves follow the sending merchant's business day.
+	sendLoc, err := merchantLocation(c.Request.Context(), q, fromMerchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	moveDate, err := txDayStart(c.Request.Context(), q, sendLoc)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	for i, l := range lines {
 		// unit_cost = the sender's avg cost at send time (0 for program/grant).
 		var unitCost pgtype.Numeric
@@ -1803,6 +1864,17 @@ func CancelInterMerchantTransferHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Cancelled-back moves follow the sending merchant's business day.
+	cancelLoc, err := merchantLocation(c.Request.Context(), q, t.FromMerchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	moveDate, err := txDayStart(c.Request.Context(), q, cancelLoc)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	for _, l := range lines {
 		// Re-apply the sender's HPP with the shipped cost (spec §9.3).
 		if l.Source == "purchase" {
@@ -1822,7 +1894,7 @@ func CancelInterMerchantTransferHandler(c *gin.Context) {
 			MoveType: "transfer_in",
 			RefType:  "inter_merchant_transfer",
 			RefID:    t.ID,
-			MoveDate: time.Now().UTC(),
+			MoveDate: moveDate,
 		}); err != nil {
 			if !respondStockError(c, err) {
 				respondInternalError(c, err)

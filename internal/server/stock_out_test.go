@@ -612,6 +612,30 @@ func TestInterMerchantTransferReceiverGuard(t *testing.T) {
 	}
 }
 
+// TestInterMerchantTransferForeignCompanyTarget — to_merchant_id of another
+// company is rejected with 403 "target merchant outside your company" (IMT is
+// an intra-company document; the sender's session is company A).
+func TestInterMerchantTransferForeignCompanyTarget(t *testing.T) {
+	e, _, _, itemID, lotID, _ := soIMTSeed(t, "xcomp", "081234620114")
+	_, merchantX, _, _, _ := seedAccountOwner(t, e.ctx, e.pool, e.router, "stock.outxcomp", "081234620115")
+
+	status, out := grRequest(t, e, http.MethodPost, "/api/v1/merchants/"+e.merchantID+"/inter-merchant-transfers",
+		map[string]any{
+			"to_merchant_id": merchantX, "from_location_id": e.locationID, "to_location_id": e.locationID,
+			"lines": []map[string]any{{
+				"item_id": itemID, "lot_id": lotID, "source": "purchase",
+				"status": "available", "base_qty": "1",
+			}},
+		})
+	if status != http.StatusForbidden || grErr(out) != "target merchant outside your company" {
+		t.Fatalf("foreign-company target expected 403 target merchant outside your company, got %d: %v", status, out)
+	}
+	// Sender's stock is untouched by the rejected send.
+	if got := grBalanceQty(t, e, itemID, "purchase"); got != "10.000" {
+		t.Fatalf("sender balance after rejected send = %q, want 10.000", got)
+	}
+}
+
 // TestOutboundDailyNumbers — SRET-/DSTR- are unique per merchant per day and
 // IMT- per company (two shipments from the same company share one sequence).
 func TestOutboundDailyNumbers(t *testing.T) {

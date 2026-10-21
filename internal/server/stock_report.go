@@ -435,14 +435,22 @@ func RecallReportHandler(c *gin.Context) {
 	// stock_balance / stock_move RLS pin rows to app.current_merchant_id, so the
 	// company-wide scan re-pins the GUC per merchant of the company inside the
 	// request transaction. Patient names never reach the application log — this
-	// handler logs nothing.
-	merchants, err := q.ListMerchantsByCompany(c.Request.Context(), sqlcgen.ListMerchantsByCompanyParams{
-		CompanyID: AuthCompanyID(c),
-		Limit:     1000,
-	})
-	if err != nil {
-		respondInternalError(c, err)
-		return
+	// handler logs nothing. Merchants are paged until exhausted so the recall
+	// report is never silently truncated.
+	const merchantPage = 500
+	var merchants []sqlcgen.CoreMerchant
+	for offset := int32(0); ; offset += merchantPage {
+		page, err := q.ListMerchantsByCompany(c.Request.Context(), sqlcgen.ListMerchantsByCompanyParams{
+			CompanyID: AuthCompanyID(c), Limit: merchantPage, Offset: offset,
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		merchants = append(merchants, page...)
+		if len(page) < merchantPage {
+			break
+		}
 	}
 	balances := make([]gin.H, 0, len(merchants))
 	usages := make([]gin.H, 0)

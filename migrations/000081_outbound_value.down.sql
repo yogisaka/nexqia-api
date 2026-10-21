@@ -15,6 +15,12 @@ DROP TABLE IF EXISTS inventory.destruction_line;
 DROP TABLE IF EXISTS inventory.destruction;
 DROP TABLE IF EXISTS inventory.supplier_return_line;
 DROP TABLE IF EXISTS inventory.supplier_return;
+
+-- The restored 8-value move_type CHECK rejects retur/pemusnahan ledger rows.
+-- Their source documents (supplier_return, destruction) are dropped above and
+-- the ledger is derived from them, so delete the derived stock_move rows.
+DELETE FROM inventory.stock_move WHERE move_type IN ('supplier_return', 'destruction');
+
 ALTER TABLE inventory.stock_move DROP CONSTRAINT stock_move_move_type_check;
 ALTER TABLE inventory.stock_move ADD CONSTRAINT stock_move_move_type_check
     CHECK (move_type IN ('receipt','issue','transfer_out','transfer_in','adjustment','count','status_change','reversal'));
