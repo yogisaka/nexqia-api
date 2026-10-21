@@ -304,3 +304,173 @@ func TestStockDB_Procurement(t *testing.T) {
 		t.Fatalf("merchant A must see only its own PR, got %d", seenA)
 	}
 }
+
+// TestStockDB_Outbound — migration 000081 outbound value: supplier_return and
+// destruction are valid stock_move types (bogus ones still rejected), the
+// supplier_return posted/draft/void invariants hold (posted_at survives void),
+// destruction witnesses must be a JSON array, inter-merchant transfers reject
+// identical merchants and duplicate per-company numbers (other companies are
+// fine), supplier returns are invisible across merchants, and a company
+// session sees its inter-merchant transfers across all of its merchants.
+func TestStockDB_Outbound(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantA, _, token, refreshCookie := seedAccountOwner(t, ctx, pool, router, "stockdb.outbound", "081234572006")
+	merchantB := createTenantMerchant(t, ctx, pool, router, token, refreshCookie, companyID, "Cabang Outbound")
+	company2ID, merchantC, _, token2, refreshCookie2 := seedAccountOwner(t, ctx, pool, router, "stockdb.outbound2", "081234572007")
+	merchantD := createTenantMerchant(t, ctx, pool, router, token2, refreshCookie2, company2ID, "Cabang Outbound Dua")
+
+	txA := runtimeTenantTx(t, ctx, pool, companyID, merchantA)
+	locationA, itemID, lotID := seedStockRefs(t, ctx, txA, companyID, merchantA, "O1")
+	var supplierID string
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO core.supplier (company_id, merchant_id, code, name)
+		VALUES ($1,$2,'SUP-RET','Supplier Retur Uji') RETURNING id::text`,
+		companyID, merchantA).Scan(&supplierID); err != nil {
+		t.Fatalf("insert supplier: %v", err)
+	}
+
+	// (a) new move_type values pass the widened CHECK, bogus ones do not.
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.stock_move
+			(company_id, merchant_id, move_date, move_type, location_id, item_id, lot_id, source, status, quantity)
+		VALUES ($1,$2,CURRENT_DATE,'supplier_return',$3,$4,$5,'purchase','available',-3)`,
+		companyID, merchantA, locationA, itemID, lotID); err != nil {
+		t.Fatalf("insert supplier_return move: %v", err)
+	}
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.stock_move
+			(company_id, merchant_id, move_date, move_type, location_id, item_id, lot_id, source, status, quantity)
+		VALUES ($1,$2,CURRENT_DATE,'destruction',$3,$4,$5,'purchase','available',-2)`,
+		companyID, merchantA, locationA, itemID, lotID); err != nil {
+		t.Fatalf("insert destruction move: %v", err)
+	}
+	savepointExec(t, ctx, txA, "bogus move_type", "stock_move_move_type_check",
+		`INSERT INTO inventory.stock_move
+			(company_id, merchant_id, move_date, move_type, location_id, item_id, lot_id, source, status, quantity)
+			VALUES ($1,$2,CURRENT_DATE,'bogus',$3,$4,$5,'purchase','available',-1)`,
+		companyID, merchantA, locationA, itemID, lotID)
+
+	// (b) supplier_return status invariants.
+	savepointExec(t, ctx, txA, "posted return without posted_at", "chk_supplier_return_posted",
+		`INSERT INTO inventory.supplier_return (company_id, merchant_id, supplier_id, return_no, status, reason)
+			VALUES ($1,$2,$3,'SRET-1','posted',' Salah kirim ')`,
+		companyID, merchantA, supplierID)
+	savepointExec(t, ctx, txA, "draft return with posted_at", "chk_supplier_return_posted",
+		`INSERT INTO inventory.supplier_return (company_id, merchant_id, supplier_id, return_no, status, reason, posted_at)
+			VALUES ($1,$2,$3,'SRET-1','draft','Salah kirim',now())`,
+		companyID, merchantA, supplierID)
+	savepointExec(t, ctx, txA, "void return without reason", "chk_supplier_return_void",
+		`INSERT INTO inventory.supplier_return (company_id, merchant_id, supplier_id, return_no, status, reason, posted_at)
+			VALUES ($1,$2,$3,'SRET-1','void','Salah kirim',now())`,
+		companyID, merchantA, supplierID)
+	var returnID string
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO inventory.supplier_return (company_id, merchant_id, supplier_id, return_no, reason)
+		VALUES ($1,$2,$3,'SRET-1','Salah kirim') RETURNING id::text`,
+		companyID, merchantA, supplierID).Scan(&returnID); err != nil {
+		t.Fatalf("insert draft supplier_return: %v", err)
+	}
+	if _, err := txA.Exec(ctx, `
+		UPDATE inventory.supplier_return SET status = 'posted', posted_at = now(), posted_by = NULL
+		WHERE id = $1`, returnID); err != nil {
+		t.Fatalf("post supplier_return: %v", err)
+	}
+	if _, err := txA.Exec(ctx, `
+		UPDATE inventory.supplier_return SET status = 'void', void_reason = 'Salah posting'
+		WHERE id = $1`, returnID); err != nil {
+		t.Fatalf("void supplier_return keeping posted_at: %v", err)
+	}
+	var voided, hasPostedAt bool
+	if err := txA.QueryRow(ctx,
+		"SELECT status = 'void', posted_at IS NOT NULL FROM inventory.supplier_return WHERE id = $1", returnID).Scan(&voided, &hasPostedAt); err != nil {
+		t.Fatalf("reread supplier_return: %v", err)
+	}
+	if !voided || !hasPostedAt {
+		t.Fatalf("void return must keep posted_at, got voided=%v posted_at=%v", voided, hasPostedAt)
+	}
+
+	// (c) destruction witnesses must be a JSON array.
+	savepointExec(t, ctx, txA, "destruction witnesses non-array", "chk_destruction_witnesses",
+		`INSERT INTO inventory.destruction (company_id, merchant_id, location_id, occurred_on, destruction_no, method, witnesses)
+			VALUES ($1,$2,$3,CURRENT_DATE,'DSTR-1','Dibakar','"x"'::jsonb)`,
+		companyID, merchantA, locationA)
+
+	// (d) inter-merchant transfer: distinct merchants, unique no per company.
+	savepointExec(t, ctx, txA, "imt identical merchants", "chk_imt_distinct",
+		`INSERT INTO inventory.inter_merchant_transfer
+			(company_id, from_merchant_id, to_merchant_id, from_location_id, to_location_id, imt_no)
+			VALUES ($1,$2,$2,$3,$3,'IMT-0001')`,
+		companyID, merchantA, locationA)
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.inter_merchant_transfer
+			(company_id, from_merchant_id, to_merchant_id, from_location_id, to_location_id, imt_no)
+			VALUES ($1,$2,$3,$4,$5,'IMT-0001')`,
+		companyID, merchantA, merchantB, locationA, locationA); err != nil {
+		t.Fatalf("insert valid IMT: %v", err)
+	}
+	savepointExec(t, ctx, txA, "duplicate imt_no same company", "uq_inter_merchant_transfer_no",
+		`INSERT INTO inventory.inter_merchant_transfer
+			(company_id, from_merchant_id, to_merchant_id, from_location_id, to_location_id, imt_no)
+			VALUES ($1,$2,$3,$4,$5,'IMT-0001')`,
+		companyID, merchantA, merchantB, locationA, locationA)
+
+	// (e) RLS: merchant B cannot read merchant A's returns; a company session
+	// sees its IMT across merchants; the same imt_no in another company is fine.
+	if err := txA.Commit(ctx); err != nil {
+		t.Fatalf("commit merchant A rows: %v", err)
+	}
+	txB := runtimeTenantTx(t, ctx, pool, companyID, merchantB)
+	var seenReturnsB int
+	if err := txB.QueryRow(ctx, "SELECT count(*) FROM inventory.supplier_return").Scan(&seenReturnsB); err != nil {
+		t.Fatalf("count supplier_return as merchant B: %v", err)
+	}
+	if seenReturnsB != 0 {
+		t.Fatalf("merchant B must not see merchant A returns, got %d", seenReturnsB)
+	}
+	txA2 := runtimeTenantTx(t, ctx, pool, companyID, merchantA)
+	var seenReturnsA int
+	if err := txA2.QueryRow(ctx, "SELECT count(*) FROM inventory.supplier_return").Scan(&seenReturnsA); err != nil {
+		t.Fatalf("count supplier_return as merchant A: %v", err)
+	}
+	if seenReturnsA != 1 {
+		t.Fatalf("merchant A must see its own return, got %d", seenReturnsA)
+	}
+
+	txCompany := runtimeTx(t, ctx, pool, companyID)
+	var seenIMT int
+	if err := txCompany.QueryRow(ctx, "SELECT count(*) FROM inventory.inter_merchant_transfer").Scan(&seenIMT); err != nil {
+		t.Fatalf("count IMT as company session: %v", err)
+	}
+	if seenIMT != 1 {
+		t.Fatalf("company session must see its IMT across merchants, got %d", seenIMT)
+	}
+	if err := txCompany.Rollback(ctx); err != nil {
+		t.Fatalf("rollback company session: %v", err)
+	}
+
+	txC := runtimeTenantTx(t, ctx, pool, company2ID, merchantC)
+	var locationC string
+	if err := txC.QueryRow(ctx, `
+		INSERT INTO core.location (company_id, merchant_id, parent_id, kind, code, name, functions)
+		VALUES ($1,$2,NULL,'room','LOC-OC','Gudang Perusahaan Dua',ARRAY['warehouse']::text[])
+		RETURNING id::text`, company2ID, merchantC).Scan(&locationC); err != nil {
+		t.Fatalf("insert company-2 location: %v", err)
+	}
+	if _, err := txC.Exec(ctx, `
+		INSERT INTO inventory.inter_merchant_transfer
+			(company_id, from_merchant_id, to_merchant_id, from_location_id, to_location_id, imt_no)
+		VALUES ($1,$2,$3,$4,$5,'IMT-0001')`, company2ID, merchantC, merchantD, locationC, locationC); err != nil {
+		t.Fatalf("same imt_no in another company must insert: %v", err)
+	}
+	var seenIMTC int
+	if err := txC.QueryRow(ctx, "SELECT count(*) FROM inventory.inter_merchant_transfer").Scan(&seenIMTC); err != nil {
+		t.Fatalf("count IMT as company 2: %v", err)
+	}
+	if seenIMTC != 1 {
+		t.Fatalf("company 2 must see only its own IMT, got %d", seenIMTC)
+	}
+}
