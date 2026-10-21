@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/yogisaka/nexqia-api/internal/auth"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
 
@@ -374,5 +375,371 @@ func TestFridgeTempFlag(t *testing.T) {
 	}
 	if fridgeTempOutOfRange(8.0) || fridgeTempOutOfRange(2.0) {
 		t.Fatal("2.0 and 8.0 are the inclusive limits")
+	}
+}
+
+// ---- HTTP wiring tests (NewRouter; spec §7.2 #4, §7.3) ----
+
+// ccTestJWTSecret mirrors stockTestConfig's JWTSecret for token minting
+// (testJWTSecret lives in the external server_test package).
+const ccTestJWTSecret = "test-secret"
+
+// ccHTTPWorld adds the live router and an owner access token on top of the
+// stock world so the emergency/cold-chain routes can be exercised end-to-end.
+type ccHTTPWorld struct {
+	w      *stockWorld
+	router interface {
+		ServeHTTP(http.ResponseWriter, *http.Request)
+	}
+	token string
+}
+
+// ccSeedHTTPWorld builds the world through the real register endpoints and
+// seeds one warehouse location (committed, pool connection free).
+func ccSeedHTTPWorld(t *testing.T, ctx context.Context, username, phone, merchantName string) *ccHTTPWorld {
+	t.Helper()
+	pool := newStockTestPool(t, ctx)
+	redisClient := newStockTestRedis(t, ctx)
+	router := NewRouter(pool, redisClient, stockTestConfig())
+	companyStr, userStr, _, _ := stockRegisterOwner(t, ctx, pool, router, username, phone)
+	merchantStr := stockMerchantID(t, ctx, pool, companyStr)
+
+	tx := stockRuntimeTx(t, ctx, pool, companyStr, merchantStr)
+	tablet := stockUnitID(t, ctx, tx, "tablet")
+	var locationID, itemID pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.location (company_id, merchant_id, kind, code, name, functions)
+		VALUES ($1,$2,'room','GUD-EK','Gudang Troli', ARRAY['warehouse']::text[]) RETURNING id`,
+		companyStr, merchantStr).Scan(&locationID); err != nil {
+		t.Fatalf("insert location: %v", err)
+	}
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO inventory.item (company_id, code, name, item_kind, pricing_category, base_unit_id, kfa_code, drug_class)
+		VALUES ($1,'ITM-EK','Obat Uji Troli','drug','generic',$2,'93100091','keras') RETURNING id`,
+		companyStr, tablet).Scan(&itemID); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	w := &stockWorld{
+		pool: pool, company: stockMustUUID(t, ctx, tx, companyStr),
+		merchant: stockMustUUID(t, ctx, tx, merchantStr), user: stockMustUUID(t, ctx, tx, userStr),
+		companyStr: companyStr, merchantStr: merchantStr, userStr: userStr,
+		location: locationID, item: itemID,
+		day: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC),
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+	token, err := auth.GenerateToken(ccTestJWTSecret, userStr, companyStr, merchantStr, "", username, "cc-http-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	return &ccHTTPWorld{w: w, router: router, token: token}
+}
+
+// ccHTTPReq performs one authenticated request against the live router.
+func ccHTTPReq(t *testing.T, h *ccHTTPWorld, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var raw []byte
+	if body != nil {
+		raw, _ = json.Marshal(body)
+	}
+	req := httptest.NewRequest(method, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+h.token)
+	req.Header.Set("X-Company-ID", h.w.companyStr)
+	req.Header.Set("X-Merchant-ID", h.w.merchantStr)
+	req.Header.Set("X-Device-Id", "cc-http-device")
+	rec := httptest.NewRecorder()
+	h.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// ccDecodeData extracts the envelope's data object.
+func ccDecodeData(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response %s: %v", rec.Body.String(), err)
+	}
+	return resp.Data
+}
+
+// ccSeedKitLot inserts a lot for an arbitrary item (stockSeedLot is pinned to
+// the world item) and returns its id.
+func ccSeedKitLot(t *testing.T, ctx context.Context, tx pgx.Tx, w *stockWorld, itemID pgtype.UUID, batch string, expiry *time.Time) pgtype.UUID {
+	t.Helper()
+	var id pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO inventory.lot (company_id, item_id, batch_no, expiry_date)
+		VALUES ($1,$2,$3,$4) RETURNING id`,
+		w.companyStr, itemID, batch, expiry).Scan(&id); err != nil {
+		t.Fatalf("insert kit lot %s: %v", batch, err)
+	}
+	return id
+}
+
+// TestEmergencyKitSealLifecycle — full §7.2 #4 loop over the real routes:
+// create kit (2 standard items) → seal 201 → second seal 409 kit already
+// sealed → break with one line (saldo decremented, seal broken_at stamped,
+// move ref_type emergency_kit).
+func TestEmergencyKitSealLifecycle(t *testing.T) {
+	ctx := context.Background()
+	h := ccSeedHTTPWorld(t, ctx, "ekseal", "081234574006", "Klinik Segel")
+	w := h.w
+
+	seed := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	lot1 := stockSeedLot(t, ctx, seed, w, "EK-1", nil, false)
+	ccSeedBalance(t, ctx, seed, w, w.item, lot1, 10_000)
+	var item2 pgtype.UUID
+	if err := seed.QueryRow(ctx, `
+		INSERT INTO inventory.item (company_id, code, name, item_kind, pricing_category, base_unit_id, kfa_code, drug_class)
+		VALUES ($1,'ITM-EK2','Obat Uji Troli 2','drug','generic',
+			(SELECT id FROM inventory.unit WHERE code='tablet'),'93100092','keras') RETURNING id`,
+		w.companyStr).Scan(&item2); err != nil {
+		t.Fatalf("insert item2: %v", err)
+	}
+	lot2 := ccSeedKitLot(t, ctx, seed, w, item2, "EK-2", nil)
+	ccSeedBalance(t, ctx, seed, w, item2, lot2, 10_000)
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+
+	kitPath := "/api/v1/merchants/" + w.merchantStr + "/emergency-kits"
+	rec := ccHTTPReq(t, h, http.MethodPost, kitPath, map[string]any{
+		"name": "Troli IGD", "location_id": w.location.String(),
+		"items": []map[string]any{
+			{"item_id": w.item.String(), "base_qty": "2"},
+			{"item_id": item2.String(), "base_qty": "1"},
+		},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create kit expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+	kitID := ccDecodeData(t, rec)["id"].(string)
+	sealsPath := "/api/v1/emergency-kits/" + kitID + "/seals"
+
+	rec = ccHTTPReq(t, h, http.MethodPost, sealsPath, map[string]any{"seal_no": "SEG-1"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seal expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+	sealID := ccDecodeData(t, rec)["id"].(string)
+
+	rec = ccHTTPReq(t, h, http.MethodPost, sealsPath, map[string]any{"seal_no": "SEG-2"})
+	if rec.Code != http.StatusConflict || rec.Body.String() != `{"error":"kit already sealed"}` {
+		t.Fatalf("second seal expected 409 kit already sealed, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	breakPath := "/api/v1/emergency-kits/" + kitID + "/seals/" + sealID + "/break"
+	rec = ccHTTPReq(t, h, http.MethodPost, breakPath, map[string]any{
+		"reason": "kegawatdaruratan",
+		"lines":  []map[string]any{{"item_id": w.item.String(), "qty": "3"}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("break expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	data := ccDecodeData(t, rec)
+	if data["broken_at"] == nil || data["broken_at"] == "" {
+		t.Fatalf("broken_at must be stamped, got %v", data["broken_at"])
+	}
+
+	var bal int64
+	if err := w.pool.QueryRow(ctx, `
+		SELECT (quantity*1000)::bigint FROM inventory.stock_balance
+		WHERE item_id=$1 AND lot_id=$2 AND status='available'`, w.item, lot1).Scan(&bal); err != nil || bal != 7_000 {
+		t.Fatalf("saldo after break = %d (err %v), want 7000", bal, err)
+	}
+	var moves int
+	if err := w.pool.QueryRow(ctx, `
+		SELECT count(*) FROM inventory.stock_move
+		WHERE ref_type='emergency_kit' AND ref_id=$1 AND item_id=$2 AND quantity=-3`,
+		sealID, w.item).Scan(&moves); err != nil || moves != 1 {
+		t.Fatalf("emergency_kit moves = %d (err %v), want 1", moves, err)
+	}
+
+	// The report no longer shows an active seal.
+	rec = ccHTTPReq(t, h, http.MethodGet, "/api/v1/emergency-kits/"+kitID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("report expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	if as := ccDecodeData(t, rec)["active_seal"]; as != nil {
+		t.Fatalf("active_seal after break must be absent, got %v", as)
+	}
+}
+
+// TestEmergencyKitRefillIncomplete — sealing with a shortage is blocked 409
+// kit refill incomplete, and passes with an override reason (201).
+func TestEmergencyKitRefillIncomplete(t *testing.T) {
+	ctx := context.Background()
+	h := ccSeedHTTPWorld(t, ctx, "ekrefill", "081234574007", "Klinik Isi")
+	w := h.w
+
+	seed := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	lot := stockSeedLot(t, ctx, seed, w, "EK-R1", nil, false)
+	ccSeedBalance(t, ctx, seed, w, w.item, lot, 2_000) // standar 5, saldo 2
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+
+	kitPath := "/api/v1/merchants/" + w.merchantStr + "/emergency-kits"
+	rec := ccHTTPReq(t, h, http.MethodPost, kitPath, map[string]any{
+		"name": "Troli Isi", "location_id": w.location.String(),
+		"items": []map[string]any{{"item_id": w.item.String(), "base_qty": "5"}},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create kit expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+	kitID := ccDecodeData(t, rec)["id"].(string)
+
+	rec = ccHTTPReq(t, h, http.MethodPost, "/api/v1/emergency-kits/"+kitID+"/seals",
+		map[string]any{"seal_no": "SEG-K"})
+	if rec.Code != http.StatusConflict || rec.Body.String() != `{"error":"kit refill incomplete"}` {
+		t.Fatalf("short seal expected 409 kit refill incomplete, got %d %s", rec.Code, rec.Body.String())
+	}
+	rec = ccHTTPReq(t, h, http.MethodPost, "/api/v1/emergency-kits/"+kitID+"/seals", map[string]any{
+		"seal_no": "SEG-K", "override_reason": "keputusan KIB ahli tepat",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("override seal expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestEmergencyKitReport — the GET detail is the §7.2 #4 periodic check
+// report: on_hand from the available saldo, nearest_expiry from stock ED and
+// the active seal's age in days (0 right after sealing).
+func TestEmergencyKitReport(t *testing.T) {
+	ctx := context.Background()
+	h := ccSeedHTTPWorld(t, ctx, "ekreport", "081234574008", "Klinik Lapor")
+	w := h.w
+
+	seed := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	ed := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	lot := stockSeedLot(t, ctx, seed, w, "EK-P1", &ed, false)
+	ccSeedBalance(t, ctx, seed, w, w.item, lot, 2_000)
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+
+	kitPath := "/api/v1/merchants/" + w.merchantStr + "/emergency-kits"
+	rec := ccHTTPReq(t, h, http.MethodPost, kitPath, map[string]any{
+		"name": "Troli Lapor", "location_id": w.location.String(),
+		"items": []map[string]any{{"item_id": w.item.String(), "base_qty": "2"}},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create kit expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+	kitID := ccDecodeData(t, rec)["id"].(string)
+	rec = ccHTTPReq(t, h, http.MethodPost, "/api/v1/emergency-kits/"+kitID+"/seals", map[string]any{"seal_no": "SEG-P"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seal expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = ccHTTPReq(t, h, http.MethodGet, "/api/v1/emergency-kits/"+kitID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("report expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	data := ccDecodeData(t, rec)
+	items, ok := data["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("report items = %v, want exactly one", data["items"])
+	}
+	item := items[0].(map[string]any)
+	if item["on_hand"] != "2.000" {
+		t.Fatalf("on_hand = %v, want 2.000", item["on_hand"])
+	}
+	if item["nearest_expiry"] != "2026-11-01" {
+		t.Fatalf("nearest_expiry = %v, want 2026-11-01", item["nearest_expiry"])
+	}
+	seal, ok := data["active_seal"].(map[string]any)
+	if !ok || seal["seal_no"] != "SEG-P" {
+		t.Fatalf("active_seal = %v, want SEG-P", data["active_seal"])
+	}
+	// Sealed within the same transaction window: age 0 full days.
+	if age, okA := seal["age_days"].(float64); !okA || age != 0 {
+		t.Fatalf("age_days = %v, want 0", seal["age_days"])
+	}
+}
+
+// TestColdChainRoutesHTTP — the cold chain wiring over NewRouter: an opened
+// container is created 201 through the route and an out-of-range fridge
+// reading is flagged in the LIST response.
+func TestColdChainRoutesHTTP(t *testing.T) {
+	ctx := context.Background()
+	h := ccSeedHTTPWorld(t, ctx, "ekchain", "081234574009", "Klinik Rantai")
+	w := h.w
+
+	seed := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	vax := ccSeedVaccineItem(t, ctx, seed, w, "CHT")
+	world := *w
+	world.item = vax
+	lot := stockSeedLot(t, ctx, seed, &world, "CHT-1", nil, false)
+	ccSeedBalance(t, ctx, seed, &world, vax, lot, 10_000)
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+
+	// POST opened-containers → 201 (vaccine item carries BUD rules).
+	rec := ccHTTPReq(t, h, http.MethodPost, "/api/v1/merchants/"+w.merchantStr+"/opened-containers", map[string]any{
+		"item_id": vax.String(), "lot_id": lot.String(), "location_id": w.location.String(),
+		"opened_at": "2026-10-21T08:00:00+07:00", "remaining_base_qty": "1",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("opened container expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Fridge + out-of-range reading, flagged in the list response.
+	rec = ccHTTPReq(t, h, http.MethodPost, "/api/v1/merchants/"+w.merchantStr+"/fridges", map[string]any{
+		"name": "Lemari Vaksin Uji",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create fridge expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+	fridgeID := ccDecodeData(t, rec)["id"].(string)
+	rec = ccHTTPReq(t, h, http.MethodPost, "/api/v1/merchants/"+w.merchantStr+"/fridge-temp-logs", map[string]any{
+		"fridge_id": fridgeID, "temperature": "15.0",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("temp log expected 201, got %d %s", rec.Code, rec.Body.String())
+	}
+	rec = ccHTTPReq(t, h, http.MethodGet, "/api/v1/merchants/"+w.merchantStr+"/fridge-temp-logs", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("temp log list expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Data) != 1 || list.Data[0]["out_of_range"] != true {
+		t.Fatalf("list = %v, want one entry flagged out_of_range", list.Data)
+	}
+}
+
+// TestVvmStageRequiredHTTP — a vaccine use from a container without a VVM
+// stage is rejected 400 "vvm stage required" through the real route.
+func TestVvmStageRequiredHTTP(t *testing.T) {
+	ctx := context.Background()
+	h := ccSeedHTTPWorld(t, ctx, "ekvvm", "081234574010", "Klinik VVMHTTP")
+	w := h.w
+
+	seed := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	vax := ccSeedVaccineItem(t, ctx, seed, w, "CVH")
+	world := *w
+	world.item = vax
+	lot := stockSeedLot(t, ctx, seed, &world, "CVH-1", nil, false)
+	ccSeedBalance(t, ctx, seed, &world, vax, lot, 10_000)
+	container := ccSeedContainer(t, ctx, seed, &world, vax, lot, time.Now().UTC().Add(24*time.Hour), 10_000)
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+
+	rec := ccHTTPReq(t, h, http.MethodPost, "/api/v1/merchants/"+w.merchantStr+"/stock/usage", map[string]any{
+		"location_id": w.location.String(), "item_id": vax.String(),
+		"quantity": "1", "reason": "pemakaian", "opened_container_id": container.String(),
+	})
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != `{"error":"vvm stage required"}` {
+		t.Fatalf("vaccine use without stage expected 400 vvm stage required, got %d %s", rec.Code, rec.Body.String())
 	}
 }

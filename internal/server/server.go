@@ -143,6 +143,10 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// billing report (spec 2026-10-20-inventory-17b-procurement-special-cases
 	// §6, migration 000082).
 	RegisterIdentityRoutes(locked)
+	// Cold chain + emergency kits (spec 2026-10-20-inventory-17b-procurement-
+	// special-cases §7, migration 000083).
+	RegisterColdChainRoutes(locked)
+	RegisterEmergencyRoutes(locked)
 	RegisterFeePayoutRoutes(locked, cfg)
 	RegisterPhysicianRoutes(locked)
 	RegisterPhysicianScheduleRoutes(locked)

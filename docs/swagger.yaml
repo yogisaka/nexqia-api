@@ -92,6 +92,31 @@ definitions:
     - consented_by_name
     - relation
     type: object
+  server.breakSealLine:
+    properties:
+      item_id:
+        type: string
+      qty:
+        type: string
+      serial_ids:
+        items:
+          type: string
+        type: array
+    required:
+    - item_id
+    - qty
+    type: object
+  server.breakSealRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/server.breakSealLine'
+        type: array
+      reason:
+        type: string
+    required:
+    - reason
+    type: object
   server.cancelPurchaseOrderRequest:
     properties:
       cancel_reason:
@@ -788,6 +813,17 @@ definitions:
     - company_id
     - name
     type: object
+  server.createSealRequest:
+    properties:
+      note:
+        type: string
+      override_reason:
+        type: string
+      seal_no:
+        type: string
+    required:
+    - seal_no
+    type: object
   server.createServiceItemRequest:
     properties:
       code:
@@ -930,6 +966,34 @@ definitions:
     properties:
       name:
         type: string
+    type: object
+  server.emergencyKitItemRequest:
+    properties:
+      base_qty:
+        type: string
+      item_id:
+        type: string
+    required:
+    - base_qty
+    - item_id
+    type: object
+  server.emergencyKitRequest:
+    properties:
+      is_active:
+        type: boolean
+      items:
+        items:
+          $ref: '#/definitions/server.emergencyKitItemRequest'
+        type: array
+      location_id:
+        type: string
+      name:
+        type: string
+      note:
+        type: string
+    required:
+    - location_id
+    - name
     type: object
   server.fridgeRequest:
     properties:
@@ -5770,6 +5834,145 @@ paths:
       summary: List the document type catalog
       tags:
       - patient-document
+  /emergency-kits/{id}:
+    get:
+      parameters:
+      - description: Kit UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Periodic check report of one emergency kit (contents, on-hand, nearest
+        expiry, active seal age)
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Kit UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Kit fields
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.emergencyKitRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update an emergency kit (partial; items replace the contents when present)
+      tags:
+      - inventory
+  /emergency-kits/{id}/seals:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Kit UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Seal
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createSealRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Seal an emergency kit after refill (blocks while a seal is active or
+        the refill is incomplete without an override reason)
+      tags:
+      - inventory
+  /emergency-kits/{id}/seals/{sid}/break:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Kit UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Seal UUID
+        in: path
+        name: sid
+        required: true
+        type: string
+      - description: Reason and issued lines
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.breakSealRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Break the active seal and issue stock per line through the wizard (ref_type
+        emergency_kit)
+      tags:
+      - inventory
   /fee-batches/{id}:
     delete:
       parameters:
@@ -7522,6 +7725,57 @@ paths:
       summary: List a merchant's display boards
       tags:
       - display-board
+  /merchants/{id}/emergency-kits:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the merchant's emergency kits
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Kit
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.emergencyKitRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create an emergency kit with its standard contents
+      tags:
+      - inventory
   /merchants/{id}/fee-batches:
     get:
       parameters:
