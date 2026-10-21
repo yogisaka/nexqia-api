@@ -48,9 +48,9 @@ func TestRoleTemplate_SeedComplete(t *testing.T) {
 	pool := newTestPostgresPool(t, ctx)
 
 	want := map[string]struct{ roles, perms int }{
-		"klinik_pratama": {5, 37},
-		"klinik_utama":   {7, 44},
-		"rumah_sakit":    {8, 46},
+		"klinik_pratama": {5, 51},
+		"klinik_utama":   {7, 60},
+		"rumah_sakit":    {8, 62},
 	}
 	for code, w := range want {
 		var version, roles, perms int
@@ -64,8 +64,8 @@ func TestRoleTemplate_SeedComplete(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: query template: %v", code, err)
 		}
-		if version != 10 || roles != w.roles || perms != w.perms {
-			t.Fatalf("%s: expected version 10, %d roles, %d perms; got %d, %d, %d", code, w.roles, w.perms, version, roles, perms)
+		if version != 13 || roles != w.roles || perms != w.perms {
+			t.Fatalf("%s: expected version 13, %d roles, %d perms; got %d, %d, %d", code, w.roles, w.perms, version, roles, perms)
 		}
 	}
 
@@ -402,8 +402,8 @@ func TestRoleTemplate_ApplyCreatesRoles(t *testing.T) {
 		WHERE r.company_id = $1 AND r.name = 'Admin Klinik'`, companyID).Scan(&adminPerms); err != nil {
 		t.Fatalf("count admin permissions: %v", err)
 	}
-	if adminPerms != 24 {
-		t.Fatalf("expected 24 Admin Klinik permissions, got %d", adminPerms)
+	if adminPerms != 30 {
+		t.Fatalf("expected 30 Admin Klinik permissions, got %d", adminPerms)
 	}
 
 	var version int
@@ -416,7 +416,7 @@ func TestRoleTemplate_ApplyCreatesRoles(t *testing.T) {
 		t.Fatalf("read template_application: %v", err)
 	}
 	sort.Strings(created)
-	if version != 10 || len(created) != 5 || appliedBy != userID || platformAdmin != nil {
+	if version != 13 || len(created) != 5 || appliedBy != userID || platformAdmin != nil {
 		t.Fatalf("template_application: version %d, created %v, applied_by %s, platform_admin %v", version, created, appliedBy, platformAdmin)
 	}
 }
@@ -561,8 +561,8 @@ func TestRoleTemplate_RuntimeReadsAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRoleTemplateRoles as app_runtime: %v", err)
 	}
-	if len(rows) != 37+44+46 {
-		t.Fatalf("expected 127 template role/permission rows as app_runtime, got %d", len(rows))
+	if len(rows) != 51+60+62 {
+		t.Fatalf("expected 173 template role/permission rows as app_runtime, got %d", len(rows))
 	}
 	tpl, err := q.GetRoleTemplate(ctx, rows[0].TemplateID)
 	if err != nil {
