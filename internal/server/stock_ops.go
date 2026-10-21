@@ -289,12 +289,28 @@ func StockTransferHandler(c *gin.Context) {
 			respondInternalError(c, errC)
 			return
 		}
+		// Consignment balances carry their supplier (amendment 2026-10-21):
+		// both sides of the transfer key the source balance's supplier.
+		var supplierID pgtype.UUID
+		if lr.Source == "consignment" {
+			sup, errS := balanceSupplierAtSlot(c.Request.Context(), TxFromContext(c),
+				merchantID, fromID, lotID, lr.Source, "available")
+			if errors.Is(errS, errConsignmentSupplierAmbiguous) {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier ambiguous"})
+				return
+			}
+			if errS != nil {
+				respondInternalError(c, errS)
+				return
+			}
+			supplierID = sup
+		}
 		base := stockMoveInput{
 			ItemID: itemID, UnitCost: avg, MoveType: "transfer_out",
 			RefType: "transfer", RefID: refID, MoveDate: moveDate,
 		}
 		out := base
-		out.Key = stockKey{LocationID: fromID, LotID: lotID, Source: lr.Source, Status: "available"}
+		out.Key = stockKey{LocationID: fromID, LotID: lotID, Source: lr.Source, Status: "available", SupplierID: supplierID}
 		out.Qty = negateNumeric(qty)
 		moveID, errM := applyStockMove(c.Request.Context(), q, merchantID, AuthCompanyID(c), AuthUserID(c), out)
 		if errM != nil {
@@ -310,7 +326,7 @@ func StockTransferHandler(c *gin.Context) {
 			return
 		}
 		in := base
-		in.Key = stockKey{LocationID: toID, LotID: lotID, Source: lr.Source, Status: "available"}
+		in.Key = stockKey{LocationID: toID, LotID: lotID, Source: lr.Source, Status: "available", SupplierID: supplierID}
 		in.Qty = qty
 		in.MoveType = "transfer_in"
 		moveID, errM = applyStockMove(c.Request.Context(), q, merchantID, AuthCompanyID(c), AuthUserID(c), in)
@@ -418,8 +434,24 @@ func StockAdjustmentHandler(c *gin.Context) {
 		respondInternalError(c, errC)
 		return
 	}
+	// A consignment adjustment joins the existing balance's supplier
+	// dimension (amendment 2026-10-21); no balance yet reads as NULL.
+	var supplierID pgtype.UUID
+	if req.Source == "consignment" {
+		sup, errS := balanceSupplierAtSlot(c.Request.Context(), TxFromContext(c),
+			merchantID, locID, lotID, req.Source, req.Status)
+		if errors.Is(errS, errConsignmentSupplierAmbiguous) {
+			c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier ambiguous"})
+			return
+		}
+		if errS != nil {
+			respondInternalError(c, errS)
+			return
+		}
+		supplierID = sup
+	}
 	moveID, errM := applyStockMove(c.Request.Context(), q, merchantID, AuthCompanyID(c), AuthUserID(c), stockMoveInput{
-		Key:      stockKey{LocationID: locID, LotID: lotID, Source: req.Source, Status: req.Status},
+		Key:      stockKey{LocationID: locID, LotID: lotID, Source: req.Source, Status: req.Status, SupplierID: supplierID},
 		ItemID:   itemID,
 		Qty:      qty,
 		UnitCost: avg,
@@ -528,17 +560,33 @@ func StockStatusChangeHandler(c *gin.Context) {
 		respondInternalError(c, errC)
 		return
 	}
+	// A consignment status change keys both moves with the source balance's
+	// supplier (amendment 2026-10-21).
+	var supplierID pgtype.UUID
+	if req.Source == "consignment" {
+		sup, errS := balanceSupplierAtSlot(c.Request.Context(), TxFromContext(c),
+			merchantID, locID, lotID, req.Source, req.FromStatus)
+		if errors.Is(errS, errConsignmentSupplierAmbiguous) {
+			c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier ambiguous"})
+			return
+		}
+		if errS != nil {
+			respondInternalError(c, errS)
+			return
+		}
+		supplierID = sup
+	}
 	base := stockMoveInput{
 		ItemID: lot.ItemID, Qty: qty, UnitCost: avg, MoveType: "status_change",
 		RefType: "status_change", Reason: req.Reason, MoveDate: time.Now().UTC(),
 	}
 	moves := make([]gin.H, 0, 2)
 	out := base
-	out.Key = stockKey{LocationID: locID, LotID: lotID, Source: req.Source, Status: req.FromStatus}
+	out.Key = stockKey{LocationID: locID, LotID: lotID, Source: req.Source, Status: req.FromStatus, SupplierID: supplierID}
 	out.Qty = negateNumeric(qty)
 	for _, in := range []stockMoveInput{out, func() stockMoveInput {
 		v := base
-		v.Key = stockKey{LocationID: locID, LotID: lotID, Source: req.Source, Status: req.ToStatus}
+		v.Key = stockKey{LocationID: locID, LotID: lotID, Source: req.Source, Status: req.ToStatus, SupplierID: supplierID}
 		return v
 	}()} {
 		moveID, errM := applyStockMove(c.Request.Context(), q, merchantID, AuthCompanyID(c), AuthUserID(c), in)
@@ -878,8 +926,19 @@ func PostStockCountHandler(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "count difference needs a reason"})
 			return
 		}
+		// A consignment count adjustment keys the snapshotted balance's
+		// supplier (amendment 2026-10-21).
+		var supplierID pgtype.UUID
+		if bal.Source == "consignment" {
+			sup, errS := balanceSupplierByID(c.Request.Context(), TxFromContext(c), count.MerchantID, bal.ID)
+			if errS != nil {
+				respondInternalError(c, errS)
+				return
+			}
+			supplierID = sup
+		}
 		if _, err := applyStockMove(c.Request.Context(), q, count.MerchantID, count.CompanyID, AuthUserID(c), stockMoveInput{
-			Key:      stockKey{LocationID: count.LocationID, LotID: bal.LotID, Source: bal.Source, Status: bal.Status},
+			Key:      stockKey{LocationID: count.LocationID, LotID: bal.LotID, Source: bal.Source, Status: bal.Status, SupplierID: supplierID},
 			ItemID:   bal.ItemID,
 			Qty:      numericFromMilli(diff),
 			UnitCost: pgtype.Numeric{Valid: true},

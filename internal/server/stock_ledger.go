@@ -22,9 +22,11 @@ import (
 )
 
 var (
-	errStockPeriodLocked = errors.New("stock period is locked")
-	errInsufficientStock = errors.New("insufficient stock")
-	errOverrideReason    = errors.New("override needs a reason")
+	errStockPeriodLocked            = errors.New("stock period is locked")
+	errInsufficientStock            = errors.New("insufficient stock")
+	errOverrideReason               = errors.New("override needs a reason")
+	errConsignmentPriceMissing      = errors.New("consignment price missing")
+	errConsignmentSupplierAmbiguous = errors.New("consignment supplier ambiguous")
 )
 
 // respondStockError maps ledger sentinel errors to their fixed client
@@ -41,6 +43,12 @@ func respondStockError(c *gin.Context, err error) bool {
 	case errors.Is(err, errOverrideReason):
 		c.JSON(400, gin.H{"error": "override needs a reason"})
 		return true
+	case errors.Is(err, errConsignmentPriceMissing):
+		c.JSON(409, gin.H{"error": "consignment price missing"})
+		return true
+	case errors.Is(err, errConsignmentSupplierAmbiguous):
+		c.JSON(409, gin.H{"error": "consignment supplier ambiguous"})
+		return true
 	}
 	return false
 }
@@ -50,6 +58,9 @@ type stockKey struct {
 	LotID      pgtype.UUID
 	Source     string
 	Status     string
+	// Consignment dimension (spec 17b §6.1): the supplier of consignment
+	// balances; zero value = NULL for every other source.
+	SupplierID pgtype.UUID
 }
 
 // stockRef names the business document that caused a move.
@@ -100,6 +111,7 @@ func applyStockMove(ctx context.Context, q *sqlcgen.Queries, merchantID, company
 		LotID:      in.Key.LotID,
 		Source:     in.Key.Source,
 		Status:     in.Key.Status,
+		SupplierID: in.Key.SupplierID,
 		ReceivedAt: received,
 	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return pgtype.UUID{}, fmt.Errorf("ensure balance row: %w", err)
@@ -110,6 +122,7 @@ func applyStockMove(ctx context.Context, q *sqlcgen.Queries, merchantID, company
 		LotID:      in.Key.LotID,
 		Source:     in.Key.Source,
 		Status:     in.Key.Status,
+		SupplierID: in.Key.SupplierID,
 	})
 	if err != nil {
 		return pgtype.UUID{}, fmt.Errorf("lock balance: %w", err)
@@ -158,10 +171,11 @@ func applyStockMove(ctx context.Context, q *sqlcgen.Queries, merchantID, company
 // issuedPart is one allocation of an issue: which balance was drawn and at
 // what cost (spec §4.4 snapshot for #13).
 type issuedPart struct {
-	LotID    pgtype.UUID
-	Source   string
-	Qty      pgtype.Numeric
-	UnitCost pgtype.Numeric
+	LotID      pgtype.UUID
+	Source     string
+	SupplierID pgtype.UUID
+	Qty        pgtype.Numeric
+	UnitCost   pgtype.Numeric
 }
 
 type stockCandidate struct {
@@ -230,8 +244,13 @@ func issueStock(ctx context.Context, q *sqlcgen.Queries, merchantID, companyID, 
 	}
 	zero := pgtype.Numeric{Valid: true}
 
+	// Phase 1 — pure allocation: how much each locked balance contributes.
+	type stockTake struct {
+		cand stockCandidate
+		take int64
+	}
 	remaining := qtyMilli
-	parts := make([]issuedPart, 0, len(cands))
+	takes := make([]stockTake, 0, len(cands))
 	for _, cand := range cands {
 		if remaining == 0 {
 			break
@@ -241,14 +260,77 @@ func issueStock(ctx context.Context, q *sqlcgen.Queries, merchantID, companyID, 
 			take = remaining
 		}
 		remaining -= take
+		takes = append(takes, stockTake{cand: cand, take: take})
+	}
+
+	// Phase 2 — pre-write consignment validation (spec 17b §6.2 #1): every
+	// consignment part needs a consignment-kind contract price valid on the
+	// issue date; a single missing price rejects the WHOLE allocation before
+	// the first move is written.
+	consignmentPrices := make(map[pgtype.UUID]pgtype.Numeric)
+	for _, tk := range takes {
+		if tk.cand.row.Source != "consignment" {
+			continue
+		}
+		supplier := tk.cand.row.SupplierID
+		if _, seen := consignmentPrices[supplier]; seen {
+			continue
+		}
+		item, err := q.GetInventoryItemByID(ctx, itemID)
+		if err != nil {
+			return nil, fmt.Errorf("read item: %w", err)
+		}
+		contract, err := q.GetEffectiveContractPrice(ctx, sqlcgen.GetEffectiveContractPriceParams{
+			CompanyID:  companyID,
+			SupplierID: supplier,
+			ItemID:     itemID,
+			ItemUnitID: item.BaseUnitID,
+			Kind:       "consignment",
+			Column6:    pgDate(onDate),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errConsignmentPriceMissing
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read consignment contract price: %w", err)
+		}
+		// The contract prices one pack of its item unit; the base-unit
+		// equivalent divides by that unit's packaging factor
+		// (unit_price = pack_price ÷ pack_content, spec 17b §6.2 #1).
+		unit, err := q.GetInventoryItemUnitByID(ctx, contract.ItemUnitID)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && (!unit.Factor.Valid || unit.Factor.Int == nil || unit.Factor.Int.Sign() == 0)) {
+			return nil, errConsignmentPriceMissing
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read contract item unit: %w", err)
+		}
+		unitPrice := roundRatHalfUp(new(big.Rat).Quo(numericToRat(contract.PackPrice), numericToRat(unit.Factor)), 6)
+		price, errP := parseNumeric(unitPrice.FloatString(6))
+		if errP != nil {
+			return nil, fmt.Errorf("normalize consignment unit price: %w", errP)
+		}
+		consignmentPrices[supplier] = price
+	}
+	var loc *time.Location
+	if len(consignmentPrices) > 0 {
+		if loc, err = merchantLocation(ctx, q, merchantID); err != nil {
+			return nil, fmt.Errorf("read merchant timezone: %w", err)
+		}
+	}
+
+	// Phase 3 — writes: one negative move per part, then the consignment
+	// usage row for consignment parts (spec 17b §6.2 #1).
+	parts := make([]issuedPart, 0, len(takes))
+	for _, tk := range takes {
+		cand := tk.cand
 		unit := zero
 		if cand.row.Source == "purchase" || cand.row.Source == "consignment" {
 			unit = avg
 		}
 		if _, err := applyStockMove(ctx, q, merchantID, companyID, userID, stockMoveInput{
-			Key:      stockKey{LocationID: locationID, LotID: cand.row.LotID, Source: cand.row.Source, Status: "available"},
+			Key:      stockKey{LocationID: locationID, LotID: cand.row.LotID, Source: cand.row.Source, Status: "available", SupplierID: cand.row.SupplierID},
 			ItemID:   itemID,
-			Qty:      numericFromMilli(-take),
+			Qty:      numericFromMilli(-tk.take),
 			UnitCost: unit,
 			MoveType: "issue",
 			RefType:  ref.RefType,
@@ -258,11 +340,30 @@ func issueStock(ctx context.Context, q *sqlcgen.Queries, merchantID, companyID, 
 			return nil, err
 		}
 		parts = append(parts, issuedPart{
-			LotID:    cand.row.LotID,
-			Source:   cand.row.Source,
-			Qty:      numericFromMilli(take),
-			UnitCost: unit,
+			LotID:      cand.row.LotID,
+			Source:     cand.row.Source,
+			SupplierID: cand.row.SupplierID,
+			Qty:        numericFromMilli(tk.take),
+			UnitCost:   unit,
 		})
+		if cand.row.Source != "consignment" {
+			continue
+		}
+		if _, err := q.InsertConsignmentUsage(ctx, sqlcgen.InsertConsignmentUsageParams{
+			CompanyID:  companyID,
+			MerchantID: merchantID,
+			SupplierID: cand.row.SupplierID,
+			ItemID:     itemID,
+			LotID:      cand.row.LotID,
+			BaseQty:    numericFromMilli(tk.take),
+			UnitPrice:  consignmentPrices[cand.row.SupplierID],
+			UsedOn:     pgDate(localDayStart(onDate, loc)),
+			RefType:    pgText(ref.RefType),
+			RefID:      ref.RefID,
+			CreatedBy:  userID,
+		}); err != nil {
+			return nil, fmt.Errorf("write consignment usage: %w", err)
+		}
 	}
 	return parts, nil
 }
@@ -311,4 +412,53 @@ func pgText(s string) pgtype.Text {
 // numericToMilli (drug_price.go) is the exact inverse for values at this scale.
 func numericFromMilli(milli int64) pgtype.Numeric {
 	return pgtype.Numeric{Int: big.NewInt(milli), Exp: -3, Valid: true}
+}
+
+// balanceSupplierAtSlot resolves the supplier dimension carried by the
+// merchant's balance rows at one slot (location, lot, source, status —
+// amendment 2026-10-21 / spec 17b §6.1): zero UUID when the rows carry no
+// supplier, errConsignmentSupplierAmbiguous when they disagree.
+func balanceSupplierAtSlot(ctx context.Context, tx pgx.Tx, merchantID, locationID, lotID pgtype.UUID, source, status string) (pgtype.UUID, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT COALESCE(supplier_id, '00000000-0000-0000-0000-000000000000'::uuid)
+		FROM inventory.stock_balance
+		WHERE merchant_id = $1 AND location_id = $2 AND lot_id = $3 AND source = $4 AND status = $5`,
+		merchantID, locationID, lotID, source, status)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	defer rows.Close()
+	var found []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return pgtype.UUID{}, err
+		}
+		found = append(found, id)
+	}
+	if err := rows.Err(); err != nil {
+		return pgtype.UUID{}, err
+	}
+	switch len(found) {
+	case 0:
+		return pgtype.UUID{}, nil
+	case 1:
+		return found[0], nil
+	default:
+		return pgtype.UUID{}, errConsignmentSupplierAmbiguous
+	}
+}
+
+// balanceSupplierByID resolves the supplier dimension of one balance row by
+// its id (zero UUID when NULL; unknown ids read as NULL).
+func balanceSupplierByID(ctx context.Context, tx pgx.Tx, merchantID, balanceID pgtype.UUID) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(supplier_id, '00000000-0000-0000-0000-000000000000'::uuid)
+		FROM inventory.stock_balance WHERE merchant_id = $1 AND id = $2`,
+		merchantID, balanceID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, nil
+	}
+	return id, err
 }

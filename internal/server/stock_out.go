@@ -502,12 +502,14 @@ func UpdateSupplierReturnHandler(c *gin.Context) {
 // allocation is one locked draw from a balance row.
 type allocation struct {
 	LocationID pgtype.UUID
+	SupplierID pgtype.UUID
 	Milli      int64
 }
 
 // lockReturnAllocation locks every available balance row of lot+source and
 // splits baseQty across them oldest-receipt-first (spec §5.2 #1). 409
-// insufficient stock when the total falls short; ok=false then.
+// insufficient stock when the total falls short; ok=false then. Consignment
+// draws keep the balance's supplier dimension (amendment 2026-10-21).
 func lockReturnAllocation(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, l outboundLine) ([]allocation, bool) {
 	rows, err := q.LockAvailableByLot(c.Request.Context(), sqlcgen.LockAvailableByLotParams{
 		MerchantID: merchantID, LotID: l.LotID, Source: l.Source,
@@ -529,7 +531,15 @@ func lockReturnAllocation(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.
 			respondInternalError(c, errM)
 			return nil, false
 		}
-		allocs = append(allocs, allocation{LocationID: row.LocationID, Milli: m})
+		var supplierID pgtype.UUID
+		if l.Source == "consignment" {
+			supplierID, err = balanceSupplierByID(c.Request.Context(), TxFromContext(c), merchantID, row.ID)
+			if err != nil {
+				respondInternalError(c, err)
+				return nil, false
+			}
+		}
+		allocs = append(allocs, allocation{LocationID: row.LocationID, SupplierID: supplierID, Milli: m})
 		total += m
 	}
 	if total < needMilli {
@@ -613,7 +623,7 @@ func PostSupplierReturnHandler(c *gin.Context) {
 			}
 			remaining -= take
 			if _, err := applyStockMove(c.Request.Context(), q, r.MerchantID, r.CompanyID, AuthUserID(c), stockMoveInput{
-				Key:      stockKey{LocationID: a.LocationID, LotID: p.Line.LotID, Source: p.Line.Source, Status: "available"},
+				Key:      stockKey{LocationID: a.LocationID, LotID: p.Line.LotID, Source: p.Line.Source, Status: "available", SupplierID: a.SupplierID},
 				ItemID:   p.Line.ItemID,
 				Qty:      numericFromMilli(-take),
 				UnitCost: p.Line.UnitCost,
@@ -688,11 +698,28 @@ func VoidSupplierReturnHandler(c *gin.Context) {
 	if !okM {
 		return
 	}
-	// Every allocated portion must still be on hand (pola void GR).
+	// Every allocated portion must still be on hand (pola void GR); a
+	// consignment return locks the balance with its supplier dimension
+	// (amendment 2026-10-21).
 	for _, m := range moves {
+		var supplierID pgtype.UUID
+		if m.Source == "consignment" {
+			sup, errS := balanceSupplierAtSlot(c.Request.Context(), TxFromContext(c),
+				r.MerchantID, m.LocationID, m.LotID, m.Source, "available")
+			if errors.Is(errS, errConsignmentSupplierAmbiguous) {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier ambiguous"})
+				return
+			}
+			if errS != nil {
+				respondInternalError(c, errS)
+				return
+			}
+			supplierID = sup
+		}
 		row, err := q.LockStockBalance(c.Request.Context(), sqlcgen.LockStockBalanceParams{
 			MerchantID: r.MerchantID, LocationID: m.LocationID,
 			LotID: m.LotID, Source: m.Source, Status: "available",
+			SupplierID: supplierID,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusConflict, gin.H{"error": "returned stock was already used"})
@@ -743,8 +770,22 @@ func VoidSupplierReturnHandler(c *gin.Context) {
 		return
 	}
 	for _, m := range moves {
+		var supplierID pgtype.UUID
+		if m.Source == "consignment" {
+			sup, errS := balanceSupplierAtSlot(c.Request.Context(), TxFromContext(c),
+				r.MerchantID, m.LocationID, m.LotID, m.Source, "available")
+			if errors.Is(errS, errConsignmentSupplierAmbiguous) {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier ambiguous"})
+				return
+			}
+			if errS != nil {
+				respondInternalError(c, errS)
+				return
+			}
+			supplierID = sup
+		}
 		if _, err := applyStockMove(c.Request.Context(), q, r.MerchantID, r.CompanyID, AuthUserID(c), stockMoveInput{
-			Key:        stockKey{LocationID: m.LocationID, LotID: m.LotID, Source: m.Source, Status: "available"},
+			Key:        stockKey{LocationID: m.LocationID, LotID: m.LotID, Source: m.Source, Status: "available", SupplierID: supplierID},
 			ItemID:     m.ItemID,
 			Qty:        negateNumeric(m.Quantity), // the posted move was negative
 			UnitCost:   m.UnitCost,
@@ -1185,11 +1226,12 @@ func PostDestructionHandler(c *gin.Context) {
 	// Guard every line BEFORE the first write: balance availability and the
 	// narcotics four-eyes report (spec §5.2 #2).
 	type destructionPlan struct {
-		Line      sqlcgen.InventoryDestructionLine
-		Item      sqlcgen.InventoryItem
-		UnitCost  pgtype.Numeric
-		BalID     pgtype.UUID
-		NeedMilli int64
+		Line       sqlcgen.InventoryDestructionLine
+		Item       sqlcgen.InventoryItem
+		UnitCost   pgtype.Numeric
+		BalID      pgtype.UUID
+		SupplierID pgtype.UUID
+		NeedMilli  int64
 	}
 	plans := make([]destructionPlan, 0, len(lines))
 	for _, l := range lines {
@@ -1204,6 +1246,16 @@ func PostDestructionHandler(c *gin.Context) {
 		if err != nil {
 			respondInternalError(c, err)
 			return
+		}
+		// Consignment destruction keys the locked balance's supplier
+		// (amendment 2026-10-21).
+		var supplierID pgtype.UUID
+		if l.Source == "consignment" {
+			supplierID, err = balanceSupplierByID(c.Request.Context(), TxFromContext(c), d.MerchantID, row.ID)
+			if err != nil {
+				respondInternalError(c, err)
+				return
+			}
 		}
 		balMilli, errB := numericToMilli(row.Quantity)
 		needMilli, errN := numericToMilli(l.BaseQty)
@@ -1238,7 +1290,8 @@ func PostDestructionHandler(c *gin.Context) {
 			return
 		}
 		plans = append(plans, destructionPlan{
-			Line: l, Item: item, UnitCost: unitCost, BalID: row.ID, NeedMilli: needMilli,
+			Line: l, Item: item, UnitCost: unitCost, BalID: row.ID,
+			SupplierID: supplierID, NeedMilli: needMilli,
 		})
 	}
 	// Moves follow the merchant's business day (txDayStart), not UTC now.
@@ -1254,7 +1307,7 @@ func PostDestructionHandler(c *gin.Context) {
 	}
 	for _, p := range plans {
 		if _, err := applyStockMove(c.Request.Context(), q, d.MerchantID, d.CompanyID, AuthUserID(c), stockMoveInput{
-			Key:      stockKey{LocationID: d.LocationID, LotID: p.Line.LotID, Source: p.Line.Source, Status: p.Line.FromStatus},
+			Key:      stockKey{LocationID: d.LocationID, LotID: p.Line.LotID, Source: p.Line.Source, Status: p.Line.FromStatus, SupplierID: p.SupplierID},
 			ItemID:   p.Line.ItemID,
 			Qty:      numericFromMilli(-p.NeedMilli),
 			UnitCost: p.UnitCost,
@@ -1336,8 +1389,22 @@ func VoidDestructionHandler(c *gin.Context) {
 		return
 	}
 	for _, m := range moves {
+		var supplierID pgtype.UUID
+		if m.Source == "consignment" {
+			sup, errS := balanceSupplierAtSlot(c.Request.Context(), TxFromContext(c),
+				d.MerchantID, m.LocationID, m.LotID, m.Source, m.Status)
+			if errors.Is(errS, errConsignmentSupplierAmbiguous) {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier ambiguous"})
+				return
+			}
+			if errS != nil {
+				respondInternalError(c, errS)
+				return
+			}
+			supplierID = sup
+		}
 		if _, err := applyStockMove(c.Request.Context(), q, d.MerchantID, d.CompanyID, AuthUserID(c), stockMoveInput{
-			Key:        stockKey{LocationID: m.LocationID, LotID: m.LotID, Source: m.Source, Status: m.Status},
+			Key:        stockKey{LocationID: m.LocationID, LotID: m.LotID, Source: m.Source, Status: m.Status, SupplierID: supplierID},
 			ItemID:     m.ItemID,
 			Qty:        negateNumeric(m.Quantity), // the posted move was negative
 			UnitCost:   m.UnitCost,
@@ -1569,6 +1636,7 @@ func CreateInterMerchantTransferHandler(c *gin.Context) {
 	}
 	// Guard every line's sender balance before the first write.
 	locked := make([]int64, 0, len(lines))
+	suppliers := make([]pgtype.UUID, 0, len(lines))
 	for _, l := range lines {
 		row, err := q.LockStockBalance(c.Request.Context(), sqlcgen.LockStockBalanceParams{
 			MerchantID: fromMerchantID, LocationID: fromLocationID,
@@ -1582,6 +1650,16 @@ func CreateInterMerchantTransferHandler(c *gin.Context) {
 			respondInternalError(c, err)
 			return
 		}
+		// Consignment transfers keep the sender balance's supplier
+		// dimension (amendment 2026-10-21).
+		var supplierID pgtype.UUID
+		if l.Source == "consignment" {
+			supplierID, err = balanceSupplierByID(c.Request.Context(), TxFromContext(c), fromMerchantID, row.ID)
+			if err != nil {
+				respondInternalError(c, err)
+				return
+			}
+		}
 		balMilli, errB := numericToMilli(row.Quantity)
 		needMilli, errN := numericToMilli(l.BaseQty)
 		if errB != nil || errN != nil {
@@ -1593,6 +1671,7 @@ func CreateInterMerchantTransferHandler(c *gin.Context) {
 			return
 		}
 		locked = append(locked, needMilli)
+		suppliers = append(suppliers, supplierID)
 	}
 	// Daily number per company (spec §9.7): lock the company-scoped
 	// "imt:" sequence on the sender's business day.
@@ -1650,7 +1729,7 @@ func CreateInterMerchantTransferHandler(c *gin.Context) {
 			return
 		}
 		if _, err := applyStockMove(c.Request.Context(), q, fromMerchantID, AuthCompanyID(c), AuthUserID(c), stockMoveInput{
-			Key:      stockKey{LocationID: fromLocationID, LotID: l.LotID, Source: l.Source, Status: l.Status},
+			Key:      stockKey{LocationID: fromLocationID, LotID: l.LotID, Source: l.Source, Status: l.Status, SupplierID: suppliers[i]},
 			ItemID:   l.ItemID,
 			Qty:      numericFromMilli(-locked[i]),
 			UnitCost: unitCost,
@@ -1886,8 +1965,24 @@ func CancelInterMerchantTransferHandler(c *gin.Context) {
 				return
 			}
 		}
+		// Cancel restores the sender balance with its supplier dimension
+		// (amendment 2026-10-21); the sender's slot still carries it.
+		var supplierID pgtype.UUID
+		if l.Source == "consignment" {
+			sup, errS := balanceSupplierAtSlot(c.Request.Context(), TxFromContext(c),
+				t.FromMerchantID, t.FromLocationID, l.LotID, l.Source, l.Status)
+			if errors.Is(errS, errConsignmentSupplierAmbiguous) {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier ambiguous"})
+				return
+			}
+			if errS != nil {
+				respondInternalError(c, errS)
+				return
+			}
+			supplierID = sup
+		}
 		if _, err := applyStockMove(c.Request.Context(), q, t.FromMerchantID, t.CompanyID, AuthUserID(c), stockMoveInput{
-			Key:      stockKey{LocationID: t.FromLocationID, LotID: l.LotID, Source: l.Source, Status: l.Status},
+			Key:      stockKey{LocationID: t.FromLocationID, LotID: l.LotID, Source: l.Source, Status: l.Status, SupplierID: supplierID},
 			ItemID:   l.ItemID,
 			Qty:      l.BaseQty,
 			UnitCost: l.UnitCost,

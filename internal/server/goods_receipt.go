@@ -475,7 +475,23 @@ func DeleteSupplierHandler(c *gin.Context) {
 
 // §4.1 goods receipts.
 
-func receiptLineJSON(l sqlcgen.InventoryGoodsReceiptLine) gin.H {
+// receiptLineMeta carries per-line response facts that are not columns of
+// inventory.goods_receipt_line: the requested consignment supplier (kept only
+// for create/patch responses) and the line's registered serial count.
+type receiptLineMeta struct {
+	SupplierID  pgtype.UUID
+	SerialCount int
+}
+
+func receiptLineJSON(l sqlcgen.InventoryGoodsReceiptLine, meta receiptLineMeta, hasMeta bool) gin.H {
+	var supplier any
+	serialCount := any(nil)
+	if hasMeta {
+		supplier = uuidOrNil(meta.SupplierID)
+		if meta.SerialCount > 0 {
+			serialCount = meta.SerialCount
+		}
+	}
 	return gin.H{
 		"id":                      l.ID.String(),
 		"item_id":                 l.ItemID.String(),
@@ -493,10 +509,40 @@ func receiptLineJSON(l sqlcgen.InventoryGoodsReceiptLine) gin.H {
 		"hna_ppn_per_pack":        numericExactOrNil(l.HnaPpnPerPack),
 		"lot_id":                  uuidOrNil(l.LotID),
 		"purchase_order_line_id":  uuidOrNil(l.PurchaseOrderLineID),
+		"supplier_id":             supplier,
+		"serial_count":            serialCount,
 	}
 }
 
-func goodsReceiptJSON(r sqlcgen.InventoryGoodsReceipt, lines []sqlcgen.InventoryGoodsReceiptLine) gin.H {
+// receiptSerialCounts counts still-unissued in-stock serials per item at the
+// receipt's location — receive-registered serials carry no line link, so the
+// count is per item+location (spec 17b §6.2 #2).
+func receiptSerialCounts(c *gin.Context, r sqlcgen.InventoryGoodsReceipt, lines []sqlcgen.InventoryGoodsReceiptLine) map[pgtype.UUID]receiptLineMeta {
+	counts := map[pgtype.UUID]receiptLineMeta{}
+	rows, err := TxFromContext(c).Query(c.Request.Context(), `
+		SELECT item_id, count(*) FROM inventory.serial
+		WHERE merchant_id = $1 AND location_id = $2
+		  AND status = 'in_stock' AND issued_ref_type IS NULL
+		GROUP BY item_id`, r.MerchantID, r.LocationID)
+	if err != nil {
+		return counts
+	}
+	defer rows.Close()
+	perItem := map[pgtype.UUID]int{}
+	for rows.Next() {
+		var itemID pgtype.UUID
+		var n int
+		if err := rows.Scan(&itemID, &n); err == nil {
+			perItem[itemID] = n
+		}
+	}
+	for _, l := range lines {
+		counts[l.ID] = receiptLineMeta{SerialCount: perItem[l.ItemID]}
+	}
+	return counts
+}
+
+func goodsReceiptJSON(r sqlcgen.InventoryGoodsReceipt, lines []sqlcgen.InventoryGoodsReceiptLine, lineMeta map[pgtype.UUID]receiptLineMeta) gin.H {
 	out := gin.H{
 		"id":                r.ID.String(),
 		"merchant_id":       r.MerchantID.String(),
@@ -520,7 +566,8 @@ func goodsReceiptJSON(r sqlcgen.InventoryGoodsReceipt, lines []sqlcgen.Inventory
 	if lines != nil {
 		rendered := make([]gin.H, 0, len(lines))
 		for _, l := range lines {
-			rendered = append(rendered, receiptLineJSON(l))
+			meta, ok := lineMeta[l.ID]
+			rendered = append(rendered, receiptLineJSON(l, meta, ok))
 		}
 		out["lines"] = rendered
 	}
@@ -541,6 +588,12 @@ type receiptLineRequest struct {
 	// Optional PO linkage (spec §4.2 #4): the PO line this receipt line
 	// fulfils; null/empty = a line without a purchase order.
 	PurchaseOrderLineID *string `json:"purchase_order_line_id"`
+	// Consignment dimension (spec 17b §6.2 #1): required on every line of a
+	// consignment receipt, ignored for other sources.
+	SupplierID *string `json:"supplier_id"`
+	// Serial numbers (spec 17b §6.2 #2): one per base unit when the item
+	// tracks serials.
+	Serials []string `json:"serials"`
 }
 
 type receiptRequest struct {
@@ -607,6 +660,13 @@ type receiptLine struct {
 	ExpiryDate           pgtype.Date
 	ShortShelfLifeReason pgtype.Text
 	PurchaseOrderLineID  pgtype.UUID
+	// Consignment supplier of the line (validated against the header
+	// supplier; the line table carries no supplier column, so posting keys
+	// the balance with the header supplier).
+	SupplierID pgtype.UUID
+	// Serial numbers to register with the receipt (lot set at posting time
+	// by the ledger; stored unlinked to the line row).
+	Serials []string
 }
 
 // parseReceiptRequest validates the shared draft body and returns the
@@ -802,6 +862,59 @@ func parseReceiptRequest(c *gin.Context, q *sqlcgen.Queries, req receiptRequest,
 			}
 			line.PurchaseOrderLineID = plid
 		}
+		// Consignment dimension (spec 17b §6.2 #1): every line of a
+		// consignment receipt names its supplier; other sources ignore the
+		// field. The line supplier must match the header supplier — the line
+		// table carries no supplier column, so posting keys the balance with
+		// the header supplier.
+		if source == "consignment" {
+			if lr.SupplierID == nil || strings.TrimSpace(*lr.SupplierID) == "" {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier required"})
+				return
+			}
+			sid, okSup := parseUUID(*lr.SupplierID)
+			if !okSup {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier required"})
+				return
+			}
+			if supplierID.Valid && sid != supplierID {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier mismatch"})
+				return
+			}
+			line.SupplierID = sid
+		}
+		// Serial numbers (spec 17b §6.2 #2): one per integral base unit on a
+		// serial-tracked item.
+		if len(lr.Serials) > 0 {
+			serialItem, err := q.GetInventoryItemByID(c.Request.Context(), itemID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid line reference"})
+				return
+			}
+			if err != nil {
+				respondInternalError(c, err)
+				return
+			}
+			if !serialItem.TrackSerial {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "item is not serial tracked"})
+				return
+			}
+			baseRat := new(big.Rat).Mul(numericToRat(line.PackQty), numericToRat(line.PackContent))
+			baseRat.Add(baseRat, new(big.Rat).Mul(numericToRat(line.BonusPackQty), numericToRat(line.PackContent)))
+			if !baseRat.IsInt() || !baseRat.Num().IsInt64() || int(baseRat.Num().Int64()) != len(lr.Serials) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "serial quantity mismatch"})
+				return
+			}
+			line.Serials = make([]string, 0, len(lr.Serials))
+			for _, sn := range lr.Serials {
+				trimmed := strings.TrimSpace(sn)
+				if trimmed == "" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid serial_no"})
+					return
+				}
+				line.Serials = append(line.Serials, trimmed)
+			}
+		}
 		lines = append(lines, line)
 	}
 	ok = true
@@ -912,6 +1025,41 @@ func insertReceiptLines(c *gin.Context, q *sqlcgen.Queries, receipt sqlcgen.Inve
 				return false
 			}
 		}
+		// Serial registration (spec 17b §6.2 #2): one in_stock serial per
+		// number at the receipt location; the lot is resolved at posting and
+		// is left NULL on the draft.
+		for _, sn := range l.Serials {
+			if _, err := q.InsertSerial(c.Request.Context(), sqlcgen.InsertSerialParams{
+				CompanyID: receipt.CompanyID, MerchantID: receipt.MerchantID,
+				ItemID: l.ItemID, SerialNo: sn, LocationID: receipt.LocationID,
+				CreatedBy: AuthUserID(c),
+			}); err != nil {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+					c.JSON(http.StatusConflict, gin.H{"error": "serial already registered"})
+					return false
+				}
+				respondInternalError(c, err)
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// deleteDraftSerials removes still-unassigned in-stock serials by number so a
+// draft replace can re-register them (uq_serial is per merchant+item+number).
+func deleteDraftSerials(c *gin.Context, merchantID pgtype.UUID, serials []string) bool {
+	if len(serials) == 0 {
+		return true
+	}
+	if _, err := TxFromContext(c).Exec(c.Request.Context(), `
+		DELETE FROM inventory.serial
+		WHERE merchant_id = $1 AND serial_no = ANY($2)
+		  AND status = 'in_stock' AND lot_id IS NULL AND issued_ref_type IS NULL`,
+		merchantID, serials); err != nil {
+		respondInternalError(c, err)
+		return false
 	}
 	return true
 }
@@ -968,7 +1116,17 @@ func CreateGoodsReceiptHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": goodsReceiptJSON(receipt, saved), "meta": gin.H{}})
+	// Draft responses report the requested per-line supplier and serial
+	// count (the line table itself carries neither).
+	lineMeta := make(map[pgtype.UUID]receiptLineMeta, len(saved))
+	for i := range saved {
+		if i < len(lines) {
+			lineMeta[saved[i].ID] = receiptLineMeta{
+				SupplierID: lines[i].SupplierID, SerialCount: len(lines[i].Serials),
+			}
+		}
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": goodsReceiptJSON(receipt, saved, lineMeta), "meta": gin.H{}})
 }
 
 // ListGoodsReceiptsHandler godoc
@@ -1022,7 +1180,7 @@ func ListGoodsReceiptsHandler(c *gin.Context) {
 	}
 	data := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
-		data = append(data, goodsReceiptJSON(r, nil))
+		data = append(data, goodsReceiptJSON(r, nil, nil))
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }
@@ -1046,7 +1204,7 @@ func GetGoodsReceiptHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": goodsReceiptJSON(r, lines), "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": goodsReceiptJSON(r, lines, receiptSerialCounts(c, r, lines)), "meta": gin.H{}})
 }
 
 // UpdateGoodsReceiptHandler godoc
@@ -1106,6 +1264,15 @@ func UpdateGoodsReceiptHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Draft replace: free the still-unassigned serial numbers of the previous
+	// draft so the re-submitted lines can re-register them (uq_serial).
+	serials := make([]string, 0)
+	for _, l := range lines {
+		serials = append(serials, l.Serials...)
+	}
+	if !deleteDraftSerials(c, r.MerchantID, serials) {
+		return
+	}
 	if !insertReceiptLines(c, q, updated, lines) {
 		return
 	}
@@ -1142,7 +1309,15 @@ func UpdateGoodsReceiptHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": goodsReceiptJSON(updated, saved), "meta": gin.H{}})
+	lineMeta := make(map[pgtype.UUID]receiptLineMeta, len(saved))
+	for i := range saved {
+		if i < len(lines) {
+			lineMeta[saved[i].ID] = receiptLineMeta{
+				SupplierID: lines[i].SupplierID, SerialCount: len(lines[i].Serials),
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": goodsReceiptJSON(updated, saved, lineMeta), "meta": gin.H{}})
 }
 
 // receiptLinePosting carries the pure cost-engine results for one line.
@@ -1318,7 +1493,18 @@ func PostGoodsReceiptHandler(c *gin.Context) {
 			}
 		}
 		if _, err := applyStockMove(c.Request.Context(), q, r.MerchantID, r.CompanyID, AuthUserID(c), stockMoveInput{
-			Key:        stockKey{LocationID: r.LocationID, LotID: lot.ID, Source: r.Source, Status: "available"},
+			Key: stockKey{
+				LocationID: r.LocationID, LotID: lot.ID,
+				Source: r.Source, Status: "available",
+				// Consignment balances carry the receipt's supplier
+				// (spec 17b §6.2 #1); every other source stays NULL.
+				SupplierID: func() pgtype.UUID {
+					if r.Source == "consignment" {
+						return r.SupplierID
+					}
+					return pgtype.UUID{}
+				}(),
+			},
 			ItemID:     p.Line.ItemID,
 			Qty:        p.BaseQty,
 			UnitCost:   p.UnitCost,
@@ -1405,7 +1591,7 @@ func PostGoodsReceiptHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": goodsReceiptJSON(posted, saved), "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": goodsReceiptJSON(posted, saved, receiptSerialCounts(c, posted, saved)), "meta": gin.H{}})
 }
 
 type voidReceiptRequest struct {
@@ -1444,10 +1630,13 @@ func VoidGoodsReceiptHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	// Every line's stock must still be fully on hand (spec §4.1.7).
+	// Every line's stock must still be fully on hand (spec §4.1.7). A
+	// consignment receipt's balances carry its supplier, so the lock names
+	// the same supplier dimension (amendment 2026-10-21).
 	type voidLine struct {
-		Line      sqlcgen.InventoryGoodsReceiptLine
-		BaseMilli int64
+		Line       sqlcgen.InventoryGoodsReceiptLine
+		BaseMilli  int64
+		SupplierID pgtype.UUID
 	}
 	plans := make([]voidLine, 0, len(lines))
 	for _, l := range lines {
@@ -1456,9 +1645,24 @@ func VoidGoodsReceiptHandler(c *gin.Context) {
 			respondInternalError(c, errM)
 			return
 		}
+		var supplierID pgtype.UUID
+		if r.Source == "consignment" {
+			sup, errS := balanceSupplierAtSlot(c.Request.Context(), TxFromContext(c),
+				r.MerchantID, r.LocationID, l.LotID, r.Source, "available")
+			if errors.Is(errS, errConsignmentSupplierAmbiguous) {
+				c.JSON(http.StatusConflict, gin.H{"error": "consignment supplier ambiguous"})
+				return
+			}
+			if errS != nil {
+				respondInternalError(c, errS)
+				return
+			}
+			supplierID = sup
+		}
 		row, err := q.LockStockBalance(c.Request.Context(), sqlcgen.LockStockBalanceParams{
 			MerchantID: r.MerchantID, LocationID: r.LocationID,
 			LotID: l.LotID, Source: r.Source, Status: "available",
+			SupplierID: supplierID,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusConflict, gin.H{"error": "received stock was already used"})
@@ -1500,7 +1704,7 @@ func VoidGoodsReceiptHandler(c *gin.Context) {
 			return
 		}
 		if _, err := applyStockMove(c.Request.Context(), q, r.MerchantID, r.CompanyID, AuthUserID(c), stockMoveInput{
-			Key:        stockKey{LocationID: r.LocationID, LotID: p.Line.LotID, Source: r.Source, Status: "available"},
+			Key:        stockKey{LocationID: r.LocationID, LotID: p.Line.LotID, Source: r.Source, Status: "available", SupplierID: p.SupplierID},
 			ItemID:     p.Line.ItemID,
 			Qty:        negateNumeric(p.Line.BaseQty),
 			UnitCost:   p.Line.UnitCost,
@@ -1552,5 +1756,5 @@ func VoidGoodsReceiptHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": goodsReceiptJSON(voided, saved), "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": goodsReceiptJSON(voided, saved, receiptSerialCounts(c, voided, saved)), "meta": gin.H{}})
 }
