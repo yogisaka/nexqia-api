@@ -431,6 +431,35 @@ func TestGoodsReceiptPOLinkUnlink(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("close expected 200, got %d: %v", status, out)
 	}
+
+	// Unlink 409: a linked draft whose receipt posted real qty
+	// (received_base_qty > 0 on the PO line) cannot drop its PO link.
+	po2 := poCreateAndAssert(t, e, e.merchantID, e.token, poBody(supplierID, e.locationID,
+		[]map[string]any{poLineIn(itemID, unitID, nil)}, nil), http.StatusCreated)
+	po2ID := po2["id"].(string)
+	po2LineID := po2["lines"].([]any)[0].(map[string]any)["id"].(string)
+	poSend(t, e, po2ID)
+	status, out, gr2 := grRequest2(t, e, http.MethodPost, "/api/v1/merchants/"+e.merchantID+"/goods-receipts",
+		grLinkedBody(e, supplierID, po2ID, []map[string]any{grLinkedLine(itemID, unitID, po2LineID, "1")}))
+	if status != http.StatusCreated {
+		t.Fatalf("create linked draft 2 expected 201, got %d: %v", status, out)
+	}
+	// A second, linked receipt posts real qty onto the PO line
+	// (received_base_qty > 0); the first linked draft stays a draft so its
+	// PATCH is allowed to reach the unlink guard.
+	grPostAndAssert(t, e, grLinkedBody(e, supplierID, po2ID,
+		[]map[string]any{grLinkedLine(itemID, unitID, po2LineID, "1")}))
+	// Reload for the current row_version (post bumps it).
+	status, out = grRequest(t, e, http.MethodGet, "/api/v1/goods-receipts/"+gr2, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get posted draft expected 200, got %d: %v", status, out)
+	}
+	patch2 := grDraftBody(e, supplierID, itemID, unitID, nil)
+	patch2["row_version"] = out["data"].(map[string]any)["row_version"]
+	status, out = grRequest(t, e, http.MethodPatch, "/api/v1/goods-receipts/"+gr2, patch2)
+	if status != http.StatusConflict || grErr(out) != "order cannot be unlinked" {
+		t.Fatalf("unlink with received qty expected 409 order cannot be unlinked, got %d: %v", status, out)
+	}
 }
 
 // grRequest2 is grRequest returning the id too (helper above has no triple

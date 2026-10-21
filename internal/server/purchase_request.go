@@ -599,18 +599,6 @@ type convertPurchaseRequestRequest struct {
 	Note       string `json:"note"`
 }
 
-// ConvertPurchaseRequestHandler godoc
-// @Summary Convert an approved purchase request into a draft purchase order
-// @Tags inventory
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param id path string true "Purchase request UUID"
-// @Param request body convertPurchaseRequestRequest true "Convert options"
-// @Success 201 {object} apiResponse
-// @Failure 400 {object} apiErrorResponse
-// @Failure 409 {object} apiErrorResponse
-// @Router /purchase-requests/{id}/convert [post]
 // setMerchantGUC flips the transaction-scoped RLS merchant GUC inside the
 // request transaction (pola getPinLockFlagForMerchant); writes 500 and
 // returns false on failure.
@@ -623,6 +611,18 @@ func setMerchantGUC(c *gin.Context, merchantID pgtype.UUID) bool {
 	return true
 }
 
+// ConvertPurchaseRequestHandler godoc
+// @Summary Convert an approved purchase request into a draft purchase order
+// @Tags inventory
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Purchase request UUID"
+// @Param request body convertPurchaseRequestRequest true "Convert options"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /purchase-requests/{id}/convert [post]
 func ConvertPurchaseRequestHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	pr, ok := loadPurchaseRequest(c, q, c.Param("id"))
