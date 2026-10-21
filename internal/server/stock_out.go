@@ -92,6 +92,9 @@ type outboundLine struct {
 	Status   string
 	BaseQty  pgtype.Numeric
 	UnitCost pgtype.Numeric
+	// Serial numbers (spec 17b §6.2 #2): required for track_serial items on
+	// outbound documents.
+	SerialIDs []string
 }
 
 // validateOutboundLot loads the lot and pins it to the item (400 otherwise).
@@ -194,6 +197,8 @@ type supplierReturnLineRequest struct {
 	Source   string  `json:"source" binding:"required"`
 	BaseQty  string  `json:"base_qty" binding:"required"`
 	UnitCost *string `json:"unit_cost"`
+	// Serial numbers (spec 17b §6.2 #2): required for track_serial items.
+	SerialIDs []string `json:"serial_ids"`
 }
 
 type supplierReturnRequest struct {
@@ -253,7 +258,7 @@ func parseSupplierReturnLines(c *gin.Context, q *sqlcgen.Queries, reqLines []sup
 		}
 		lines = append(lines, outboundLine{
 			ItemID: itemID, LotID: lotID, Source: lr.Source,
-			BaseQty: baseQty, UnitCost: unitCost,
+			BaseQty: baseQty, UnitCost: unitCost, SerialIDs: lr.SerialIDs,
 		})
 	}
 	return lines, true
@@ -363,6 +368,13 @@ func CreateSupplierReturnHandler(c *gin.Context) {
 		return
 	}
 	if !insertSupplierReturnLines(c, q, r, lines) {
+		return
+	}
+	// Serial enforcement (spec 17b §6.2 #2): track_serial items on the
+	// return flip their serials to returned with the document as ref; the
+	// document has no single location, so each serial's registered location
+	// is enforced.
+	if !enforceOutboundSerials(c, q, r.MerchantID, pgtype.UUID{}, lines, "returned", stockRef{RefType: "supplier_return", RefID: r.ID}) {
 		return
 	}
 	saved, err := q.ListSupplierReturnLines(c.Request.Context(), r.ID)
@@ -876,6 +888,8 @@ type destructionLineRequest struct {
 	Source     string `json:"source" binding:"required"`
 	FromStatus string `json:"from_status" binding:"required"`
 	BaseQty    string `json:"base_qty" binding:"required"`
+	// Serial numbers (spec 17b §6.2 #2): required for track_serial items.
+	SerialIDs []string `json:"serial_ids"`
 }
 
 type destructionRequest struct {
@@ -926,7 +940,7 @@ func parseDestructionLines(c *gin.Context, q *sqlcgen.Queries, reqLines []destru
 		}
 		lines = append(lines, outboundLine{
 			ItemID: itemID, LotID: lotID, Source: lr.Source,
-			Status: lr.FromStatus, BaseQty: baseQty,
+			Status: lr.FromStatus, BaseQty: baseQty, SerialIDs: lr.SerialIDs,
 		})
 	}
 	return lines, true
@@ -1047,6 +1061,11 @@ func CreateDestructionHandler(c *gin.Context) {
 		return
 	}
 	if !insertDestructionLines(c, q, d, lines) {
+		return
+	}
+	// Serial enforcement (spec 17b §6.2 #2): track_serial items on the
+	// destruction flip their serials to destroyed with the document as ref.
+	if !enforceOutboundSerials(c, q, d.MerchantID, d.LocationID, lines, "destroyed", stockRef{RefType: "destruction", RefID: d.ID}) {
 		return
 	}
 	saved, err := q.ListDestructionLines(c.Request.Context(), d.ID)
@@ -1489,6 +1508,9 @@ type interMerchantTransferLineRequest struct {
 	Source  string `json:"source" binding:"required"`
 	Status  string `json:"status" binding:"required"`
 	BaseQty string `json:"base_qty" binding:"required"`
+	// Serial numbers (spec 17b §6.2 #2): required for track_serial items;
+	// they move at send time and the receipt leaves them untouched.
+	SerialIDs []string `json:"serial_ids"`
 }
 
 type interMerchantTransferRequest struct {
@@ -1536,7 +1558,7 @@ func parseIMTLines(c *gin.Context, q *sqlcgen.Queries, reqLines []interMerchantT
 		}
 		lines = append(lines, outboundLine{
 			ItemID: itemID, LotID: lotID, Source: lr.Source,
-			Status: lr.Status, BaseQty: baseQty,
+			Status: lr.Status, BaseQty: baseQty, SerialIDs: lr.SerialIDs,
 		})
 	}
 	return lines, true
@@ -1739,6 +1761,33 @@ func CreateInterMerchantTransferHandler(c *gin.Context) {
 			MoveDate: moveDate,
 		}); err != nil {
 			if !respondStockError(c, err) {
+				respondInternalError(c, err)
+			}
+			return
+		}
+	}
+	// Serial transfer (spec 17b §6.2 #2): track_serial items move their
+	// serials to the receiving merchant/location at send time; the receipt
+	// leaves them untouched (already moved).
+	for _, l := range lines {
+		item, err := q.GetInventoryItemByID(c.Request.Context(), l.ItemID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if !item.TrackSerial {
+			continue
+		}
+		if len(l.SerialIDs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "serial required"})
+			return
+		}
+		serials, okS := cleanSerialNos(c, l.SerialIDs)
+		if !okS {
+			return
+		}
+		if err := moveSerialsForTransfer(c.Request.Context(), q, fromMerchantID, toMerchantID, toLocationID, l.ItemID, serials); err != nil {
+			if !respondIdentityError(c, err) {
 				respondInternalError(c, err)
 			}
 			return

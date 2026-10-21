@@ -280,11 +280,29 @@ func issueStock(ctx context.Context, q *sqlcgen.Queries, merchantID, companyID, 
 		if err != nil {
 			return nil, fmt.Errorf("read item: %w", err)
 		}
+		// The contract keys its price to an inventory.item_unit row, not the
+		// inventory.unit row the item's base_unit_id names (Amandemen 2
+		// 2026-10-21): resolve the base unit's packaging row and price
+		// against it (its factor is the pack_content).
+		units, err := q.ListInventoryItemUnits(ctx, itemID)
+		if err != nil {
+			return nil, fmt.Errorf("read item units: %w", err)
+		}
+		var baseItemUnitID pgtype.UUID
+		for _, u := range units {
+			if u.UnitID == item.BaseUnitID {
+				baseItemUnitID = u.ID
+				break
+			}
+		}
+		if !baseItemUnitID.Valid {
+			return nil, errConsignmentPriceMissing
+		}
 		contract, err := q.GetEffectiveContractPrice(ctx, sqlcgen.GetEffectiveContractPriceParams{
 			CompanyID:  companyID,
 			SupplierID: supplier,
 			ItemID:     itemID,
-			ItemUnitID: item.BaseUnitID,
+			ItemUnitID: baseItemUnitID,
 			Kind:       "consignment",
 			Column6:    pgDate(onDate),
 		})

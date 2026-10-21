@@ -101,6 +101,9 @@ type stockUsageRequest struct {
 	AdmissionID    string `json:"admission_id"`
 	OverrideLotID  string `json:"override_lot_id"`
 	OverrideReason string `json:"override_reason"`
+	// Serial numbers (spec 17b §6.2 #2): required for track_serial items,
+	// one per base unit.
+	SerialIDs []string `json:"serial_ids"`
 }
 
 // StockUsageHandler godoc
@@ -161,6 +164,17 @@ func StockUsageHandler(c *gin.Context) {
 		}
 		ref = stockRef{RefType: "admission", RefID: admissionID}
 	}
+	// Serial enforcement (spec 17b §6.2 #2): track_serial items require
+	// serial_ids; untracked items keep the legacy behavior.
+	item, err := q.GetInventoryItemByID(c.Request.Context(), itemID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if item.TrackSerial && len(req.SerialIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "serial required"})
+		return
+	}
 	parts, err := issueStock(c.Request.Context(), q, merchantID, AuthCompanyID(c), AuthUserID(c),
 		locID, itemID, qty, time.Now().UTC(), ref, overrideLot, req.OverrideReason)
 	if err != nil {
@@ -168,6 +182,18 @@ func StockUsageHandler(c *gin.Context) {
 			respondInternalError(c, err)
 		}
 		return
+	}
+	if item.TrackSerial {
+		serials, okS := cleanSerialNos(c, req.SerialIDs)
+		if !okS {
+			return
+		}
+		if err := enforceSerialIssue(c.Request.Context(), q, merchantID, locID, itemID, serials, "issued", ref); err != nil {
+			if !respondIdentityError(c, err) {
+				respondInternalError(c, err)
+			}
+			return
+		}
 	}
 	data := make([]gin.H, 0, len(parts))
 	for _, p := range parts {
@@ -188,6 +214,8 @@ type stockTransferLineRequest struct {
 	LotID    string `json:"lot_id" binding:"required"`
 	Source   string `json:"source" binding:"required"`
 	Quantity string `json:"quantity" binding:"required"`
+	// Serial numbers (spec 17b §6.2 #2): required for track_serial items.
+	SerialIDs []string `json:"serial_ids"`
 }
 
 type stockTransferRequest struct {
@@ -341,6 +369,29 @@ func StockTransferHandler(c *gin.Context) {
 		} else {
 			respondInternalError(c, err)
 			return
+		}
+		// Serial transfer (spec 17b §6.2 #2): track_serial items move their
+		// serials with the stock; the status stays in_stock.
+		item, errI := q.GetInventoryItemByID(c.Request.Context(), itemID)
+		if errI != nil {
+			respondInternalError(c, errI)
+			return
+		}
+		if item.TrackSerial {
+			if len(lr.SerialIDs) == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "serial required"})
+				return
+			}
+			serials, okS := cleanSerialNos(c, lr.SerialIDs)
+			if !okS {
+				return
+			}
+			if err := moveSerialsForTransfer(c.Request.Context(), q, merchantID, merchantID, toID, itemID, serials); err != nil {
+				if !respondIdentityError(c, err) {
+					respondInternalError(c, err)
+				}
+				return
+			}
 		}
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"transfer_id": refID.String(), "moves": moves}, "meta": gin.H{}})
