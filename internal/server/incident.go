@@ -489,17 +489,23 @@ func UpdateIncidentStatusHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// reported_by_name diambil via LEFT JOIN person seperti GET detail
+	// (UpdateIncidentStatus RETURNING * tidak membawa nama).
+	refreshed, ok := fetchIncident(c, q, updated.ID, merchantID)
+	if !ok {
+		return
+	}
 	cat, err := loadIncidentCatalogs(ctx, q, merchantID)
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
 	payload := incidentJSON(
-		updated.ID, updated.PersonID, updated.AdmissionID, updated.ReportedBy,
-		updated.IncidentType, updated.Grading, updated.Location, updated.Narrative, updated.PatientImpact,
-		updated.OccurredAt, updated.CreatedAt, updated.UpdatedAt,
-		pgtype.Text{}, updated.Anonymous, updated.Status, updated.RowVersion,
-		cat.typeNames[updated.IncidentType], cat.gradingNames[updated.Grading], cat.gradingOutcomes[updated.Grading])
+		refreshed.ID, refreshed.PersonID, refreshed.AdmissionID, refreshed.ReportedBy,
+		refreshed.IncidentType, refreshed.Grading, refreshed.Location, refreshed.Narrative, refreshed.PatientImpact,
+		refreshed.OccurredAt, refreshed.CreatedAt, refreshed.UpdatedAt,
+		refreshed.ReportedByName, refreshed.Anonymous, refreshed.Status, refreshed.RowVersion,
+		cat.typeNames[refreshed.IncidentType], cat.gradingNames[refreshed.Grading], cat.gradingOutcomes[refreshed.Grading])
 	c.JSON(http.StatusOK, gin.H{"incident": payload})
 }
 
@@ -557,8 +563,22 @@ func AddIncidentEntryHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// created_by_name diambil via LEFT JOIN app_user→person seperti GET detail
+	// (CreateIncidentEntry RETURNING * tidak membawa nama).
+	entries, err := q.ListIncidentEntries(c.Request.Context(), incident.ID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	var createdByName pgtype.Text
+	for _, e := range entries {
+		if e.ID == entry.ID {
+			createdByName = e.CreatedByName
+			break
+		}
+	}
 	c.JSON(http.StatusCreated, gin.H{"entry": entryJSON(
-		entry.ID, entry.IncidentID, entry.Kind, entry.Body, pgtype.Text{}, entry.CreatedAt,
+		entry.ID, entry.IncidentID, entry.Kind, entry.Body, createdByName, entry.CreatedAt,
 	)})
 }
 
