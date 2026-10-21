@@ -837,6 +837,12 @@ definitions:
         type: string
       lot_id:
         type: string
+      serial_ids:
+        description: 'Serial numbers (spec 17b §6.2 #2): required for track_serial
+          items.'
+        items:
+          type: string
+        type: array
       source:
         type: string
     required:
@@ -980,6 +986,13 @@ definitions:
         type: string
       lot_id:
         type: string
+      serial_ids:
+        description: |-
+          Serial numbers (spec 17b §6.2 #2): required for track_serial items;
+          they move at send time and the receipt leaves them untouched.
+        items:
+          type: string
+        type: array
       source:
         type: string
       status:
@@ -1742,6 +1755,22 @@ definitions:
     - phone
     - username
     type: object
+  server.registerSerialsRequest:
+    properties:
+      item_id:
+        type: string
+      location_id:
+        type: string
+      serials:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - item_id
+    - location_id
+    - serials
+    type: object
   server.rejectPurchaseRequestRequest:
     properties:
       rejection_reason:
@@ -1755,6 +1784,45 @@ definitions:
         type: string
     required:
     - reason
+    type: object
+  server.repackInLineRequest:
+    properties:
+      base_qty:
+        type: string
+      batch_no:
+        type: string
+      expiry_date:
+        type: string
+      item_id:
+        type: string
+      item_unit_id:
+        type: string
+      pack_content:
+        type: string
+      pack_qty:
+        type: string
+    required:
+    - base_qty
+    - item_id
+    - item_unit_id
+    - pack_content
+    - pack_qty
+    type: object
+  server.repackOutLineRequest:
+    properties:
+      base_qty:
+        type: string
+      item_id:
+        type: string
+      lot_id:
+        type: string
+      source:
+        type: string
+    required:
+    - base_qty
+    - item_id
+    - lot_id
+    - source
     type: object
   server.replaceDepartmentCodeMapsRequest:
     properties:
@@ -1788,6 +1856,32 @@ definitions:
         type: string
       visible:
         type: boolean
+    type: object
+  server.saveRepackRequest:
+    properties:
+      in_lines:
+        items:
+          $ref: '#/definitions/server.repackInLineRequest'
+        minItems: 1
+        type: array
+      in_location_id:
+        type: string
+      note:
+        type: string
+      out_lines:
+        items:
+          $ref: '#/definitions/server.repackOutLineRequest'
+        minItems: 1
+        type: array
+      out_location_id:
+        type: string
+      row_version:
+        type: integer
+    required:
+    - in_lines
+    - in_location_id
+    - out_lines
+    - out_location_id
     type: object
   server.saveRoleMatrixRequest:
     properties:
@@ -2018,6 +2112,12 @@ definitions:
         type: string
       quantity:
         type: string
+      serial_ids:
+        description: 'Serial numbers (spec 17b §6.2 #2): required for track_serial
+          items.'
+        items:
+          type: string
+        type: array
       source:
         type: string
     required:
@@ -2060,6 +2160,13 @@ definitions:
         type: string
       reason:
         type: string
+      serial_ids:
+        description: |-
+          Serial numbers (spec 17b §6.2 #2): required for track_serial items,
+          one per base unit.
+        items:
+          type: string
+        type: array
     required:
     - item_id
     - location_id
@@ -2073,6 +2180,12 @@ definitions:
         type: string
       lot_id:
         type: string
+      serial_ids:
+        description: 'Serial numbers (spec 17b §6.2 #2): required for track_serial
+          items.'
+        items:
+          type: string
+        type: array
       source:
         type: string
       unit_cost:
@@ -2580,6 +2693,13 @@ definitions:
         type: string
     type: object
   server.voidReceiptRequest:
+    properties:
+      reason:
+        type: string
+    required:
+    - reason
+    type: object
+  server.voidRepackRequest:
     properties:
       reason:
         type: string
@@ -7029,6 +7149,45 @@ paths:
       summary: Create a claim batch for one payer and period (spec §4.2.1)
       tags:
       - claim-batch
+  /merchants/{id}/consignment/report:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Range start (YYYY-MM-DD)
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Range end (YYYY-MM-DD)
+        in: query
+        name: to
+        required: true
+        type: string
+      - description: Filter by supplier
+        in: query
+        name: supplier_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Consignment billing report per supplier and item (?from=&to=&supplier_id=,
+        YYYY-MM-DD)
+      tags:
+      - inventory
   /merchants/{id}/contract-prices:
     get:
       parameters:
@@ -8266,6 +8425,53 @@ paths:
       summary: BPJS receivables expiring within N days (default 30, 1-180)
       tags:
       - receivable
+  /merchants/{id}/repacks:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's repacks
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Repack draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.saveRepackRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a repack draft (out lines, in lines)
+      tags:
+      - inventory
   /merchants/{id}/schedule/calendar:
     get:
       parameters:
@@ -8471,6 +8677,69 @@ paths:
       summary: Merchant schedule summary for a range
       tags:
       - physician_schedule
+  /merchants/{id}/serials:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by item
+        in: query
+        name: item_id
+        type: string
+      - description: Filter by status
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's serial numbers (?item_id=&status=)
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Serial numbers
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.registerSerialsRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Register serial numbers in bulk (manual entry, status in_stock)
+      tags:
+      - inventory
   /merchants/{id}/service-items:
     get:
       parameters:
@@ -12673,6 +12942,117 @@ paths:
       summary: Toggle the document checklist of a receivable (spec §4.4.4/§4.3)
       tags:
       - receivable
+  /repacks/{id}:
+    get:
+      parameters:
+      - description: Repack UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Fetch one repack with its lines
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Repack UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Repack draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.saveRepackRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace a draft repack's header and lines (optimistic locking)
+      tags:
+      - inventory
+  /repacks/{id}/post:
+    post:
+      parameters:
+      - description: Repack UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Post a draft repack (repack_out/repack_in moves, cost carried)
+      tags:
+      - inventory
+  /repacks/{id}/void:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Repack UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Void reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.voidRepackRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Void a posted repack (reversal pairs, HPP untouched)
+      tags:
+      - inventory
   /role-templates:
     get:
       produces:

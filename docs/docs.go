@@ -6944,6 +6944,65 @@ const docTemplate = `{
                 }
             }
         },
+        "/merchants/{id}/consignment/report": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Consignment billing report per supplier and item (?from=\u0026to=\u0026supplier_id=, YYYY-MM-DD)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Range start (YYYY-MM-DD)",
+                        "name": "from",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Range end (YYYY-MM-DD)",
+                        "name": "to",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by supplier",
+                        "name": "supplier_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/merchants/{id}/contract-prices": {
             "get": {
                 "security": [
@@ -8915,6 +8974,82 @@ const docTemplate = `{
                 }
             }
         },
+        "/merchants/{id}/repacks": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "List a merchant's repacks",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Create a repack draft (out lines, in lines)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Repack draft",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.saveRepackRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/merchants/{id}/schedule/calendar": {
             "get": {
                 "security": [
@@ -9230,6 +9365,106 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/merchants/{id}/serials": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "List a merchant's serial numbers (?item_id=\u0026status=)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by item",
+                        "name": "item_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Register serial numbers in bulk (manual entry, status in_stock)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Merchant UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Serial numbers",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.registerSerialsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -15842,6 +16077,184 @@ const docTemplate = `{
                 }
             }
         },
+        "/repacks/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Fetch one repack with its lines",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repack UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Replace a draft repack's header and lines (optimistic locking)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repack UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Repack draft",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.saveRepackRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/repacks/{id}/post": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Post a draft repack (repack_out/repack_in moves, cost carried)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repack UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/repacks/{id}/void": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Void a posted repack (reversal pairs, HPP untouched)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repack UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Void reason",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.voidRepackRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/role-templates": {
             "get": {
                 "security": [
@@ -19345,6 +19758,13 @@ const docTemplate = `{
                 "lot_id": {
                     "type": "string"
                 },
+                "serial_ids": {
+                    "description": "Serial numbers (spec 17b §6.2 #2): required for track_serial items.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "source": {
                     "type": "string"
                 }
@@ -19556,6 +19976,13 @@ const docTemplate = `{
                 },
                 "lot_id": {
                     "type": "string"
+                },
+                "serial_ids": {
+                    "description": "Serial numbers (spec 17b §6.2 #2): required for track_serial items;\nthey move at send time and the receipt leaves them untouched.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "source": {
                     "type": "string"
@@ -20679,6 +21106,29 @@ const docTemplate = `{
                 }
             }
         },
+        "server.registerSerialsRequest": {
+            "type": "object",
+            "required": [
+                "item_id",
+                "location_id",
+                "serials"
+            ],
+            "properties": {
+                "item_id": {
+                    "type": "string"
+                },
+                "location_id": {
+                    "type": "string"
+                },
+                "serials": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "server.rejectPurchaseRequestRequest": {
             "type": "object",
             "required": [
@@ -20697,6 +21147,62 @@ const docTemplate = `{
             ],
             "properties": {
                 "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.repackInLineRequest": {
+            "type": "object",
+            "required": [
+                "base_qty",
+                "item_id",
+                "item_unit_id",
+                "pack_content",
+                "pack_qty"
+            ],
+            "properties": {
+                "base_qty": {
+                    "type": "string"
+                },
+                "batch_no": {
+                    "type": "string"
+                },
+                "expiry_date": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "string"
+                },
+                "item_unit_id": {
+                    "type": "string"
+                },
+                "pack_content": {
+                    "type": "string"
+                },
+                "pack_qty": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.repackOutLineRequest": {
+            "type": "object",
+            "required": [
+                "base_qty",
+                "item_id",
+                "lot_id",
+                "source"
+            ],
+            "properties": {
+                "base_qty": {
+                    "type": "string"
+                },
+                "item_id": {
+                    "type": "string"
+                },
+                "lot_id": {
+                    "type": "string"
+                },
+                "source": {
                     "type": "string"
                 }
             }
@@ -20749,6 +21255,43 @@ const docTemplate = `{
                 },
                 "visible": {
                     "type": "boolean"
+                }
+            }
+        },
+        "server.saveRepackRequest": {
+            "type": "object",
+            "required": [
+                "in_lines",
+                "in_location_id",
+                "out_lines",
+                "out_location_id"
+            ],
+            "properties": {
+                "in_lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/server.repackInLineRequest"
+                    }
+                },
+                "in_location_id": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "out_lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/server.repackOutLineRequest"
+                    }
+                },
+                "out_location_id": {
+                    "type": "string"
+                },
+                "row_version": {
+                    "type": "integer"
                 }
             }
         },
@@ -21096,6 +21639,13 @@ const docTemplate = `{
                 "quantity": {
                     "type": "string"
                 },
+                "serial_ids": {
+                    "description": "Serial numbers (spec 17b §6.2 #2): required for track_serial items.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "source": {
                     "type": "string"
                 }
@@ -21155,6 +21705,13 @@ const docTemplate = `{
                 },
                 "reason": {
                     "type": "string"
+                },
+                "serial_ids": {
+                    "description": "Serial numbers (spec 17b §6.2 #2): required for track_serial items,\none per base unit.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -21175,6 +21732,13 @@ const docTemplate = `{
                 },
                 "lot_id": {
                     "type": "string"
+                },
+                "serial_ids": {
+                    "description": "Serial numbers (spec 17b §6.2 #2): required for track_serial items.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "source": {
                     "type": "string"
@@ -21938,6 +22502,17 @@ const docTemplate = `{
             }
         },
         "server.voidReceiptRequest": {
+            "type": "object",
+            "required": [
+                "reason"
+            ],
+            "properties": {
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.voidRepackRequest": {
             "type": "object",
             "required": [
                 "reason"

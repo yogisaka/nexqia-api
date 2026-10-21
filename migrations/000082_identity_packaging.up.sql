@@ -43,7 +43,10 @@ CREATE TABLE inventory.serial (
     item_id         uuid NOT NULL REFERENCES inventory.item(id),
     serial_no       text NOT NULL CHECK (btrim(serial_no) <> ''),
     lot_id          uuid REFERENCES inventory.lot(id),
-    location_id     uuid NOT NULL REFERENCES core.location(id),
+    -- Nullable (Amandemen 2 2026-10-21): issued/destroyed/returned serials
+    -- lose their location — UpdateSerialIssued sets location_id = NULL
+    -- (spec 17b §6.2 #2), so the column cannot be NOT NULL.
+    location_id     uuid REFERENCES core.location(id),
     status          text NOT NULL DEFAULT 'in_stock' CHECK (status IN ('in_stock','issued','destroyed','returned')),
     issued_ref_type text,
     issued_ref_id   uuid,
