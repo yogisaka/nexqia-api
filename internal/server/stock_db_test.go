@@ -617,3 +617,141 @@ func TestStockDB_Identity(t *testing.T) {
 		t.Fatalf("same serial_no on another merchant must insert: %v", err)
 	}
 }
+
+// TestStockDB_ColdChain — migration 000083 cold chain & emergency kits: VVM
+// stages are bounded to 1..4, only one active seal per emergency kit is allowed
+// (a broken seal frees the slot), opened containers demand a BUD timestamp and
+// a non-negative remaining quantity that may reach zero, vvm_log and
+// fridge_temp_log are append-only for app_runtime, the new tables are
+// merchant-isolated under RLS, and kit items are unique per (kit, item).
+func TestStockDB_ColdChain(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantA, _, token, refreshCookie := seedAccountOwner(t, ctx, pool, router, "stockdb.coldchain", "081234572009")
+	merchantB := createTenantMerchant(t, ctx, pool, router, token, refreshCookie, companyID, "Cabang Cold Chain")
+
+	txA := runtimeTenantTx(t, ctx, pool, companyID, merchantA)
+	locationID, itemID, lotID := seedStockRefs(t, ctx, txA, companyID, merchantA, "CC")
+
+	// (c) opened_container: BUD timestamp is mandatory and remaining qty >= 0.
+	savepointExec(t, ctx, txA, "opened container without BUD", "bud_at",
+		`INSERT INTO inventory.opened_container
+			(company_id, merchant_id, item_id, lot_id, location_id, opened_at, bud_at, remaining_base_qty)
+			VALUES ($1,$2,$3,$4,$5,now(),NULL,5)`,
+		companyID, merchantA, itemID, lotID, locationID)
+	savepointExec(t, ctx, txA, "negative remaining quantity", "opened_container_remaining_base_qty_check",
+		`INSERT INTO inventory.opened_container
+			(company_id, merchant_id, item_id, lot_id, location_id, opened_at, bud_at, remaining_base_qty)
+			VALUES ($1,$2,$3,$4,$5,now(),now() + interval '28 days',-1)`,
+		companyID, merchantA, itemID, lotID, locationID)
+	var containerID string
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO inventory.opened_container
+			(company_id, merchant_id, item_id, lot_id, location_id, opened_at, bud_at, remaining_base_qty)
+		VALUES ($1,$2,$3,$4,$5,now(),now() + interval '28 days',5) RETURNING id::text`,
+		companyID, merchantA, itemID, lotID, locationID).Scan(&containerID); err != nil {
+		t.Fatalf("insert opened_container: %v", err)
+	}
+	if _, err := txA.Exec(ctx, `
+		UPDATE inventory.opened_container SET remaining_base_qty = 0, status = 'finished'
+		WHERE id = $1`, containerID); err != nil {
+		t.Fatalf("finish container at zero remaining must pass: %v", err)
+	}
+
+	// (a) vvm_log stage is bounded to 1..4.
+	savepointExec(t, ctx, txA, "vvm stage 0", "vvm_log_stage_check",
+		`INSERT INTO inventory.vvm_log (company_id, merchant_id, opened_container_id, checked_at, stage)
+			VALUES ($1,$2,$3,now(),0)`, companyID, merchantA, containerID)
+	savepointExec(t, ctx, txA, "vvm stage 5", "vvm_log_stage_check",
+		`INSERT INTO inventory.vvm_log (company_id, merchant_id, opened_container_id, checked_at, stage)
+			VALUES ($1,$2,$3,now(),5)`, companyID, merchantA, containerID)
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.vvm_log (company_id, merchant_id, opened_container_id, checked_at, stage)
+		VALUES ($1,$2,$3,now(),2)`, companyID, merchantA, containerID); err != nil {
+		t.Fatalf("insert valid vvm_log: %v", err)
+	}
+
+	// (b) only one active seal per kit; breaking it frees the slot.
+	var kitID, seal1ID string
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO inventory.emergency_kit (company_id, merchant_id, name, location_id)
+		VALUES ($1,$2,'Troli Emergensi Uji',$3) RETURNING id::text`,
+		companyID, merchantA, locationID).Scan(&kitID); err != nil {
+		t.Fatalf("insert emergency_kit: %v", err)
+	}
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO inventory.emergency_kit_seal (company_id, merchant_id, kit_id, seal_no)
+		VALUES ($1,$2,$3,'SEGEL-001') RETURNING id::text`,
+		companyID, merchantA, kitID).Scan(&seal1ID); err != nil {
+		t.Fatalf("insert first seal: %v", err)
+	}
+	savepointExec(t, ctx, txA, "second active seal same kit", "uq_emergency_kit_seal_active",
+		`INSERT INTO inventory.emergency_kit_seal (company_id, merchant_id, kit_id, seal_no)
+			VALUES ($1,$2,$3,'SEGEL-002')`, companyID, merchantA, kitID)
+	if _, err := txA.Exec(ctx, `
+		UPDATE inventory.emergency_kit_seal SET broken_at = now() WHERE id = $1`, seal1ID); err != nil {
+		t.Fatalf("break first seal: %v", err)
+	}
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.emergency_kit_seal (company_id, merchant_id, kit_id, seal_no)
+		VALUES ($1,$2,$3,'SEGEL-003')`, companyID, merchantA, kitID); err != nil {
+		t.Fatalf("seal after breaking the old one must insert: %v", err)
+	}
+
+	// (f) kit items are unique per (kit, item).
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.emergency_kit_item (company_id, merchant_id, kit_id, item_id, base_qty)
+		VALUES ($1,$2,$3,$4,2)`, companyID, merchantA, kitID, itemID); err != nil {
+		t.Fatalf("insert kit item: %v", err)
+	}
+	savepointExec(t, ctx, txA, "duplicate kit item", "uq_emergency_kit_item",
+		`INSERT INTO inventory.emergency_kit_item (company_id, merchant_id, kit_id, item_id, base_qty)
+			VALUES ($1,$2,$3,$4,1)`, companyID, merchantA, kitID, itemID)
+
+	// (d) vvm_log and fridge_temp_log are append-only for app_runtime.
+	var fridgeID string
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO inventory.fridge (company_id, merchant_id, name, location_id)
+		VALUES ($1,$2,'Kulkas Vaksin Uji',$3) RETURNING id::text`,
+		companyID, merchantA, locationID).Scan(&fridgeID); err != nil {
+		t.Fatalf("insert fridge: %v", err)
+	}
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.fridge_temp_log (company_id, merchant_id, fridge_id, logged_at, temperature)
+		VALUES ($1,$2,$3,now(),4.2)`, companyID, merchantA, fridgeID); err != nil {
+		t.Fatalf("insert fridge_temp_log: %v", err)
+	}
+	savepointExec(t, ctx, txA, "update vvm_log as app_runtime", "permission denied",
+		"UPDATE inventory.vvm_log SET stage = 3")
+	savepointExec(t, ctx, txA, "update fridge_temp_log as app_runtime", "permission denied",
+		"UPDATE inventory.fridge_temp_log SET temperature = 9.9")
+
+	// (e) RLS: merchant B sees none of merchant A's cold chain rows.
+	if err := txA.Commit(ctx); err != nil {
+		t.Fatalf("commit merchant A cold chain rows: %v", err)
+	}
+	txB := runtimeTenantTx(t, ctx, pool, companyID, merchantB)
+	var seenContainers, seenKits int
+	if err := txB.QueryRow(ctx,
+		"SELECT count(*), (SELECT count(*) FROM inventory.emergency_kit) FROM inventory.opened_container").Scan(&seenContainers, &seenKits); err != nil {
+		t.Fatalf("count cold chain rows as merchant B: %v", err)
+	}
+	if seenContainers != 0 || seenKits != 0 {
+		t.Fatalf("merchant B must not see merchant A rows, got containers=%d kits=%d", seenContainers, seenKits)
+	}
+	if err := txB.Rollback(ctx); err != nil {
+		t.Fatalf("rollback merchant B session: %v", err)
+	}
+	txA2 := runtimeTenantTx(t, ctx, pool, companyID, merchantA)
+	var ownContainers, ownKits int
+	if err := txA2.QueryRow(ctx,
+		"SELECT count(*), (SELECT count(*) FROM inventory.emergency_kit) FROM inventory.opened_container").Scan(&ownContainers, &ownKits); err != nil {
+		t.Fatalf("count cold chain rows as merchant A: %v", err)
+	}
+	if ownContainers != 1 || ownKits != 1 {
+		t.Fatalf("merchant A must see its own rows, got containers=%d kits=%d", ownContainers, ownKits)
+	}
+}
