@@ -469,6 +469,8 @@ definitions:
         type: boolean
       track_expiry:
         type: boolean
+      track_serial:
+        type: boolean
     required:
     - base_unit_id
     - code
@@ -2390,6 +2392,8 @@ definitions:
       track_batch:
         type: boolean
       track_expiry:
+        type: boolean
+      track_serial:
         type: boolean
     type: object
   server.updateInventoryItemUnitRequest:

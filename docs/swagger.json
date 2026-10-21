@@ -19212,6 +19212,9 @@
                 },
                 "track_expiry": {
                     "type": "boolean"
+                },
+                "track_serial": {
+                    "type": "boolean"
                 }
             }
         },
@@ -22036,6 +22039,9 @@
                     "type": "boolean"
                 },
                 "track_expiry": {
+                    "type": "boolean"
+                },
+                "track_serial": {
                     "type": "boolean"
                 }
             }

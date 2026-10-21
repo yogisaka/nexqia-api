@@ -19219,6 +19219,9 @@ const docTemplate = `{
                 },
                 "track_expiry": {
                     "type": "boolean"
+                },
+                "track_serial": {
+                    "type": "boolean"
                 }
             }
         },
@@ -22043,6 +22046,9 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "track_expiry": {
+                    "type": "boolean"
+                },
+                "track_serial": {
                     "type": "boolean"
                 }
             }
