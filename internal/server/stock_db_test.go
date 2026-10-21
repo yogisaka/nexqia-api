@@ -474,3 +474,146 @@ func TestStockDB_Outbound(t *testing.T) {
 		t.Fatalf("company 2 must see only its own IMT, got %d", seenIMTC)
 	}
 }
+
+// TestStockDB_Identity — migration 000082 identity & packaging: supplier_id on
+// stock_balance is consignment-only (NOT VALID check still rejects new rows),
+// the widened unique slot separates consignment balances per supplier,
+// repack_out/repack_in move types pass the widened CHECK, serial numbers are
+// unique per merchant+item but reusable across merchants, consignment_usage is
+// append-only for app_runtime (UPDATE revoked), repack rejects identical
+// out/in locations, and track_serial defaults to false.
+func TestStockDB_Identity(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	redisClient := newTestRedisClient(t, ctx)
+	router := server.NewRouter(pool, redisClient, testConfig())
+
+	companyID, merchantA, _, token, refreshCookie := seedAccountOwner(t, ctx, pool, router, "stockdb.identity", "081234572008")
+	merchantB := createTenantMerchant(t, ctx, pool, router, token, refreshCookie, companyID, "Cabang Identitas")
+
+	txA := runtimeTenantTx(t, ctx, pool, companyID, merchantA)
+	locationID, itemID, lotID := seedStockRefs(t, ctx, txA, companyID, merchantA, "I1")
+	var supplier1ID, supplier2ID string
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO core.supplier (company_id, merchant_id, code, name)
+		VALUES ($1,$2,'SUP-ID1','Supplier Konsinyasi Satu') RETURNING id::text`,
+		companyID, merchantA).Scan(&supplier1ID); err != nil {
+		t.Fatalf("insert supplier 1: %v", err)
+	}
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO core.supplier (company_id, merchant_id, code, name)
+		VALUES ($1,$2,'SUP-ID2','Supplier Konsinyasi Dua') RETURNING id::text`,
+		companyID, merchantA).Scan(&supplier2ID); err != nil {
+		t.Fatalf("insert supplier 2: %v", err)
+	}
+
+	// (f) track_serial defaults to false on existing-style items.
+	var trackSerial bool
+	if err := txA.QueryRow(ctx,
+		"SELECT track_serial FROM inventory.item WHERE id = $1", itemID).Scan(&trackSerial); err != nil {
+		t.Fatalf("read track_serial: %v", err)
+	}
+	if trackSerial {
+		t.Fatalf("track_serial must default to false")
+	}
+
+	// (a) a purchase balance carrying supplier_id is rejected even though the
+	// check is NOT VALID — NOT VALID only skips existing-row validation.
+	savepointExec(t, ctx, txA, "purchase balance with supplier", "chk_stock_balance_supplier",
+		`INSERT INTO inventory.stock_balance
+			(company_id, merchant_id, location_id, item_id, lot_id, source, status, quantity, supplier_id)
+			VALUES ($1,$2,$3,$4,$5,'purchase','available',10,$6)`,
+		companyID, merchantA, locationID, itemID, lotID, supplier1ID)
+
+	// (b) consignment balances on the same slot with different suppliers both
+	// insert; the same supplier again hits the widened unique index.
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.stock_balance
+			(company_id, merchant_id, location_id, item_id, lot_id, source, status, quantity, supplier_id)
+		VALUES ($1,$2,$3,$4,$5,'consignment','available',5,$6)`,
+		companyID, merchantA, locationID, itemID, lotID, supplier1ID); err != nil {
+		t.Fatalf("insert consignment balance supplier 1: %v", err)
+	}
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.stock_balance
+			(company_id, merchant_id, location_id, item_id, lot_id, source, status, quantity, supplier_id)
+		VALUES ($1,$2,$3,$4,$5,'consignment','available',7,$6)`,
+		companyID, merchantA, locationID, itemID, lotID, supplier2ID); err != nil {
+		t.Fatalf("insert consignment balance supplier 2 (same slot) must pass: %v", err)
+	}
+	savepointExec(t, ctx, txA, "duplicate consignment slot same supplier", "uq_stock_balance_slot",
+		`INSERT INTO inventory.stock_balance
+			(company_id, merchant_id, location_id, item_id, lot_id, source, status, quantity, supplier_id)
+			VALUES ($1,$2,$3,$4,$5,'consignment','available',1,$6)`,
+		companyID, merchantA, locationID, itemID, lotID, supplier1ID)
+
+	// (c) repack_out/repack_in move types pass the widened CHECK; bogus fails.
+	for _, mt := range []string{"repack_out", "repack_in"} {
+		if _, err := txA.Exec(ctx, `
+			INSERT INTO inventory.stock_move
+				(company_id, merchant_id, move_date, move_type, location_id, item_id, lot_id, source, status, quantity)
+			VALUES ($1,$2,CURRENT_DATE,$3,$4,$5,$6,'purchase','available',-1)`,
+			companyID, merchantA, mt, locationID, itemID, lotID); err != nil {
+			t.Fatalf("insert %s move: %v", mt, err)
+		}
+	}
+	savepointExec(t, ctx, txA, "bogus move_type", "stock_move_move_type_check",
+		`INSERT INTO inventory.stock_move
+			(company_id, merchant_id, move_date, move_type, location_id, item_id, lot_id, source, status, quantity)
+			VALUES ($1,$2,CURRENT_DATE,'bogus',$3,$4,$5,'purchase','available',-1)`,
+		companyID, merchantA, locationID, itemID, lotID)
+
+	// (d) serial_no is unique per (merchant, item); duplicates are rejected.
+	var tablet string
+	if err := txA.QueryRow(ctx,
+		"SELECT id::text FROM inventory.item_unit WHERE item_id = $1", itemID).Scan(&tablet); err != nil {
+		t.Fatalf("resolve item_unit: %v", err)
+	}
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.serial (company_id, merchant_id, item_id, serial_no, lot_id, location_id)
+		VALUES ($1,$2,$3,'SN-0001',$4,$5)`,
+		companyID, merchantA, itemID, lotID, locationID); err != nil {
+		t.Fatalf("insert serial: %v", err)
+	}
+	savepointExec(t, ctx, txA, "duplicate serial same merchant", "uq_serial",
+		`INSERT INTO inventory.serial (company_id, merchant_id, item_id, serial_no, lot_id, location_id)
+			VALUES ($1,$2,$3,'SN-0001',$4,$5)`,
+		companyID, merchantA, itemID, lotID, locationID)
+
+	// (e) consignment_usage is append-only for app_runtime (UPDATE revoked).
+	if _, err := txA.Exec(ctx, `
+		INSERT INTO inventory.consignment_usage
+			(company_id, merchant_id, supplier_id, item_id, lot_id, base_qty, unit_price, used_on)
+		VALUES ($1,$2,$3,$4,$5,2,15000,CURRENT_DATE)`,
+		companyID, merchantA, supplier1ID, itemID, lotID); err != nil {
+		t.Fatalf("insert consignment_usage: %v", err)
+	}
+	savepointExec(t, ctx, txA, "update consignment_usage as app_runtime", "permission denied",
+		"UPDATE inventory.consignment_usage SET base_qty = 99")
+
+	// (f) repack with identical out/in locations is rejected.
+	savepointExec(t, ctx, txA, "repack identical locations", "chk_repack_locations",
+		`INSERT INTO inventory.repack (company_id, merchant_id, out_location_id, in_location_id)
+			VALUES ($1,$2,$3,$3)`, companyID, merchantA, locationID)
+
+	if err := txA.Commit(ctx); err != nil {
+		t.Fatalf("commit merchant A rows: %v", err)
+	}
+
+	// (d, cont.) the same serial_no on a sibling merchant of the same company
+	// is allowed — uniqueness is per merchant.
+	txB := runtimeTenantTx(t, ctx, pool, companyID, merchantB)
+	var locationB string
+	if err := txB.QueryRow(ctx, `
+		INSERT INTO core.location (company_id, merchant_id, parent_id, kind, code, name, functions)
+		VALUES ($1,$2,NULL,'room','LOC-IB','Gudang Identitas',ARRAY['warehouse']::text[])
+		RETURNING id::text`, companyID, merchantB).Scan(&locationB); err != nil {
+		t.Fatalf("insert merchant B location: %v", err)
+	}
+	if _, err := txB.Exec(ctx, `
+		INSERT INTO inventory.serial (company_id, merchant_id, item_id, serial_no, location_id)
+		VALUES ($1,$2,$3,'SN-0001',$4)`,
+		companyID, merchantB, itemID, locationB); err != nil {
+		t.Fatalf("same serial_no on another merchant must insert: %v", err)
+	}
+}
