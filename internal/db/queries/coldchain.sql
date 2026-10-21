@@ -15,10 +15,13 @@ RETURNING *;
 SELECT * FROM inventory.opened_container WHERE id = $1;
 
 -- name: ListOpenedContainers :many
-SELECT * FROM inventory.opened_container
-WHERE merchant_id = $1
-  AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text)
-ORDER BY bud_at ASC;
+SELECT sqlc.embed(oc), i.name AS item_name, l.batch_no
+FROM inventory.opened_container oc
+JOIN inventory.item i ON i.id = oc.item_id
+JOIN inventory.lot l ON l.id = oc.lot_id
+WHERE oc.merchant_id = $1
+  AND (sqlc.narg('status')::text IS NULL OR oc.status = sqlc.narg('status')::text)
+ORDER BY oc.bud_at ASC;
 
 -- name: DecrementOpenedContainer :one
 UPDATE inventory.opened_container
@@ -41,6 +44,14 @@ INSERT INTO inventory.vvm_log
     (company_id, merchant_id, opened_container_id, checked_at, stage, checked_by)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
+
+-- name: ListVvmLogs :many
+SELECT v.* FROM inventory.vvm_log v
+WHERE v.merchant_id = $1
+  AND (sqlc.narg('lot_id')::uuid IS NULL OR v.opened_container_id IN (
+      SELECT oc.id FROM inventory.opened_container oc WHERE oc.lot_id = sqlc.narg('lot_id')::uuid))
+ORDER BY v.checked_at DESC
+LIMIT sqlc.arg(row_limit)::integer OFFSET sqlc.arg(row_offset)::integer;
 
 -- name: InsertFridge :one
 INSERT INTO inventory.fridge

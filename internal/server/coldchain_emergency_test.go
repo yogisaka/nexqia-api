@@ -356,9 +356,103 @@ func TestVvmRejectedButLogged(t *testing.T) {
 		container).Scan(&n); err != nil {
 		t.Fatalf("count vvm_log: %v", err)
 	}
-	_ = check.Rollback(ctx)
 	if n != 1 {
 		t.Fatalf("vvm_log rows = %d, want 1 (the rejected check must stay logged)", n)
+	}
+
+	// GET vvm-logs (amandemen 2026-10-21) returns the rejected check, newest
+	// first; the lot filter matches the container's lot, a foreign lot none.
+	roleID = ccOwnerRoleID(t, ctx, check, w)
+	lotFilter := pgtype.UUID{}
+	if err := check.QueryRow(ctx, `SELECT lot_id FROM inventory.opened_container WHERE id = $1`, container).Scan(&lotFilter); err != nil {
+		t.Fatalf("read container lot: %v", err)
+	}
+	if err := check.Rollback(ctx); err != nil {
+		t.Fatalf("rollback check tx: %v", err)
+	}
+
+	list := func(lotID *pgtype.UUID) ([]map[string]any, *httptest.ResponseRecorder, pgx.Tx) {
+		txL := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+		path := "/api/v1/merchants/" + w.merchantStr + "/vvm-logs"
+		if lotID != nil {
+			path += "?lot_id=" + lotID.String()
+		}
+		cL, recL := ccContext(t, txL, w, roleID, http.MethodGet, path,
+			gin.Params{{Key: "id", Value: w.merchantStr}}, nil)
+		ListVvmLogsHandler(cL)
+		var out struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(recL.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode vvm-logs list: %v (%s)", err, recL.Body.String())
+		}
+		return out.Data, recL, txL
+	}
+
+	data, rec, txL := list(nil)
+	if rec.Code != http.StatusOK || len(data) != 1 || data[0]["stage"] != float64(3) {
+		t.Fatalf("vvm-logs = %d %v, want 200 with the single stage-3 log", rec.Code, data)
+	}
+	if data[0]["opened_container_id"] != container.String() {
+		t.Fatalf("vvm-logs container = %v, want %s", data[0]["opened_container_id"], container)
+	}
+	_ = txL.Rollback(ctx)
+
+	data, rec, txL = list(&lotFilter)
+	if rec.Code != http.StatusOK || len(data) != 1 {
+		t.Fatalf("vvm-logs by lot = %d %v, want the container's log", rec.Code, data)
+	}
+	_ = txL.Rollback(ctx)
+
+	other := pgtype.UUID{Valid: true, Bytes: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}}
+	data, rec, txL = list(&other)
+	if rec.Code != http.StatusOK || len(data) != 0 {
+		t.Fatalf("vvm-logs foreign lot = %d %v, want empty", rec.Code, data)
+	}
+	_ = txL.Rollback(ctx)
+}
+
+// TestOpenedContainerListNames — the container list carries item_name and
+// batch_no from the item/lot join (amandemen 2026-10-21, FE panel BUD).
+func TestOpenedContainerListNames(t *testing.T) {
+	ctx := context.Background()
+	w := seedStockWorld(t, ctx, "ccnames", "081234574011", "Klinik Nama")
+
+	seed := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	vax := ccSeedVaccineItem(t, ctx, seed, w, "NAMA") // name: 'Vaksin Uji NAMA'
+	world := *w
+	world.item = vax
+	lot := stockSeedLot(t, ctx, seed, &world, "NAMA-1", nil, false)
+	ccSeedContainer(t, ctx, seed, &world, vax, lot, time.Now().UTC().Add(24*time.Hour), 10_000)
+	roleID := ccOwnerRoleID(t, ctx, seed, w)
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+
+	tx := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	c, rec := ccContext(t, tx, w, roleID, http.MethodGet,
+		"/api/v1/merchants/"+w.merchantStr+"/opened-containers",
+		gin.Params{{Key: "id", Value: w.merchantStr}}, nil)
+	ListOpenedContainersHandler(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("container list expected 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode container list: %v", err)
+	}
+	_ = tx.Rollback(ctx)
+	if len(out.Data) != 1 {
+		t.Fatalf("container list = %d rows, want 1", len(out.Data))
+	}
+	row := out.Data[0]
+	if row["item_name"] != "Vaksin Uji NAMA" {
+		t.Fatalf("item_name = %v, want Vaksin Uji NAMA", row["item_name"])
+	}
+	if row["batch_no"] != "NAMA-1" {
+		t.Fatalf("batch_no = %v, want NAMA-1", row["batch_no"])
 	}
 }
 

@@ -105,11 +105,15 @@ func RegisterColdChainRoutes(rg *gin.RouterGroup) {
 
 	rg.POST("/merchants/:id/fridge-temp-logs", CreateFridgeTempLogHandler)
 	rg.GET("/merchants/:id/fridge-temp-logs", ListFridgeTempLogsHandler)
+
+	rg.GET("/merchants/:id/vvm-logs", ListVvmLogsHandler)
 }
 
-// openedContainerJSON renders an opened container for responses.
-func openedContainerJSON(r sqlcgen.InventoryOpenedContainer) gin.H {
-	return gin.H{
+// openedContainerJSON renders an opened container for responses. item_name /
+// batch_no come from the item/lot join in the list query (amandemen 2026-10-21,
+// FE panel); write handlers pass nil so the create/waste shape stays unchanged.
+func openedContainerJSON(r sqlcgen.InventoryOpenedContainer, itemName, batchNo *string) gin.H {
+	out := gin.H{
 		"id":                 r.ID.String(),
 		"merchant_id":        r.MerchantID.String(),
 		"item_id":            r.ItemID.String(),
@@ -121,6 +125,26 @@ func openedContainerJSON(r sqlcgen.InventoryOpenedContainer) gin.H {
 		"remaining_base_qty": numericExact(r.RemainingBaseQty),
 		"status":             r.Status,
 		"note":               textOrNil(r.Note),
+	}
+	if itemName != nil {
+		out["item_name"] = *itemName
+	}
+	if batchNo != nil {
+		out["batch_no"] = *batchNo
+	}
+	return out
+}
+
+// vvmLogJSON renders one VVM stage check for responses.
+func vvmLogJSON(r sqlcgen.InventoryVvmLog) gin.H {
+	return gin.H{
+		"id":                  r.ID.String(),
+		"merchant_id":         r.MerchantID.String(),
+		"opened_container_id": r.OpenedContainerID.String(),
+		"checked_at":          tsOrNil(r.CheckedAt),
+		"stage":               r.Stage,
+		"checked_by":          uuidOrNil(r.CheckedBy),
+		"created_at":          tsOrNil(r.CreatedAt),
 	}
 }
 
@@ -245,7 +269,7 @@ func CreateOpenedContainerHandler(c *gin.Context) {
 		return
 	}
 	// The vial is still an asset: NO balance move is written here (spec §7.2 #1).
-	c.JSON(http.StatusCreated, gin.H{"data": openedContainerJSON(container), "meta": gin.H{}})
+	c.JSON(http.StatusCreated, gin.H{"data": openedContainerJSON(container, nil, nil), "meta": gin.H{}})
 }
 
 // ListOpenedContainersHandler godoc
@@ -284,7 +308,7 @@ func ListOpenedContainersHandler(c *gin.Context) {
 	}
 	data := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
-		data = append(data, openedContainerJSON(r))
+		data = append(data, openedContainerJSON(r.InventoryOpenedContainer, &r.ItemName, &r.BatchNo))
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }
@@ -362,7 +386,7 @@ func WasteOpenedContainerHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": openedContainerJSON(wasted), "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": openedContainerJSON(wasted, nil, nil), "meta": gin.H{}})
 }
 
 // §7.2 #3 — fridges.
@@ -686,6 +710,73 @@ func ListFridgeTempLogsHandler(c *gin.Context) {
 	data := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
 		data = append(data, fridgeTempLogJSON(r))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+// §7.2 #2 — VVM stage log history (read-only, amandemen 2026-10-21).
+
+// ListVvmLogsHandler godoc
+// @Summary List VVM stage checks (newest first, optional lot filter, paginated)
+// @Tags inventory
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Param lot_id query string false "Filter by the container's lot UUID"
+// @Param limit query int false "Page size (default 50, max 200)"
+// @Param offset query int false "Page offset (default 0)"
+// @Success 200 {object} apiResponse
+// @Router /merchants/{id}/vvm-logs [get]
+func ListVvmLogsHandler(c *gin.Context) {
+	merchantID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	// Single-write 403: cold chain members pass without any response write;
+	// non-members get exactly one RequirePermissionForMerchant attempt.
+	has, err := userHasPermissionNoWrite(c, q, merchantID, PermColdChainLog)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !has && !RequirePermissionForMerchant(c, PermStockView, merchantID) {
+		return
+	}
+	params := sqlcgen.ListVvmLogsParams{MerchantID: merchantID, RowLimit: 50}
+	if raw := c.Query("lot_id"); raw != "" {
+		lotID, okL := parseUUID(raw)
+		if !okL {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid lot_id"})
+			return
+		}
+		params.LotID = lotID
+	}
+	if raw := c.Query("limit"); raw != "" {
+		n, errL := strconv.Atoi(raw)
+		if errL != nil || n < 1 || n > 200 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid limit"})
+			return
+		}
+		params.RowLimit = int32(n)
+	}
+	if raw := c.Query("offset"); raw != "" {
+		n, errO := strconv.Atoi(raw)
+		if errO != nil || n < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid offset"})
+			return
+		}
+		params.RowOffset = int32(n)
+	}
+	rows, err := q.ListVvmLogs(c.Request.Context(), params)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		data = append(data, vvmLogJSON(r))
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }
