@@ -20,7 +20,7 @@ INSERT INTO inventory.item (
     is_lasa, lasa_note, is_generic, het_amount, het_effective_from,
     min_fraction, no_crush, bud_after_open_hours,
     bud_after_reconstitution_hours, is_single_dose, storage_temp,
-    track_batch, track_expiry, is_active, created_by, updated_by
+    track_batch, track_expiry, track_serial, is_active, created_by, updated_by
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9, $10, $11, $12,
@@ -28,7 +28,7 @@ INSERT INTO inventory.item (
     $19, $20, $21, $22, $23,
     $24, $25, $26,
     $27, $28, $29,
-    $30, $31, $32, $33, $33
+    $30, $31, $32, $33, $34, $34
 )
 RETURNING *;
 
@@ -75,6 +75,7 @@ UPDATE inventory.item i SET
     storage_temp = COALESCE(sqlc.narg('storage_temp')::text, i.storage_temp),
     track_batch = COALESCE(sqlc.narg('track_batch')::boolean, i.track_batch),
     track_expiry = COALESCE(sqlc.narg('track_expiry')::boolean, i.track_expiry),
+    track_serial = COALESCE(sqlc.narg('track_serial')::boolean, i.track_serial),
     is_active = COALESCE(sqlc.narg('is_active')::boolean, i.is_active),
     updated_by = sqlc.arg('updated_by')::uuid
 WHERE i.id = sqlc.arg('item_id')::uuid

@@ -139,6 +139,10 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// inter-merchant transfers (spec 2026-10-20-inventory-17b §5.3,
 	// migration 000081).
 	RegisterStockOutRoutes(locked)
+	// Identity & packaging: serial numbers, repacks and the consignment
+	// billing report (spec 2026-10-20-inventory-17b-procurement-special-cases
+	// §6, migration 000082).
+	RegisterIdentityRoutes(locked)
 	RegisterFeePayoutRoutes(locked, cfg)
 	RegisterPhysicianRoutes(locked)
 	RegisterPhysicianScheduleRoutes(locked)

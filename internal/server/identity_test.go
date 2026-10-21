@@ -11,8 +11,12 @@ package server
 // container/tenant helpers live in stock_ledger_test.go and are reused.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,6 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
@@ -596,5 +601,323 @@ func TestRepackVoid(t *testing.T) {
 	}
 	if balA != 10_000 || balB != 5_000 || balC != 0 {
 		t.Fatalf("balances after void = A %d B %d C %d, want 10000/5000/0", balA, balB, balC)
+	}
+}
+
+// §6 HTTP round-trips through the full router (plan Task 4, pola
+// goods_receipt_test.go): the routes are exercised as the seeded owner with
+// the standard tenant/auth headers.
+
+// identityHTTPEnv is one full-router test environment: the seeded stock world
+// plus the owner's bearer token.
+type identityHTTPEnv struct {
+	w      *stockWorld
+	router *gin.Engine
+	token  string
+}
+
+// identityHTTPSetup registers a fresh tenant through the real endpoints,
+// seeds one warehouse room, and returns the router + owner token.
+func identityHTTPSetup(t *testing.T, label, phone string) *identityHTTPEnv {
+	t.Helper()
+	ctx := context.Background()
+	pool := newStockTestPool(t, ctx)
+	redisClient := newStockTestRedis(t, ctx)
+	router := NewRouter(pool, redisClient, stockTestConfig())
+	companyStr, userStr, token, _ := stockRegisterOwner(t, ctx, pool, router, "idh."+label, phone)
+	merchantStr := stockMerchantID(t, ctx, pool, companyStr)
+	tx := stockRuntimeTx(t, ctx, pool, companyStr, merchantStr)
+	var locationID pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.location (company_id, merchant_id, kind, code, name, functions)
+		VALUES ($1,$2,'room','GUD-1','Gudang Utama', ARRAY['warehouse']::text[]) RETURNING id`,
+		companyStr, merchantStr).Scan(&locationID); err != nil {
+		t.Fatalf("insert location: %v", err)
+	}
+	w := &stockWorld{
+		pool:       pool,
+		company:    stockMustUUID(t, ctx, tx, companyStr),
+		merchant:   stockMustUUID(t, ctx, tx, merchantStr),
+		user:       stockMustUUID(t, ctx, tx, userStr),
+		companyStr: companyStr, merchantStr: merchantStr, userStr: userStr,
+		location: locationID,
+		day:      time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC),
+	}
+	// One default drug item (like seedStockWorld) for tests that seed
+	// balances against it.
+	tablet := stockUnitID(t, ctx, tx, "tablet")
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO inventory.item (company_id, code, name, item_kind, pricing_category, base_unit_id, kfa_code, drug_class)
+		VALUES ($1,'ITM-STK','Obat Uji Stok','drug','generic',$2,'93100090','keras') RETURNING id`,
+		companyStr, tablet).Scan(&w.item); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+	return &identityHTTPEnv{w: w, router: router, token: token}
+}
+
+// identityAPI sends an authenticated tenant request and decodes the JSON body.
+func identityAPI(t *testing.T, e *identityHTTPEnv, method, path string, body map[string]any) (int, map[string]any) {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		rdr = bytes.NewReader(raw)
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	req.Header.Set("X-Company-ID", e.w.companyStr)
+	req.Header.Set("X-Merchant-ID", e.w.merchantStr)
+	rec := httptest.NewRecorder()
+	e.router.ServeHTTP(rec, req)
+	out := map[string]any{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
+// identityHTTPUnit resolves a catalog unit code to its id string.
+func identityHTTPUnit(t *testing.T, ctx context.Context, pool *pgxpool.Pool, code string) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM inventory.unit WHERE code = $1`, code).Scan(&id); err != nil {
+		t.Fatalf("resolve unit %s: %v", code, err)
+	}
+	return id
+}
+
+var identityKfaSeq int64 = 931002000
+
+// identityHTTPItem creates an item via the API and returns its id.
+func identityHTTPItem(t *testing.T, e *identityHTTPEnv, code string, trackSerial bool) string {
+	t.Helper()
+	identityKfaSeq++
+	status, out := identityAPI(t, e, http.MethodPost, "/api/v1/inventory/items", map[string]any{
+		"code": code, "name": code + " name", "item_kind": "drug",
+		"pricing_category": "generic", "drug_class": "keras",
+		"base_unit_id": identityHTTPUnit(t, context.Background(), e.w.pool, "tablet"),
+		"kfa_code":     fmt.Sprintf("%d", identityKfaSeq),
+		"track_serial": trackSerial,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create item %s expected 201, got %d: %v", code, status, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	id, _ := data["id"].(string)
+	if id == "" {
+		t.Fatalf("missing item id: %v", out)
+	}
+	return id
+}
+
+// TestSerialItemField: track_serial round-trips through create, get and patch
+// (plain flag — no item_kind restriction).
+func TestSerialItemField(t *testing.T) {
+	e := identityHTTPSetup(t, "item", "081234573110")
+	itemID := identityHTTPItem(t, e, "ITM-HTTP-SN", true)
+
+	status, out := identityAPI(t, e, http.MethodGet, "/api/v1/inventory/items/"+itemID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get expected 200, got %d: %v", status, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if data["track_serial"] != true {
+		t.Fatalf("created track_serial = %v, want true", data["track_serial"])
+	}
+
+	status, out = identityAPI(t, e, http.MethodPatch, "/api/v1/inventory/items/"+itemID,
+		map[string]any{"row_version": 1, "track_serial": false})
+	if status != http.StatusOK {
+		t.Fatalf("patch expected 200, got %d: %v", status, out)
+	}
+	data, _ = out["data"].(map[string]any)
+	if data["track_serial"] != false {
+		t.Fatalf("patched track_serial = %v, want false", data["track_serial"])
+	}
+}
+
+// TestSerialAPI: bulk registration via POST /merchants/:id/serials and the
+// filtered listing (?item_id=&status=).
+func TestSerialAPI(t *testing.T) {
+	e := identityHTTPSetup(t, "serial", "081234573111")
+	itemID := identityHTTPItem(t, e, "ITM-HTTP-SE", true)
+	serialPath := "/api/v1/merchants/" + e.w.merchantStr + "/serials"
+
+	status, out := identityAPI(t, e, http.MethodPost, serialPath, map[string]any{
+		"item_id": itemID, "location_id": e.w.location.String(),
+		"serials": []string{"SN-H1", "SN-H2"},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("register serials expected 201, got %d: %v", status, out)
+	}
+	rows, _ := out["data"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("registered serials = %v, want 2", rows)
+	}
+
+	status, out = identityAPI(t, e, http.MethodGet,
+		serialPath+"?item_id="+itemID+"&status=in_stock", nil)
+	if status != http.StatusOK {
+		t.Fatalf("list serials expected 200, got %d: %v", status, out)
+	}
+	rows, _ = out["data"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("listed serials = %v, want 2", rows)
+	}
+	for _, r := range rows {
+		if r.(map[string]any)["status"] != "in_stock" {
+			t.Fatalf("serial status = %v, want in_stock", r)
+		}
+	}
+}
+
+// TestRepackAPI: create draft → post (status posted) → void (status void)
+// over the full router, on the contract fixture shape (out 10 @ 50, in 10).
+func TestRepackAPI(t *testing.T) {
+	ctx := context.Background()
+	e := identityHTTPSetup(t, "repack", "081234573112")
+	tx := stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	itemA := identitySeedItem(t, ctx, tx, e.w, "ITM-HRA", "Repack HTTP A", false, "tablet")
+	itemC := identitySeedItem(t, ctx, tx, e.w, "ITM-HRC", "Repack HTTP C", false, "tablet")
+	identitySetAvgCost(t, ctx, tx, e.w, itemA, "50.000000")
+	ed := e.w.day.AddDate(0, 2, 0)
+	lotA := identitySeedLot(t, ctx, tx, e.w, itemA, "B-HRA", &ed)
+	identitySeedBalance(t, ctx, tx, e.w, itemA, lotA, "purchase", "available", 10_000, pgtype.UUID{})
+	unitC := identitySeedItemUnit(t, ctx, tx, e.w, itemC,
+		identitySeedUnit(t, ctx, tx, "tablet"), "1")
+	inLocation := identitySeedLocation(t, ctx, tx, e.w, "PACK-H", "Ruang Kemas HTTP")
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit repack seed: %v", err)
+	}
+
+	status, out := identityAPI(t, e, http.MethodPost,
+		"/api/v1/merchants/"+e.w.merchantStr+"/repacks", map[string]any{
+			"out_location_id": e.w.location.String(), "in_location_id": inLocation.String(),
+			"out_lines": []map[string]any{
+				{"item_id": itemA.String(), "lot_id": lotA.String(), "source": "purchase", "base_qty": "10"},
+			},
+			"in_lines": []map[string]any{
+				{"item_id": itemC.String(), "item_unit_id": unitC.String(),
+					"pack_qty": "10", "pack_content": "1", "base_qty": "10",
+					"batch_no": "B-HRC", "expiry_date": "2026-12-01"},
+			},
+		})
+	if status != http.StatusCreated {
+		t.Fatalf("create repack expected 201, got %d: %v", status, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if data["status"] != "draft" {
+		t.Fatalf("repack status = %v, want draft", data["status"])
+	}
+	repackID, _ := data["id"].(string)
+
+	status, out = identityAPI(t, e, http.MethodPost, "/api/v1/repacks/"+repackID+"/post", nil)
+	if status != http.StatusOK {
+		t.Fatalf("post repack expected 200, got %d: %v", status, out)
+	}
+	if out["data"].(map[string]any)["status"] != "posted" {
+		t.Fatalf("posted status = %v, want posted", out["data"])
+	}
+
+	status, out = identityAPI(t, e, http.MethodPost, "/api/v1/repacks/"+repackID+"/void",
+		map[string]any{"reason": "salah kemasan"})
+	if status != http.StatusOK {
+		t.Fatalf("void repack expected 200, got %d: %v", status, out)
+	}
+	if out["data"].(map[string]any)["status"] != "void" {
+		t.Fatalf("voided status = %v, want void", out["data"])
+	}
+}
+
+// TestConsignmentReportAPI: two consignment issues on different dates price at
+// 900/unit (contract 9000.00 per pack of 10) — the report aggregates
+// qty "6.000" / value "5400.000000" with one detail per date, and the
+// supplier_id filter excludes other suppliers.
+func TestConsignmentReportAPI(t *testing.T) {
+	ctx := context.Background()
+	e := identityHTTPSetup(t, "consign", "081234573113")
+	tx := stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	s1 := identitySeedSupplier(t, ctx, tx, e.w, "SUP-H1", "PT HTTP Satu")
+	s2 := identitySeedSupplier(t, ctx, tx, e.w, "SUP-H2", "PT HTTP Dua")
+	packUnitID := identitySeedItemUnit(t, ctx, tx, e.w, e.w.item,
+		identitySeedUnit(t, ctx, tx, "tablet"), "10")
+	identitySeedContract(t, ctx, tx, e.w, s1, e.w.item, packUnitID, "9000.00")
+	ed := e.w.day.AddDate(0, 1, 0)
+	lot := identitySeedLot(t, ctx, tx, e.w, e.w.item, "B-HCONS", &ed)
+	identitySeedBalance(t, ctx, tx, e.w, e.w.item, lot, "consignment", "available", 10_000, s1)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit consignment seed: %v", err)
+	}
+
+	// Issues priced from the contract: 4 × 900 = 3600 on 2026-10-01 and
+	// 2 × 900 = 1800 on 2026-10-05 (w.day = 2026-10-10).
+	tx1 := stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	if _, err := issueStock(ctx, sqlcgen.New(tx1), e.w.merchant, e.w.company, e.w.user,
+		e.w.location, e.w.item, numericFromMilli(4_000), e.w.day.AddDate(0, 0, -9),
+		stockRef{RefType: "usage"}, pgtype.UUID{}, ""); err != nil {
+		t.Fatalf("issue 1: %v", err)
+	}
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("commit issue 1: %v", err)
+	}
+	tx2 := stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	if _, err := issueStock(ctx, sqlcgen.New(tx2), e.w.merchant, e.w.company, e.w.user,
+		e.w.location, e.w.item, numericFromMilli(2_000), e.w.day.AddDate(0, 0, -5),
+		stockRef{RefType: "usage"}, pgtype.UUID{}, ""); err != nil {
+		t.Fatalf("issue 2: %v", err)
+	}
+	if err := tx2.Commit(ctx); err != nil {
+		t.Fatalf("commit issue 2: %v", err)
+	}
+
+	reportPath := "/api/v1/merchants/" + e.w.merchantStr +
+		"/consignment/report?from=2026-10-01&to=2026-10-31"
+	status, out := identityAPI(t, e, http.MethodGet, reportPath, nil)
+	if status != http.StatusOK {
+		t.Fatalf("report expected 200, got %d: %v", status, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	suppliers, _ := data["suppliers"].([]any)
+	if len(suppliers) != 1 {
+		t.Fatalf("suppliers = %v, want 1", suppliers)
+	}
+	sup := suppliers[0].(map[string]any)
+	if sup["supplier_id"] != s1.String() {
+		t.Fatalf("supplier_id = %v, want %s", sup["supplier_id"], s1)
+	}
+	items, _ := sup["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %v, want 1", items)
+	}
+	entry := items[0].(map[string]any)
+	// Expected: qty 4+2 = "6.000"; value ROUND(3600+1800, 6) = "5400.000000".
+	if entry["qty"] != "6.000" || entry["value"] != "5400.000000" {
+		t.Fatalf("aggregate = %v/%v, want 6.000/5400.000000", entry["qty"], entry["value"])
+	}
+	details, _ := entry["details"].([]any)
+	if len(details) != 2 {
+		t.Fatalf("details = %v, want 2", details)
+	}
+	first := details[0].(map[string]any)
+	second := details[1].(map[string]any)
+	if first["used_on"] != "2026-10-01" || first["qty"] != "4.000" || first["unit_price"] != "900.000000" {
+		t.Fatalf("detail[0] = %v", first)
+	}
+	if second["used_on"] != "2026-10-05" || second["qty"] != "2.000" || second["unit_price"] != "900.000000" {
+		t.Fatalf("detail[1] = %v", second)
+	}
+
+	// The supplier_id filter excludes suppliers without usage.
+	status, out = identityAPI(t, e, http.MethodGet,
+		reportPath+"&supplier_id="+s2.String(), nil)
+	if status != http.StatusOK {
+		t.Fatalf("filtered report expected 200, got %d: %v", status, out)
+	}
+	suppliers, _ = out["data"].(map[string]any)["suppliers"].([]any)
+	if len(suppliers) != 0 {
+		t.Fatalf("filtered suppliers = %v, want empty", suppliers)
 	}
 }

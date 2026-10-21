@@ -304,6 +304,7 @@ func itemDetailJSON(c *gin.Context, q *sqlcgen.Queries, item sqlcgen.InventoryIt
 		"storage_temp":   item.StorageTemp,
 		"track_batch":    item.TrackBatch,
 		"track_expiry":   item.TrackExpiry,
+		"track_serial":   item.TrackSerial,
 		"is_active":      item.IsActive,
 		"created_at":     tsOrNil(item.CreatedAt),
 		"created_by":     uuidOrNil(item.CreatedBy),
@@ -485,6 +486,7 @@ type createInventoryItemRequest struct {
 	StorageTemp                 string                `json:"storage_temp"`
 	TrackBatch                  *bool                 `json:"track_batch"`
 	TrackExpiry                 *bool                 `json:"track_expiry"`
+	TrackSerial                 *bool                 `json:"track_serial"`
 	IsActive                    *bool                 `json:"is_active"`
 	Ingredients                 []itemIngredientInput `json:"ingredients"`
 }
@@ -563,6 +565,11 @@ func CreateInventoryItemHandler(c *gin.Context) {
 	if req.TrackExpiry != nil {
 		trackExpiry = *req.TrackExpiry
 	}
+	// Serial tracking is a plain round-trip flag (no kind restriction).
+	trackSerial := false
+	if req.TrackSerial != nil {
+		trackSerial = *req.TrackSerial
+	}
 	isActive := true
 	if req.IsActive != nil {
 		isActive = *req.IsActive
@@ -589,8 +596,8 @@ func CreateInventoryItemHandler(c *gin.Context) {
 		BudAfterOpenHours:           nargInt4(req.BudAfterOpenHours),
 		BudAfterReconstitutionHours: nargInt4(req.BudAfterReconstitutionHours),
 		IsSingleDose:                boolArg(req.IsSingleDose), StorageTemp: storageTemp,
-		TrackBatch: trackBatch, TrackExpiry: trackExpiry, IsActive: isActive,
-		CreatedBy: AuthUserID(c),
+		TrackBatch: trackBatch, TrackExpiry: trackExpiry, TrackSerial: trackSerial,
+		IsActive: isActive, CreatedBy: AuthUserID(c),
 	})
 	if err != nil {
 		if respondItemError(c, err, "item code already exists") {
@@ -747,6 +754,7 @@ type updateInventoryItemRequest struct {
 	StorageTemp                 *string `json:"storage_temp"`
 	TrackBatch                  *bool   `json:"track_batch"`
 	TrackExpiry                 *bool   `json:"track_expiry"`
+	TrackSerial                 *bool   `json:"track_serial"`
 	IsActive                    *bool   `json:"is_active"`
 	BaseUnitID                  *string `json:"base_unit_id"`
 	RowVersion                  int64   `json:"row_version"`
@@ -833,7 +841,8 @@ func UpdateInventoryItemHandler(c *gin.Context) {
 		BudAfterReconstitutionHours: nargInt4(req.BudAfterReconstitutionHours),
 		IsSingleDose:                nargBool(req.IsSingleDose), StorageTemp: nargText(req.StorageTemp),
 		TrackBatch: nargBool(req.TrackBatch), TrackExpiry: nargBool(req.TrackExpiry),
-		IsActive: nargBool(req.IsActive), UpdatedBy: AuthUserID(c),
+		TrackSerial: nargBool(req.TrackSerial),
+		IsActive:    nargBool(req.IsActive), UpdatedBy: AuthUserID(c),
 		ItemID: item.ID, ExpectedRowVersion: item.RowVersion,
 	})
 	if err != nil {
