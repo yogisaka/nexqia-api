@@ -18,6 +18,11 @@ import (
 var (
 	errFlowNotApplies = errors.New("flow does not apply")
 	errNoQueueFlow    = errors.New("no queue flow configured")
+	// errTicketAlreadyFinished marks a FinishQueueTicket that updated 0 rows
+	// (status guard): a concurrent request finished the ticket between our
+	// read and our write. Handlers map it to 409; ErrNoRows from the
+	// reference lookups below stays an internal error.
+	errTicketAlreadyFinished = errors.New("queue ticket already finished")
 )
 
 // queueTypeForKind maps stage.kind to the legacy operations.queue.queue_type
@@ -310,6 +315,12 @@ var legacyNextQueueType = map[string]string{"pendaftaran": "perawat", "perawat":
 func advanceStageTicket(ctx context.Context, q *sqlcgen.Queries, ticket sqlcgen.OperationsQueue, newStatus string, userID pgtype.UUID) (stageAdvance, error) {
 	finished, err := q.FinishQueueTicket(ctx, sqlcgen.FinishQueueTicketParams{ID: ticket.ID, Status: newStatus, UpdatedBy: userID})
 	if err != nil {
+		// 0 rows = the status guard rejected the update: the ticket was
+		// finished by a concurrent request after our read. Wrap in a sentinel
+		// so handlers 409 only this failure, not ErrNoRows from lookups below.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return stageAdvance{}, fmt.Errorf("finish queue ticket %s: %w", ticket.ID, errTicketAlreadyFinished)
+		}
 		return stageAdvance{}, err
 	}
 	res := stageAdvance{Ticket: &finished}

@@ -191,6 +191,14 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 		case "done":
 			adv, err := advanceStageTicket(ctx, q, existing, req.Status, AuthUserID(c))
 			if err != nil {
+				// FinishQueueTicket only updates waiting/called/in_progress
+				// rows; the sentinel means a concurrent request already
+				// finished this ticket between our read and our write — the
+				// loser of the race gets 409 instead of a double-advance.
+				if errors.Is(err, errTicketAlreadyFinished) {
+					c.JSON(http.StatusConflict, gin.H{"error": "invalid status transition from " + existing.Status + " to " + req.Status})
+					return
+				}
 				c.Error(err)
 				respondInternalError(c, err)
 				return
@@ -199,6 +207,12 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 		case "in_progress":
 			started, err := q.StartQueueTicket(ctx, sqlcgen.StartQueueTicketParams{ID: id, ServedBy: AuthUserID(c)})
 			if err != nil {
+				// StartQueueTicket only updates 'called' rows; 0 rows means a
+				// concurrent request already started this ticket.
+				if errors.Is(err, pgx.ErrNoRows) {
+					c.JSON(http.StatusConflict, gin.H{"error": "invalid status transition from " + existing.Status + " to in_progress"})
+					return
+				}
 				c.Error(err)
 				respondInternalError(c, err)
 				return
@@ -283,6 +297,12 @@ func SkipQueueHandler(c *gin.Context) {
 	}
 	res, err := advanceStageTicket(ctx, q, existing, "skipped", AuthUserID(c))
 	if err != nil {
+		// Same race as the "done" transition: a concurrent request finished
+		// the ticket between our read and our write → 409 for the loser.
+		if errors.Is(err, errTicketAlreadyFinished) {
+			c.JSON(http.StatusConflict, gin.H{"error": "invalid status transition from " + existing.Status + " to skipped"})
+			return
+		}
 		c.Error(err)
 		respondInternalError(c, err)
 		return

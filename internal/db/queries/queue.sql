@@ -52,15 +52,20 @@ INSERT INTO operations.queue_status_history (queue_id, counter_id, from_status, 
 VALUES ($1, $2, $3, $4, $5);
 
 -- name: FinishQueueTicket :one
+-- Status guard makes the finish idempotent-safe: two concurrent PATCH "done"
+-- requests on the same ticket — both passing the read-status check — can no
+-- longer both advance; the loser updates 0 rows.
 UPDATE operations.queue
 SET status = $2, finished_at = now(), updated_by = $3
-WHERE id = $1
+WHERE id = $1 AND status IN ('waiting', 'called', 'in_progress')
 RETURNING *;
 
 -- name: StartQueueTicket :one
+-- Status guard: only a 'called' ticket can start; two concurrent PATCH
+-- in_progress requests no longer both overwrite started_at/served_by.
 UPDATE operations.queue
 SET status = 'in_progress', started_at = now(), served_by = $2, updated_by = $2
-WHERE id = $1
+WHERE id = $1 AND status = 'called'
 RETURNING *;
 
 -- name: UpdateQueuePriority :one
