@@ -104,6 +104,10 @@ type stockUsageRequest struct {
 	// Serial numbers (spec 17b §6.2 #2): required for track_serial items,
 	// one per base unit.
 	SerialIDs []string `json:"serial_ids"`
+	// Cold chain additions (spec 17b §7.2): using from an opened container
+	// decrements its remaining quantity; vaccine items require a VVM stage.
+	OpenedContainerID *string `json:"opened_container_id"`
+	VvmStage          *int    `json:"vvm_stage"`
 }
 
 // StockUsageHandler godoc
@@ -124,15 +128,30 @@ func StockUsageHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if !RequirePermissionForMerchant(c, PermStockManage, merchantID) {
-		return
-	}
 	var req stockUsageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
+	// Cold chain gate (spec 17b §7.3): using an opened container may pass
+	// with inventory.coldchain.log alone (vaccine staff without full stock
+	// manage). userHasPermissionNoWrite never writes a response, so the
+	// RequirePermissionForMerchant below stays the SINGLE permission call
+	// allowed to write the 403 — never two in a row (auth.go writes the
+	// response then returns false).
+	hasCC, err := userHasPermissionNoWrite(c, q, merchantID, PermColdChainLog)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	gate := PermStockManage
+	if req.OpenedContainerID != nil && *req.OpenedContainerID != "" && hasCC {
+		gate = PermColdChainLog
+	}
+	if !RequirePermissionForMerchant(c, gate, merchantID) {
+		return
+	}
 	locID, okL := parseUUID(req.LocationID)
 	itemID, okI := parseUUID(req.ItemID)
 	if !okL || !okI {
@@ -175,6 +194,80 @@ func StockUsageHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "serial required"})
 		return
 	}
+	// Opened container (spec 17b §7.2 #1): every guard runs BEFORE the first
+	// write; the container's lot/item must match the line and the quantity
+	// must fit in the remaining amount (the CHECK only rejects negatives).
+	hasContainer := req.OpenedContainerID != nil && *req.OpenedContainerID != ""
+	var container sqlcgen.InventoryOpenedContainer
+	if hasContainer {
+		containerID, okC := parseUUID(*req.OpenedContainerID)
+		if !okC {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reference"})
+			return
+		}
+		container, err = q.GetOpenedContainerByID(c.Request.Context(), containerID)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && container.MerchantID != merchantID) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "container not found"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if container.Status != "open" {
+			c.JSON(http.StatusConflict, gin.H{"error": "container not open"})
+			return
+		}
+		txTime, errT := q.TransactionTime(c.Request.Context())
+		if errT != nil {
+			respondInternalError(c, errT)
+			return
+		}
+		if container.BudAt.Valid && container.BudAt.Time.Before(txTime.Time) {
+			c.JSON(http.StatusConflict, gin.H{"error": "beyond use date"})
+			return
+		}
+		if container.ItemID != itemID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "container item mismatch"})
+			return
+		}
+		if overrideLot.Valid && overrideLot != container.LotID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "container item mismatch"})
+			return
+		}
+		qtyMilli, errQ := numericToMilli(qty)
+		remMilli, errR := numericToMilli(container.RemainingBaseQty)
+		if errQ != nil || errR != nil {
+			respondInternalError(c, errors.New("container quantity outside numeric(14,3) scale"))
+			return
+		}
+		if qtyMilli > remMilli {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "container qty exceeds remaining"})
+			return
+		}
+		// VVM stage (spec 17b §7.2 #2): vaccine vials record the test result
+		// on every use; stage >= 3 rejects the use AFTER the log is stored
+		// (KeepTxOnError keeps the audit row).
+		if item.ItemKind == "vaccine" {
+			if req.VvmStage == nil || *req.VvmStage < 1 || *req.VvmStage > 4 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "vvm stage required"})
+				return
+			}
+			if _, err := q.InsertVvmLog(c.Request.Context(), sqlcgen.InsertVvmLogParams{
+				CompanyID: AuthCompanyID(c), MerchantID: merchantID,
+				OpenedContainerID: container.ID, CheckedAt: txTime,
+				Stage: int16(*req.VvmStage), CheckedBy: AuthUserID(c),
+			}); err != nil {
+				respondInternalError(c, err)
+				return
+			}
+			if *req.VvmStage >= 3 {
+				KeepTxOnError(c)
+				c.JSON(http.StatusConflict, gin.H{"error": "vvm failed"})
+				return
+			}
+		}
+	}
 	parts, err := issueStock(c.Request.Context(), q, merchantID, AuthCompanyID(c), AuthUserID(c),
 		locID, itemID, qty, time.Now().UTC(), ref, overrideLot, req.OverrideReason)
 	if err != nil {
@@ -182,6 +275,35 @@ func StockUsageHandler(c *gin.Context) {
 			respondInternalError(c, err)
 		}
 		return
+	}
+	if hasContainer {
+		// The issued lots must come from the container's lot (guard after the
+		// ledger refused to write anything on failure); then decrement the
+		// container — zero remaining closes it as finished (spec §7.2 #1).
+		for _, p := range parts {
+			if p.LotID != container.LotID {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "container item mismatch"})
+				return
+			}
+		}
+		remaining, errD := q.DecrementOpenedContainer(c.Request.Context(), sqlcgen.DecrementOpenedContainerParams{
+			ID: container.ID, Qty: qty, UpdatedBy: AuthUserID(c),
+		})
+		if errD != nil {
+			respondInternalError(c, errD)
+			return
+		}
+		if remMilli, errM := numericToMilli(remaining); errM != nil {
+			respondInternalError(c, errM)
+			return
+		} else if remMilli == 0 {
+			if _, err := q.SetOpenedContainerStatus(c.Request.Context(), sqlcgen.SetOpenedContainerStatusParams{
+				ID: container.ID, Status: "finished", UpdatedBy: AuthUserID(c),
+			}); err != nil {
+				respondInternalError(c, err)
+				return
+			}
+		}
 	}
 	if item.TrackSerial {
 		serials, okS := cleanSerialNos(c, req.SerialIDs)
