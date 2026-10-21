@@ -492,28 +492,30 @@ func receiptLineJSON(l sqlcgen.InventoryGoodsReceiptLine) gin.H {
 		"unit_cost":               numericExactOrNil(l.UnitCost),
 		"hna_ppn_per_pack":        numericExactOrNil(l.HnaPpnPerPack),
 		"lot_id":                  uuidOrNil(l.LotID),
+		"purchase_order_line_id":  uuidOrNil(l.PurchaseOrderLineID),
 	}
 }
 
 func goodsReceiptJSON(r sqlcgen.InventoryGoodsReceipt, lines []sqlcgen.InventoryGoodsReceiptLine) gin.H {
 	out := gin.H{
-		"id":               r.ID.String(),
-		"merchant_id":      r.MerchantID.String(),
-		"supplier_id":      uuidOrNil(r.SupplierID),
-		"location_id":      r.LocationID.String(),
-		"source":           r.Source,
-		"invoice_no":       textOrNil(r.InvoiceNo),
-		"invoice_date":     dateOrNil(r.InvoiceDate),
-		"received_on":      dateText(r.ReceivedOn),
-		"invoice_discount": numericJSON(r.InvoiceDiscount),
-		"freight":          numericJSON(r.Freight),
-		"vat_included":     r.VatIncluded,
-		"vat_percent":      numericJSON(r.VatPercent),
-		"status":           r.Status,
-		"note":             textOrNil(r.Note),
-		"void_reason":      textOrNil(r.VoidReason),
-		"posted_at":        tsOrNil(r.PostedAt),
-		"row_version":      r.RowVersion,
+		"id":                 r.ID.String(),
+		"merchant_id":        r.MerchantID.String(),
+		"supplier_id":        uuidOrNil(r.SupplierID),
+		"location_id":        r.LocationID.String(),
+		"source":             r.Source,
+		"purchase_order_id":  uuidOrNil(r.PurchaseOrderID),
+		"invoice_no":         textOrNil(r.InvoiceNo),
+		"invoice_date":       dateOrNil(r.InvoiceDate),
+		"received_on":        dateText(r.ReceivedOn),
+		"invoice_discount":   numericJSON(r.InvoiceDiscount),
+		"freight":            numericJSON(r.Freight),
+		"vat_included":       r.VatIncluded,
+		"vat_percent":        numericJSON(r.VatPercent),
+		"status":             r.Status,
+		"note":               textOrNil(r.Note),
+		"void_reason":        textOrNil(r.VoidReason),
+		"posted_at":          tsOrNil(r.PostedAt),
+		"row_version":        r.RowVersion,
 	}
 	if lines != nil {
 		rendered := make([]gin.H, 0, len(lines))
@@ -536,6 +538,9 @@ type receiptLineRequest struct {
 	BatchNo              string `json:"batch_no"`
 	ExpiryDate           string `json:"expiry_date"`
 	ShortShelfLifeReason string `json:"short_shelf_life_reason"`
+	// Optional PO linkage (spec §4.2 #4): the PO line this receipt line
+	// fulfils; null/empty = a line without a purchase order.
+	PurchaseOrderLineID *string `json:"purchase_order_line_id"`
 }
 
 type receiptRequest struct {
@@ -550,6 +555,9 @@ type receiptRequest struct {
 	VatIncluded     *bool                `json:"vat_included"`
 	VatPercent      string               `json:"vat_percent"`
 	Note            string               `json:"note"`
+	// Optional PO linkage: receiving against this purchase order validates
+	// the supplier, the referenced lines and the order status.
+	PurchaseOrderID *string              `json:"purchase_order_id"`
 	Lines           []receiptLineRequest `json:"lines" binding:"required,min=1,dive"`
 	RowVersion      int64                `json:"row_version"`
 }
@@ -598,13 +606,16 @@ type receiptLine struct {
 	BatchNo              pgtype.Text
 	ExpiryDate           pgtype.Date
 	ShortShelfLifeReason pgtype.Text
+	PurchaseOrderLineID  pgtype.UUID
 }
 
 // parseReceiptRequest validates the shared draft body and returns the
 // receipt-level fields plus the parsed lines (pack_content defaulted to the
-// packaging factor when 0/empty — spec §4.1.1). Returns ok=false when the
+// packaging factor when 0/empty — spec §4.1.1). When the body carries
+// purchase_order_id the order is fetched and validated (status, supplier and
+// line membership — spec §4.2 #4) and returned. Returns ok=false when the
 // response is already written.
-func parseReceiptRequest(c *gin.Context, q *sqlcgen.Queries, req receiptRequest, merchantID pgtype.UUID) (supplierID, locationID pgtype.UUID, source string, invoiceDate, receivedOn pgtype.Date, invoiceDiscount, freight pgtype.Numeric, vatIncluded bool, vatPercent pgtype.Numeric, lines []receiptLine, ok bool) {
+func parseReceiptRequest(c *gin.Context, q *sqlcgen.Queries, req receiptRequest, merchantID pgtype.UUID) (supplierID, locationID pgtype.UUID, source string, invoiceDate, receivedOn pgtype.Date, invoiceDiscount, freight pgtype.Numeric, vatIncluded bool, vatPercent pgtype.Numeric, po sqlcgen.InventoryPurchaseOrder, lines []receiptLine, ok bool) {
 	source = req.Source
 	if source == "" {
 		source = "purchase"
@@ -634,6 +645,49 @@ func parseReceiptRequest(c *gin.Context, q *sqlcgen.Queries, req receiptRequest,
 	if (source == "purchase" || source == "consignment") && !supplierID.Valid {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "supplier is required for purchase receipts"})
 		return
+	}
+	// Optional PO linkage (spec §4.2 #4): validate order, supplier and the
+	// set of PO lines the request may reference.
+	validPOLine := map[pgtype.UUID]bool{}
+	if req.PurchaseOrderID != nil && strings.TrimSpace(*req.PurchaseOrderID) != "" {
+		pid, okP := parseUUID(*req.PurchaseOrderID)
+		if !okP {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid purchase_order_id"})
+			return
+		}
+		p, err := q.GetPurchaseOrderByID(c.Request.Context(), pid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "purchase order not found"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if p.MerchantID != merchantID {
+			c.JSON(http.StatusNotFound, gin.H{"error": "purchase order not found"})
+			return
+		}
+		if p.Status != "sent" && p.Status != "partial" && p.Status != "received" {
+			c.JSON(http.StatusConflict, gin.H{"error": "order is not receivable"})
+			return
+		}
+		if supplierID.Valid && supplierID != p.SupplierID {
+			c.JSON(http.StatusConflict, gin.H{"error": "receipt supplier mismatch"})
+			return
+		}
+		if !supplierID.Valid {
+			supplierID = p.SupplierID
+		}
+		poLines, err := q.ListPurchaseOrderLines(c.Request.Context(), p.ID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		for _, pl := range poLines {
+			validPOLine[pl.ID] = true
+		}
+		po = p
 	}
 	locID, okL := parseUUID(req.LocationID)
 	if !okL {
@@ -740,10 +794,88 @@ func parseReceiptRequest(c *gin.Context, q *sqlcgen.Queries, req receiptRequest,
 		}
 		line.ExpiryDate = ed
 		line.ShortShelfLifeReason = pgText(lr.ShortShelfLifeReason)
+		if lr.PurchaseOrderLineID != nil && strings.TrimSpace(*lr.PurchaseOrderLineID) != "" {
+			plid, okPL := parseUUID(*lr.PurchaseOrderLineID)
+			if !okPL || !validPOLine[plid] {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "receipt line does not match order"})
+				return
+			}
+			line.PurchaseOrderLineID = plid
+		}
 		lines = append(lines, line)
 	}
 	ok = true
 	return
+}
+
+// linkGoodsReceiptPO persists the optional PO header linkage (the sqlc stock
+// queries predate migration 000080 and don't carry the column); line links
+// are stamped inside insertReceiptLines.
+func linkGoodsReceiptPO(c *gin.Context, receipt sqlcgen.InventoryGoodsReceipt, poID pgtype.UUID) bool {
+	if !poID.Valid {
+		return true
+	}
+	if _, err := TxFromContext(c).Exec(c.Request.Context(),
+		"UPDATE inventory.goods_receipt SET purchase_order_id = $1 WHERE id = $2", poID, receipt.ID); err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	return true
+}
+
+// purchaseOrderReceiptTarget derives the PO status after a received-qty
+// change (spec §4.2 #4): every line fully received → received, everything
+// back at zero → sent, otherwise partial. Empty line lists read as sent.
+func purchaseOrderReceiptTarget(lines []sqlcgen.InventoryPurchaseOrderLine) string {
+	allZero, allFull := true, true
+	for _, l := range lines {
+		received := numericToRat(l.ReceivedBaseQty)
+		needed := new(big.Rat).Mul(numericToRat(l.PackQty), numericToRat(l.PackContent))
+		if received.Sign() != 0 {
+			allZero = false
+		}
+		if received.Cmp(needed) < 0 {
+			allFull = false
+		}
+	}
+	switch {
+	case allZero:
+		return "sent"
+	case allFull:
+		return "received"
+	default:
+		return "partial"
+	}
+}
+
+// recomputePurchaseOrderStatus rewrites the PO status after received
+// quantities moved, but only while the order is still active
+// (sent|partial|received); closed/cancelled/draft orders keep their status.
+func recomputePurchaseOrderStatus(c *gin.Context, q *sqlcgen.Queries, poID pgtype.UUID) bool {
+	po, err := q.GetPurchaseOrderByID(c.Request.Context(), poID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	if po.Status != "sent" && po.Status != "partial" && po.Status != "received" {
+		return true
+	}
+	lines, err := q.ListPurchaseOrderLines(c.Request.Context(), poID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	target := purchaseOrderReceiptTarget(lines)
+	if target == po.Status {
+		return true
+	}
+	if _, err := q.SetPurchaseOrderStatus(c.Request.Context(), sqlcgen.SetPurchaseOrderStatusParams{
+		ID: poID, Status: target, UpdatedBy: AuthUserID(c),
+	}); err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	return true
 }
 
 // numericOrZero parses "" as 0 (the columns are NOT NULL DEFAULT 0) and any
@@ -756,19 +888,29 @@ func numericOrZero(s string) (pgtype.Numeric, error) {
 }
 
 // insertReceiptLines writes the parsed lines of a draft (full replace is a
-// delete + insert of the same shape).
+// delete + insert of the same shape), stamping each PO-linked line with its
+// purchase_order_line_id (spec §4.2 #4).
 func insertReceiptLines(c *gin.Context, q *sqlcgen.Queries, receipt sqlcgen.InventoryGoodsReceipt, lines []receiptLine) bool {
 	for i, l := range lines {
-		if _, err := q.InsertGoodsReceiptLine(c.Request.Context(), sqlcgen.InsertGoodsReceiptLineParams{
+		row, err := q.InsertGoodsReceiptLine(c.Request.Context(), sqlcgen.InsertGoodsReceiptLineParams{
 			CompanyID: receipt.CompanyID, MerchantID: receipt.MerchantID,
 			ReceiptID: receipt.ID, ItemID: l.ItemID, ItemUnitID: l.ItemUnitID,
 			PackQty: l.PackQty, PackContent: l.PackContent, BonusPackQty: l.BonusPackQty,
 			PackPrice: l.PackPrice, LineDiscountPercent: l.LineDiscountPercent,
 			BatchNo: l.BatchNo, ExpiryDate: l.ExpiryDate,
 			ShortShelfLifeReason: l.ShortShelfLifeReason, SortOrder: int32(i),
-		}); err != nil {
+		})
+		if err != nil {
 			respondInternalError(c, err)
 			return false
+		}
+		if l.PurchaseOrderLineID.Valid {
+			if _, err := TxFromContext(c).Exec(c.Request.Context(),
+				"UPDATE inventory.goods_receipt_line SET purchase_order_line_id = $1 WHERE id = $2",
+				l.PurchaseOrderLineID, row.ID); err != nil {
+				respondInternalError(c, err)
+				return false
+			}
 		}
 	}
 	return true
@@ -799,7 +941,7 @@ func CreateGoodsReceiptHandler(c *gin.Context) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
-	supplierID, locationID, source, invoiceDate, receivedOn, invoiceDiscount, freight, vatIncluded, vatPercent, lines, ok := parseReceiptRequest(c, q, req, merchantID)
+	supplierID, locationID, source, invoiceDate, receivedOn, invoiceDiscount, freight, vatIncluded, vatPercent, po, lines, ok := parseReceiptRequest(c, q, req, merchantID)
 	if !ok {
 		return
 	}
@@ -816,6 +958,9 @@ func CreateGoodsReceiptHandler(c *gin.Context) {
 		return
 	}
 	if !insertReceiptLines(c, q, receipt, lines) {
+		return
+	}
+	if !linkGoodsReceiptPO(c, receipt, po.ID) {
 		return
 	}
 	saved, err := q.ListGoodsReceiptLines(c.Request.Context(), receipt.ID)
@@ -938,7 +1083,7 @@ func UpdateGoodsReceiptHandler(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "receipt changed, reload"})
 		return
 	}
-	supplierID, locationID, source, invoiceDate, receivedOn, invoiceDiscount, freight, vatIncluded, vatPercent, lines, ok := parseReceiptRequest(c, q, req, r.MerchantID)
+	supplierID, locationID, source, invoiceDate, receivedOn, invoiceDiscount, freight, vatIncluded, vatPercent, po, lines, ok := parseReceiptRequest(c, q, req, r.MerchantID)
 	if !ok {
 		return
 	}
@@ -962,6 +1107,9 @@ func UpdateGoodsReceiptHandler(c *gin.Context) {
 		return
 	}
 	if !insertReceiptLines(c, q, updated, lines) {
+		return
+	}
+	if !linkGoodsReceiptPO(c, updated, po.ID) {
 		return
 	}
 	saved, err := q.ListGoodsReceiptLines(c.Request.Context(), r.ID)
@@ -1160,6 +1308,9 @@ func PostGoodsReceiptHandler(c *gin.Context) {
 			}
 			return
 		}
+		// Persist the posting results back so the PO accumulation below
+		// sees the same base quantities.
+		posting[i] = p
 		if _, err := q.CompleteGoodsReceiptLine(c.Request.Context(), sqlcgen.CompleteGoodsReceiptLineParams{
 			BaseQty: p.BaseQty, UnitCost: p.UnitCost, HnaPpnPerPack: p.HnaPpn,
 			LotID: lot.ID, LineID: p.Line.ID,
@@ -1204,6 +1355,25 @@ func PostGoodsReceiptHandler(c *gin.Context) {
 		}
 		respondInternalError(c, err)
 		return
+	}
+	// PO linkage (spec §4.2 #4): all stock moves succeeded — accumulate each
+	// line's base qty on its purchase order line, then recompute the order
+	// status (received|partial, only while the order is active).
+	if r.PurchaseOrderID.Valid {
+		for _, p := range posting {
+			if !p.Line.PurchaseOrderLineID.Valid {
+				continue
+			}
+			if err := q.AddPurchaseOrderLineReceived(c.Request.Context(), sqlcgen.AddPurchaseOrderLineReceivedParams{
+				ReceivedBaseQty: p.BaseQty, ID: p.Line.PurchaseOrderLineID,
+			}); err != nil {
+				respondInternalError(c, err)
+				return
+			}
+		}
+		if !recomputePurchaseOrderStatus(c, q, r.PurchaseOrderID) {
+			return
+		}
 	}
 	saved, err := q.ListGoodsReceiptLines(c.Request.Context(), r.ID)
 	if err != nil {
@@ -1332,6 +1502,25 @@ func VoidGoodsReceiptHandler(c *gin.Context) {
 		}
 		respondInternalError(c, err)
 		return
+	}
+	// PO linkage (spec §4.2 #4): give every fulfilled order line its
+	// quantity back and recompute the order status (closed orders stay
+	// closed).
+	if r.PurchaseOrderID.Valid {
+		for _, p := range plans {
+			if !p.Line.PurchaseOrderLineID.Valid {
+				continue
+			}
+			if err := q.SubPurchaseOrderLineReceived(c.Request.Context(), sqlcgen.SubPurchaseOrderLineReceivedParams{
+				ReceivedBaseQty: p.Line.BaseQty, ID: p.Line.PurchaseOrderLineID,
+			}); err != nil {
+				respondInternalError(c, err)
+				return
+			}
+		}
+		if !recomputePurchaseOrderStatus(c, q, r.PurchaseOrderID) {
+			return
+		}
 	}
 	saved, err := q.ListGoodsReceiptLines(c.Request.Context(), r.ID)
 	if err != nil {

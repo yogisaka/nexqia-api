@@ -92,6 +92,13 @@ definitions:
     - consented_by_name
     - relation
     type: object
+  server.cancelPurchaseOrderRequest:
+    properties:
+      cancel_reason:
+        type: string
+    required:
+    - cancel_reason
+    type: object
   server.changePasswordRequest:
     properties:
       current_password:
@@ -1335,6 +1342,47 @@ definitions:
     - adjustment_percent
     - item_type
     type: object
+  server.purchaseOrderLineIn:
+    properties:
+      item_id:
+        type: string
+      item_unit_id:
+        type: string
+      note:
+        type: string
+      pack_content:
+        type: string
+      pack_price:
+        type: string
+      pack_qty:
+        type: string
+    required:
+    - item_id
+    - item_unit_id
+    - pack_qty
+    type: object
+  server.purchaseOrderRequest:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/server.purchaseOrderLineIn'
+        minItems: 1
+        type: array
+      location_id:
+        type: string
+      note:
+        type: string
+      request_id:
+        type: string
+      row_version:
+        type: integer
+      supplier_id:
+        type: string
+    required:
+    - lines
+    - location_id
+    - supplier_id
+    type: object
   server.purchaseRequestLineRequest:
     properties:
       item_id:
@@ -1487,6 +1535,11 @@ definitions:
         type: string
       pack_qty:
         type: string
+      purchase_order_line_id:
+        description: |-
+          Optional PO linkage (spec §4.2 #4): the PO line this receipt line
+          fulfils; null/empty = a line without a purchase order.
+        type: string
       short_shelf_life_reason:
         type: string
     required:
@@ -1512,6 +1565,11 @@ definitions:
       location_id:
         type: string
       note:
+        type: string
+      purchase_order_id:
+        description: |-
+          Optional PO linkage: receiving against this purchase order validates
+          the supplier, the referenced lines and the order status.
         type: string
       received_on:
         type: string
@@ -7473,6 +7531,57 @@ paths:
       summary: Regenerate price proposals for all formulary items of a merchant
       tags:
       - tariff
+  /merchants/{id}/purchase-orders:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's purchase orders (newest first, with lines)
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: PO draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.purchaseOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a purchase-order draft with lines
+      tags:
+      - inventory
   /merchants/{id}/purchase-requests:
     get:
       parameters:
@@ -11098,6 +11207,141 @@ paths:
       summary: Reject a pending price proposal
       tags:
       - tariff
+  /purchase-orders/{id}:
+    get:
+      parameters:
+      - description: Purchase order UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Fetch one purchase order with its lines
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Purchase order UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: PO draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.purchaseOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace a draft purchase order (header + full line replace)
+      tags:
+      - inventory
+  /purchase-orders/{id}/cancel:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Purchase order UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Cancel reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.cancelPurchaseOrderRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cancel a draft purchase order, or a sent one with nothing received
+      tags:
+      - inventory
+  /purchase-orders/{id}/close:
+    post:
+      parameters:
+      - description: Purchase order UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Close a sent or partially received purchase order
+      tags:
+      - inventory
+  /purchase-orders/{id}/send:
+    post:
+      parameters:
+      - description: Purchase order UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Send a draft purchase order (locks its lines from edits)
+      tags:
+      - inventory
   /purchase-requests/{id}:
     patch:
       consumes:

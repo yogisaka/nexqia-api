@@ -44,6 +44,16 @@ func RegisterProcurementRoutes(rg *gin.RouterGroup) {
 	rg.POST("/purchase-requests/:id/cancel", CancelPurchaseRequestHandler)
 	rg.POST("/purchase-requests/:id/convert", ConvertPurchaseRequestHandler)
 
+	// Purchase orders (Task 3, spec §4.3): manage permission throughout,
+	// draft-only PATCH, guarded send/close/cancel.
+	rg.POST("/merchants/:id/purchase-orders", CreatePurchaseOrderHandler)
+	rg.GET("/merchants/:id/purchase-orders", ListPurchaseOrdersHandler)
+	rg.GET("/purchase-orders/:id", GetPurchaseOrderHandler)
+	rg.PATCH("/purchase-orders/:id", PatchPurchaseOrderHandler)
+	rg.POST("/purchase-orders/:id/send", SendPurchaseOrderHandler)
+	rg.POST("/purchase-orders/:id/close", ClosePurchaseOrderHandler)
+	rg.POST("/purchase-orders/:id/cancel", CancelPurchaseOrderHandler)
+
 	rg.GET("/contract-prices", ListContractPricesHandler)
 	rg.PUT("/contract-prices", PutContractPriceHandler)
 	rg.DELETE("/contract-prices/:id", DeleteContractPriceHandler)
