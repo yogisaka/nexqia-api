@@ -124,10 +124,14 @@ func enforceSerialIssue(ctx context.Context, q *sqlcgen.Queries, merchantID, loc
 // moveSerialsForTransfer validates the requested serial numbers like
 // enforceSerialIssue (in_stock at the source location) and moves them to the
 // target merchant/location; the status stays in_stock (spec §6.2 #2). tx is
-// the request transaction behind q, used to flip the transaction-scoped RLS
-// merchant GUC: the UPDATE writes rows owned by the receiving merchant, so
-// serial_isolation (WITH CHECK = USING) rejects it while the GUC still names
-// the sender (pola setMerchantGUC).
+// the request transaction behind q. A cross-merchant move is DELETE + INSERT,
+// not UPDATE: serial_isolation (000082) is USING-only, so after flipping the
+// GUC to the receiver the old rows (merchant = sender) fail USING and an
+// UPDATE would match nothing. Sequence, all in one tx (error = full rollback
+// via RunRequestTx): (a) capture + validate + DELETE under the sender's GUC,
+// (b) flip the transaction-scoped merchant GUC to the receiver (pola
+// setMerchantGUC), (c) re-insert the rows with merchant_id = receiver and
+// location_id = target, (d) restore the sender's GUC.
 func moveSerialsForTransfer(ctx context.Context, q *sqlcgen.Queries, tx pgx.Tx, fromMerchant, toMerchant, toLocationID, itemID pgtype.UUID, serialNos []string) error {
 	rows, err := q.GetSerialsByIDs(ctx, sqlcgen.GetSerialsByIDsParams{
 		MerchantID: fromMerchant, ItemID: itemID, SerialNos: serialNos,
@@ -143,18 +147,7 @@ func moveSerialsForTransfer(ctx context.Context, q *sqlcgen.Queries, tx pgx.Tx, 
 			return errSerialNotInStock
 		}
 	}
-	// Validate under the sender's GUC first, then flip to the receiver for
-	// the cross-merchant UPDATE. On any later error the whole request tx
-	// rolls back (set_config is transaction-scoped), so a restore is only
-	// needed on the success path.
-	if toMerchant != fromMerchant {
-		if _, err := tx.Exec(ctx,
-			"SELECT set_config('app.current_merchant_id', $1, true)", toMerchant.String()); err != nil {
-			return err
-		}
-	}
-	n, err := q.MoveSerialsForTransfer(ctx, sqlcgen.MoveSerialsForTransferParams{
-		ToMerchantID: toMerchant, ToLocationID: toLocationID,
+	n, err := q.DeleteSerialsForTransfer(ctx, sqlcgen.DeleteSerialsForTransferParams{
 		FromMerchantID: fromMerchant, ItemID: itemID, SerialNos: serialNos,
 	})
 	if err != nil {
@@ -162,6 +155,22 @@ func moveSerialsForTransfer(ctx context.Context, q *sqlcgen.Queries, tx pgx.Tx, 
 	}
 	if n != int64(len(serialNos)) {
 		return errSerialNotInStock
+	}
+	if toMerchant != fromMerchant {
+		if _, err := tx.Exec(ctx,
+			"SELECT set_config('app.current_merchant_id', $1, true)", toMerchant.String()); err != nil {
+			return err
+		}
+	}
+	for _, s := range rows {
+		if _, err := q.InsertTransferredSerial(ctx, sqlcgen.InsertTransferredSerialParams{
+			CompanyID: s.CompanyID, MerchantID: toMerchant, ItemID: s.ItemID,
+			SerialNo: s.SerialNo, LotID: s.LotID, LocationID: toLocationID,
+			Status: s.Status, IssuedRefType: s.IssuedRefType, IssuedRefID: s.IssuedRefID,
+			ReceivedAt: s.ReceivedAt, CreatedAt: s.CreatedAt, CreatedBy: s.CreatedBy,
+		}); err != nil {
+			return err
+		}
 	}
 	if toMerchant != fromMerchant {
 		if _, err := tx.Exec(ctx,

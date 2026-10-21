@@ -416,6 +416,98 @@ func TestSerialMovesWithTransfer(t *testing.T) {
 	}
 }
 
+// TestSerialCrossMerchantRLS — the cross-merchant serial move runs under a
+// real app_runtime tx (RLS enforced, pola stockRuntimeTx). serial_isolation
+// (000082) is USING-only, so a plain UPDATE with the GUC flipped to the
+// receiver would match 0 rows (42501 before the flip); the helper must
+// DELETE under the sender's GUC and re-INSERT under the receiver's.
+func TestSerialCrossMerchantRLS(t *testing.T) {
+	ctx := context.Background()
+	w := seedStockWorld(t, ctx, "identsn3", "081234573106", "Klinik Serial 3")
+
+	// Second merchant + warehouse in the same company (owner pool: RLS bypassed
+	// for seed data only).
+	var merchantBStr, locBStr string
+	if err := w.pool.QueryRow(ctx, `
+		INSERT INTO core.merchant (company_id, code, name)
+		VALUES ($1, 'M-SN3-B', 'Klinik Serial 3 B') RETURNING id::text`,
+		w.companyStr).Scan(&merchantBStr); err != nil {
+		t.Fatalf("insert merchant B: %v", err)
+	}
+	if err := w.pool.QueryRow(ctx, `
+		INSERT INTO core.location (company_id, merchant_id, kind, code, name, functions)
+		VALUES ($1, $2::uuid, 'room', 'GUD-SN3-B', 'Gudang B', ARRAY['warehouse']::text[])
+		RETURNING id::text`, w.companyStr, merchantBStr).Scan(&locBStr); err != nil {
+		t.Fatalf("insert location B: %v", err)
+	}
+	var merchantB, locB pgtype.UUID
+	if err := merchantB.Scan(merchantBStr); err != nil {
+		t.Fatalf("parse merchant B uuid: %v", err)
+	}
+	if err := locB.Scan(locBStr); err != nil {
+		t.Fatalf("parse location B uuid: %v", err)
+	}
+
+	// Serials at the sender's location, seeded under app_runtime (GUC A).
+	tx := stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	item := identitySeedItem(t, ctx, tx, w, "ITM-SN3", "Implan Seri 3", true, "tablet")
+	q := sqlcgen.New(tx)
+	for _, sn := range []string{"SN-X1", "SN-X2"} {
+		if _, err := q.InsertSerial(ctx, sqlcgen.InsertSerialParams{
+			CompanyID: w.company, MerchantID: w.merchant,
+			ItemID: item, SerialNo: sn, LocationID: w.location, CreatedBy: w.user,
+		}); err != nil {
+			t.Fatalf("insert serial %s: %v", sn, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit serial seed: %v", err)
+	}
+
+	// The move, inside a request tx that truly enforces RLS.
+	tx = stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	if err := moveSerialsForTransfer(ctx, sqlcgen.New(tx), tx,
+		w.merchant, merchantB, locB, item, []string{"SN-X1", "SN-X2"}); err != nil {
+		t.Fatalf("moveSerialsForTransfer under app_runtime: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit move: %v", err)
+	}
+
+	// Receiver GUC: serials moved, in_stock at the target location.
+	tx = stockRuntimeTx(t, ctx, w.pool, w.companyStr, merchantBStr)
+	for _, sn := range []string{"SN-X1", "SN-X2"} {
+		var merchantNow, locNow, statusNow string
+		if err := tx.QueryRow(ctx, `
+			SELECT merchant_id::text, location_id::text, status
+			FROM inventory.serial WHERE item_id = $1 AND serial_no = $2`,
+			item, sn).Scan(&merchantNow, &locNow, &statusNow); err != nil {
+			t.Fatalf("read serial %s as receiver: %v", sn, err)
+		}
+		if merchantNow != merchantBStr || locNow != locBStr || statusNow != "in_stock" {
+			t.Fatalf("%s = %s@%s %s, want %s@%s in_stock", sn,
+				merchantNow, locNow, statusNow, merchantBStr, locBStr)
+		}
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback receiver read: %v", err)
+	}
+
+	// Sender GUC: the serials are gone (RLS hides the receiver's rows).
+	tx = stockRuntimeTx(t, ctx, w.pool, w.companyStr, w.merchantStr)
+	var n int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM inventory.serial WHERE item_id = $1`, item).Scan(&n); err != nil {
+		t.Fatalf("count serials as sender: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("sender still sees %d serials, want 0", n)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback sender read: %v", err)
+	}
+}
+
 // identityRepackFixture seeds the contract repack example: item A avg cost 50
 // with 10 units, item B avg cost 80 with 5 units, item C as the repack
 // output; returns the draft repack, the items and the second location.

@@ -47,14 +47,23 @@ WHERE merchant_id = sqlc.arg('merchant_id')::uuid
   AND status = 'in_stock';
 
 -- Move serials to another merchant/location (status stays in_stock).
--- name: MoveSerialsForTransfer :execrows
-UPDATE inventory.serial SET
-    merchant_id = sqlc.arg('to_merchant_id')::uuid,
-    location_id = sqlc.arg('to_location_id')::uuid
+-- Cross-merchant moves cannot be a single UPDATE: serial_isolation (000082)
+-- is USING-only, so after flipping the GUC to the receiver the old rows
+-- (merchant = sender) no longer pass USING and the UPDATE matches nothing.
+-- The helper therefore deletes under the SENDER's GUC and re-inserts under
+-- the RECEIVER's GUC, carrying the row's other columns over.
+-- name: DeleteSerialsForTransfer :execrows
+DELETE FROM inventory.serial
 WHERE merchant_id = sqlc.arg('from_merchant_id')::uuid
   AND item_id = sqlc.arg('item_id')::uuid
   AND serial_no = ANY(sqlc.arg('serial_nos')::text[])
   AND status = 'in_stock';
+
+-- name: InsertTransferredSerial :execrows
+INSERT INTO inventory.serial
+    (company_id, merchant_id, item_id, serial_no, lot_id, location_id, status,
+     issued_ref_type, issued_ref_id, received_at, created_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
 
 -- §6.2 #3 repacking.
 -- name: InsertRepack :one

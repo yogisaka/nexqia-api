@@ -636,6 +636,21 @@ func TestInterMerchantTransferSerialCrossMerchant(t *testing.T) {
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatalf("rollback read tx: %v", err)
 	}
+
+	// Sender GUC: RLS hides the receiver's serials entirely.
+	tx = runtimeTenantTx(t, ctx, e.pool, e.companyID, e.merchantID)
+	var nSender int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM inventory.serial WHERE item_id = $1`,
+		mustParseUUID(t, itemID)).Scan(&nSender); err != nil {
+		t.Fatalf("count serials as sender: %v", err)
+	}
+	if nSender != 0 {
+		t.Fatalf("sender still sees %d serials, want 0", nSender)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback sender read tx: %v", err)
+	}
 }
 
 // TestInterMerchantTransferCancel — cancelling an in-transit shipment returns
