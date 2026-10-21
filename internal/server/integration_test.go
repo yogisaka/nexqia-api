@@ -636,3 +636,153 @@ func TestSatusehatRetry(t *testing.T) {
 		t.Fatalf("POST retry (other merchant) = %d %v", status, out)
 	}
 }
+
+// satEncounterSyncPath is the admission encounter sync endpoint path.
+func satEncounterSyncPath(admissionID string) string {
+	return "/api/v1/admissions/" + admissionID + "/satusehat/sync"
+}
+
+// satSeedAdmission inserts one operations.admission row (pola kolom
+// migrations/000020:8-23) and returns its id.
+func satSeedAdmission(t *testing.T, ctx context.Context, env *qeEnv, personID, admissionType, status, visitNo, departmentID string) string {
+	t.Helper()
+	var id string
+	if err := env.pool.QueryRow(ctx,
+		"INSERT INTO operations.admission (company_id, merchant_id, visit_no, person_id, admission_type, department_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id::text",
+		env.companyID, env.merchantID, visitNo, personID, admissionType, departmentID, status).Scan(&id); err != nil {
+		t.Fatalf("seed admission %s: %v", visitNo, err)
+	}
+	return id
+}
+
+// TestSatusehatEncounterSync — encounter sync answers 409 while the Patient
+// is unsynced (a); once the Patient carries an IHS the encounter map enqueues
+// pending with an in-progress payload whose subject is the IHS and the worker
+// pushes it to synced (b); inpatient (c) and cancelled (d) admissions answer
+// 400; a discharged admission maps to finished with a filled period.end (e).
+func TestSatusehatEncounterSync(t *testing.T) {
+	ctx := context.Background()
+	env := satNewEnv(t, "enc")
+	stub := newSatusehatStub(t)
+
+	var departmentID string
+	if err := env.pool.QueryRow(ctx,
+		"INSERT INTO core.department (company_id, merchant_id, code, name) VALUES ($1, $2, 'ENC01', 'Poli Encounter') RETURNING id::text",
+		env.companyID, env.merchantID).Scan(&departmentID); err != nil {
+		t.Fatalf("seed department: %v", err)
+	}
+	personID := satSeedPerson(t, ctx, env, "3174020190880002")
+	admissionID := satSeedAdmission(t, ctx, env, personID, "outpatient", "registered", "RJ-ENC-0001", departmentID)
+
+	if status, out := satPutConfig(t, env, stub.srv.URL); status != http.StatusOK {
+		t.Fatalf("PUT config = %d %v", status, out)
+	}
+
+	// (a) Patient belum synced ⇒ 409 literal.
+	status, out := qeRequest(t, env, http.MethodPost, satEncounterSyncPath(admissionID), nil)
+	if status != http.StatusConflict || out["error"] != "patient not synced to satusehat" {
+		t.Fatalf("(a) POST encounter sync = %d %v", status, out)
+	}
+
+	// Patient synced: jalankan person sync + worker terhadap stub.
+	status, out = qeRequest(t, env, http.MethodPost, satPersonSyncPath(personID), nil)
+	if status != http.StatusOK {
+		t.Fatalf("POST person sync = %d %v", status, out)
+	}
+	wCfg := config.Config{ConnectBatchSize: 10, IntegrationCredentialKey: "test-key"}
+	registry := connect.NewRegistry()
+	registry.Register(connect.ProviderSatusehat, connect.NewSatusehatAdapter())
+	if _, err := connect.RunOnce(ctx, env.pool, registry, wCfg); err != nil {
+		t.Fatalf("(patient) RunOnce: %v", err)
+	}
+	patientStatus, patientIHS := satMapState(t, ctx, env, "core.person", personID, "Patient")
+	if patientStatus != "synced" || patientIHS == "" {
+		t.Fatalf("(patient) map = %s/%q, want synced/<ihs>", patientStatus, patientIHS)
+	}
+
+	// (b) Encounter sync ⇒ map pending, payload in-progress + subject IHS.
+	status, out = qeRequest(t, env, http.MethodPost, satEncounterSyncPath(admissionID), nil)
+	data, _ := out["data"].(map[string]any)
+	if status != http.StatusOK || data["sync_status"] != "pending" || data["map_id"] == "" {
+		t.Fatalf("(b) POST encounter sync = %d %v", status, out)
+	}
+	if st, _ := satMapState(t, ctx, env, "operations.admission", admissionID, "Encounter"); st != "pending" {
+		t.Fatalf("(b) encounter map status = %s, want pending", st)
+	}
+	var encounterPayload string
+	if err := env.pool.QueryRow(ctx,
+		"SELECT last_payload::text FROM connect.satusehat_resource_map WHERE local_table = 'operations.admission' AND local_id = $1 AND fhir_resource_type = 'Encounter'",
+		admissionID).Scan(&encounterPayload); err != nil {
+		t.Fatalf("(b) read encounter payload: %v", err)
+	}
+	var payloadMap map[string]any
+	if err := json.Unmarshal([]byte(encounterPayload), &payloadMap); err != nil {
+		t.Fatalf("(b) unmarshal encounter payload: %v", err)
+	}
+	if payloadMap["status"] != "in-progress" {
+		t.Fatalf("(b) payload status = %v, want in-progress", payloadMap["status"])
+	}
+	subject, _ := payloadMap["subject"].(map[string]any)
+	if subject["reference"] != "Patient/"+patientIHS {
+		t.Fatalf("(b) payload subject = %v, want Patient/%s", subject, patientIHS)
+	}
+	if _, err := connect.RunOnce(ctx, env.pool, registry, wCfg); err != nil {
+		t.Fatalf("(b) RunOnce: %v", err)
+	}
+	if st, fhirID := satMapState(t, ctx, env, "operations.admission", admissionID, "Encounter"); st != "synced" || fhirID == "" {
+		t.Fatalf("(b) encounter map after run = %s/%q, want synced/<id>", st, fhirID)
+	}
+	var encounterPosted bool
+	for _, r := range stub.snapshot() {
+		var body map[string]any
+		if r.Method != http.MethodPost || r.Path != "/fhir-r4/v1/Encounter" || json.Unmarshal([]byte(r.Body), &body) != nil {
+			continue
+		}
+		if body["status"] == "in-progress" {
+			encounterPosted = true
+		}
+	}
+	if !encounterPosted {
+		t.Fatalf("(b) stub never received the Encounter POST: %v", stub.snapshot())
+	}
+
+	// (c) Inpatient ⇒ 400 literal.
+	inpatientID := satSeedAdmission(t, ctx, env, personID, "inpatient", "registered", "RI-ENC-0001", departmentID)
+	status, out = qeRequest(t, env, http.MethodPost, satEncounterSyncPath(inpatientID), nil)
+	if status != http.StatusBadRequest || out["error"] != "only outpatient admissions are supported" {
+		t.Fatalf("(c) POST encounter sync (inpatient) = %d %v", status, out)
+	}
+
+	// (d) Cancelled ⇒ 400 literal.
+	cancelledID := satSeedAdmission(t, ctx, env, personID, "outpatient", "cancelled", "RJ-ENC-0002", departmentID)
+	status, out = qeRequest(t, env, http.MethodPost, satEncounterSyncPath(cancelledID), nil)
+	if status != http.StatusBadRequest || out["error"] != "admission is cancelled" {
+		t.Fatalf("(d) POST encounter sync (cancelled) = %d %v", status, out)
+	}
+
+	// (e) Discharged ⇒ payload finished + period.end terisi.
+	if _, err := env.pool.Exec(ctx,
+		"UPDATE operations.admission SET status = 'discharged', discharge_at = now() WHERE id = $1", admissionID); err != nil {
+		t.Fatalf("(e) discharge admission: %v", err)
+	}
+	status, out = qeRequest(t, env, http.MethodPost, satEncounterSyncPath(admissionID), nil)
+	if status != http.StatusOK {
+		t.Fatalf("(e) POST encounter sync = %d %v", status, out)
+	}
+	if err := env.pool.QueryRow(ctx,
+		"SELECT last_payload::text FROM connect.satusehat_resource_map WHERE local_table = 'operations.admission' AND local_id = $1 AND fhir_resource_type = 'Encounter'",
+		admissionID).Scan(&encounterPayload); err != nil {
+		t.Fatalf("(e) read encounter payload: %v", err)
+	}
+	payloadMap = nil
+	if err := json.Unmarshal([]byte(encounterPayload), &payloadMap); err != nil {
+		t.Fatalf("(e) unmarshal encounter payload: %v", err)
+	}
+	if payloadMap["status"] != "finished" {
+		t.Fatalf("(e) payload status = %v, want finished", payloadMap["status"])
+	}
+	period, _ := payloadMap["period"].(map[string]any)
+	if period["end"] == nil || period["end"] == "" {
+		t.Fatalf("(e) payload period.end empty: %s", encounterPayload)
+	}
+}

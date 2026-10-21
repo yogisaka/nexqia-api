@@ -150,6 +150,15 @@ definitions:
     required:
     - status
     type: object
+  server.consentInput:
+    properties:
+      method:
+        type: string
+      person_document_id:
+        type: string
+      text_version:
+        type: string
+    type: object
   server.copyScheduleWeekRequest:
     properties:
       from_week_start:
@@ -470,6 +479,21 @@ definitions:
     - code
     - name
     - payer_type
+    type: object
+  server.createPersonConsentRequest:
+    properties:
+      consent_type:
+        type: string
+      method:
+        type: string
+      person_document_id:
+        type: string
+      text_version:
+        type: string
+    required:
+    - consent_type
+    - method
+    - text_version
     type: object
   server.createPhysicianLeaveRequest:
     properties:
@@ -1061,6 +1085,8 @@ definitions:
         type: string
       citizenship_concept_id:
         type: string
+      consent:
+        $ref: '#/definitions/server.consentInput'
       duplicate_override_reason:
         type: string
       education_concept_id:
@@ -1228,6 +1254,17 @@ definitions:
     required:
     - adjustment_percent
     - item_type
+    type: object
+  server.putDocumentRequirementsRequest:
+    properties:
+      document_types:
+        items:
+          type: string
+        type: array
+      service_type:
+        type: string
+    required:
+    - service_type
     type: object
   server.putGuaranteeLettersRequest:
     properties:
@@ -1800,6 +1837,8 @@ definitions:
       default_price_list_id:
         type: string
       facility_type:
+        type: string
+      hospital_class:
         type: string
     type: object
   server.updateCompanyRequest:
@@ -2602,6 +2641,40 @@ paths:
       summary: Replace the guarantors of a visit (BPJS is moved to sequence 1)
       tags:
       - admission
+  /admissions/{id}/satusehat/sync:
+    post:
+      description: Builds the FHIR Encounter payload (status mapped from operations.admission.status,
+        merchant-local RFC3339 period) and upserts a pending resource-map row ('operations.admission'/'Encounter').
+      parameters:
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Enqueue one outpatient admission for SATUSEHAT Encounter sync
+      tags:
+      - integration
   /admissions/payer-summary:
     get:
       parameters:
@@ -4281,6 +4354,30 @@ paths:
       summary: Resolve a company by its 6-character code
       tags:
       - auth
+  /consent-text:
+    get:
+      parameters:
+      - description: Consent text code
+        in: query
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get the active consent text version for a code
+      tags:
+      - patient-consent
   /counters:
     post:
       consumes:
@@ -4822,6 +4919,62 @@ paths:
       summary: Today's active physician schedules for a department
       tags:
       - display
+  /document-requirements:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List document requirement sets for the active merchant
+      tags:
+      - patient-document
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Requirement set
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putDocumentRequirementsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the requirement set for one service_type (single tx)
+      tags:
+      - patient-document
+  /document-types:
+    get:
+      description: The single source of document types for the FE upload form and
+        requirement settings (spec §5.2).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the document type catalog
+      tags:
+      - patient-document
   /fee-batches/{id}:
     delete:
       parameters:
@@ -5252,6 +5405,36 @@ paths:
       summary: Liveness check
       tags:
       - system
+  /integration/satusehat/resources/{id}/retry:
+    post:
+      description: Resets a failed map row back to pending (last_error/lock cleared);
+        only rows of the caller's merchant and only failed rows qualify.
+      parameters:
+      - description: Resource map UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Retry one failed SATUSEHAT resource-map row
+      tags:
+      - integration
   /inventory/item-units/{id}:
     patch:
       consumes:
@@ -6313,6 +6496,122 @@ paths:
       summary: Create a goods-receipt draft with lines
       tags:
       - inventory
+  /merchants/{id}/integration/satusehat:
+    get:
+      description: Returns the configuration shape (configured/base_url/config/is_active/credential_set)
+        without the credentials themselves.
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get merchant SATUSEHAT configuration
+      tags:
+      - integration
+    put:
+      description: Stores base_url + client credentials encrypted with pgp_sym_encrypt;
+        client_id/client_secret are never returned.
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Upsert merchant SATUSEHAT configuration
+      tags:
+      - integration
+  /merchants/{id}/integration/satusehat/status:
+    get:
+      description: Newest-first list (capped at 200) of the merchant's resource-map
+        rows.
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List SATUSEHAT resource-map sync statuses
+      tags:
+      - integration
+  /merchants/{id}/integration/satusehat/sync:
+    post:
+      description: Upserts pending resource-map rows for the merchant Organization
+        and every non-bed Location; known FHIR ids are embedded so the worker issues
+        PUT.
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Re-enqueue merchant Organization and Location resources
+      tags:
+      - integration
   /merchants/{id}/inventory-settings:
     get:
       parameters:
@@ -8302,6 +8601,81 @@ paths:
       summary: Record an allergy for a person
       tags:
       - patient-allergy
+  /persons/{id}/consents:
+    get:
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a person's consents (newest first)
+      tags:
+      - patient-consent
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Consent data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createPersonConsentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Record a data-processing consent for a person (append-only)
+      tags:
+      - patient-consent
+  /persons/{id}/consents/latest:
+    get:
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Get the person's latest consent (null when none)
+      tags:
+      - patient-consent
   /persons/{id}/coverages:
     get:
       parameters:
@@ -8365,6 +8739,149 @@ paths:
       summary: Register a coverage membership (kepesertaan) for a person
       tags:
       - patient-coverage
+  /persons/{id}/documents:
+    get:
+      description: With ?service_type=umum|bpjs|asuransi the response adds the requirement
+        checklist (non-blocking, K8).
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: umum|bpjs|asuransi
+        in: query
+        name: service_type
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a person's active documents
+      tags:
+      - patient-document
+    post:
+      consumes:
+      - multipart/form-data
+      description: 'multipart/form-data: file (wajib), document_type (kode katalog),
+        label (opsional), issued_date/expired_date (opsional).'
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Upload a patient document
+      tags:
+      - patient-document
+  /persons/{id}/documents/{documentId}:
+    delete:
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Document UUID
+        in: path
+        name: documentId
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a patient document (media and object stay, STD-07/K5)
+      tags:
+      - patient-document
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Document UUID
+        in: path
+        name: documentId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Patch a patient document (label/dates, partial)
+      tags:
+      - patient-document
+  /persons/{id}/documents/{documentId}/content:
+    get:
+      description: Streams the stored object; every download is access-logged with
+        the person id (STD-09/K1).
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Document UUID
+        in: path
+        name: documentId
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Download a patient document via API proxy (K1)
+      tags:
+      - patient-document
   /persons/{id}/families:
     get:
       parameters:
@@ -8436,6 +8953,40 @@ paths:
       summary: List merge logs involving one person
       tags:
       - person
+  /persons/{id}/satusehat/sync:
+    post:
+      description: Decrypts the person NIK, builds the FHIR Patient payload, and upserts
+        a pending connect.satusehat_resource_map row ('core.person'/'Patient').
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Enqueue one patient for SATUSEHAT Patient (IHS) sync
+      tags:
+      - integration
   /persons/duplicates:
     get:
       description: Scored pairs of possibly-duplicate medical records; dismissed/merged

@@ -85,6 +85,11 @@ WHERE local_table = $1 AND local_id = $2 AND fhir_resource_type = $3;
 SELECT id, company_id, nik, full_name, gender, birth_date
 FROM core.person WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: GetAdmissionForSatusehatEncounter :one
+SELECT id, company_id, merchant_id, visit_no, person_id, admission_type,
+       status, admission_at, discharge_at
+FROM operations.admission WHERE id = $1 AND deleted_at IS NULL;
+
 -- name: GetSatusehatResourceMapByID :one
 SELECT id, merchant_id, local_table, local_id, fhir_resource_type,
        fhir_resource_id, sync_status

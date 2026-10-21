@@ -389,3 +389,64 @@ func BuildPatientPayload(in PatientInput) []byte {
 	b, _ := json.Marshal(p)
 	return b
 }
+
+// EncounterInput is the local data needed for one outpatient Encounter
+// payload (Permenkes 6/2026 Fase C3). StatusFHIR is the ALREADY MAPPED FHIR
+// status ("in-progress"/"finished"); the operations.admission → FHIR mapping
+// lives in the server handler. PeriodStart/PeriodEnd are RFC3339 timestamps
+// in the merchant timezone ("" = omit).
+type EncounterInput struct {
+	MerchantID  string
+	VisitNo     string
+	PatientIHS  string
+	OrgFHIRID   string
+	StatusFHIR  string
+	PeriodStart string
+	PeriodEnd   string
+}
+
+type encounterClass struct {
+	System  string `json:"system"`
+	Code    string `json:"code"`
+	Display string `json:"display"`
+}
+
+type encounterPeriod struct {
+	Start string `json:"start"`
+	End   string `json:"end,omitempty"`
+}
+
+type encounterPayload struct {
+	ResourceType    string                `json:"resourceType"`
+	Status          string                `json:"status"`
+	Class           encounterClass        `json:"class"`
+	Identifier      []satusehatIdentifier `json:"identifier"`
+	Subject         satusehatReference    `json:"subject"`
+	ServiceProvider *satusehatReference   `json:"serviceProvider,omitempty"`
+	Period          encounterPeriod       `json:"period"`
+}
+
+// BuildEncounterPayload builds the FHIR Encounter JSON (ambulatory class);
+// period.end and serviceProvider are omitted when the source string is empty.
+func BuildEncounterPayload(in EncounterInput) []byte {
+	p := encounterPayload{
+		ResourceType: "Encounter",
+		Status:       in.StatusFHIR,
+		Class: encounterClass{
+			System:  "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+			Code:    "AMB",
+			Display: "ambulatory",
+		},
+		Identifier: []satusehatIdentifier{{
+			System: "http://sys-ids.kemkes.go.id/encounter/" + in.MerchantID,
+			Value:  in.VisitNo,
+		}},
+		Subject: satusehatReference{Reference: "Patient/" + in.PatientIHS},
+		Period:  encounterPeriod{Start: in.PeriodStart, End: in.PeriodEnd},
+	}
+	if in.OrgFHIRID != "" {
+		p.ServiceProvider = &satusehatReference{Reference: "Organization/" + in.OrgFHIRID}
+	}
+	b, _ := json.Marshal(p)
+	return b
+}

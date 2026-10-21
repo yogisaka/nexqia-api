@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,7 @@ func RegisterIntegrationRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	rg.POST("/merchants/:id/integration/satusehat/sync", postSatusehatSyncHandler())
 	rg.GET("/merchants/:id/integration/satusehat/status", getSatusehatStatusHandler())
 	rg.POST("/persons/:id/satusehat/sync", postPersonSatusehatSyncHandler(cfg))
+	rg.POST("/admissions/:id/satusehat/sync", postAdmissionSatusehatSyncHandler())
 	rg.POST("/integration/satusehat/resources/:id/retry", postSatusehatRetryHandler())
 }
 
@@ -93,6 +95,16 @@ func satusehatConfigResponse(c *gin.Context, merchantID pgtype.UUID) bool {
 
 // getSatusehatConfigHandler returns the merchant SATUSEHAT configuration
 // (never the credentials themselves).
+// GetSatusehatConfigHandler godoc
+// @Summary Get merchant SATUSEHAT configuration
+// @Description Returns the configuration shape (configured/base_url/config/is_active/credential_set) without the credentials themselves.
+// @Tags integration
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /merchants/{id}/integration/satusehat [get]
 func getSatusehatConfigHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		merchant, ok := loadSatusehatMerchant(c, PermIntegrationStatusView)
@@ -113,6 +125,18 @@ type satusehatConfigInput struct {
 
 // putSatusehatConfigHandler upserts the config with credentials encrypted via
 // pgp_sym_encrypt using cfg.IntegrationCredentialKey.
+// PutSatusehatConfigHandler godoc
+// @Summary Upsert merchant SATUSEHAT configuration
+// @Description Stores base_url + client credentials encrypted with pgp_sym_encrypt; client_id/client_secret are never returned.
+// @Tags integration
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 503 {object} apiErrorResponse
+// @Router /merchants/{id}/integration/satusehat [put]
 func putSatusehatConfigHandler(cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		merchant, ok := loadSatusehatMerchant(c, PermIntegrationConfigManage)
@@ -208,6 +232,17 @@ func satusehatNumericPointer(n pgtype.Numeric) (*float64, error) {
 // non-bed Location as pending map rows (explicit sync button). FHIR ids known
 // from previous runs are embedded BEFORE the payload is built so the worker
 // issues PUT (update) instead of POST (create) (review temuan 2).
+// PostSatusehatSyncHandler godoc
+// @Summary Re-enqueue merchant Organization and Location resources
+// @Description Upserts pending resource-map rows for the merchant Organization and every non-bed Location; known FHIR ids are embedded so the worker issues PUT.
+// @Tags integration
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /merchants/{id}/integration/satusehat/sync [post]
 func postSatusehatSyncHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		merchant, ok := loadSatusehatMerchant(c, PermIntegrationConfigManage)
@@ -291,6 +326,16 @@ func postSatusehatSyncHandler() gin.HandlerFunc {
 
 // getSatusehatStatusHandler lists the resource-map rows of the merchant
 // (newest first, capped at 200).
+// GetSatusehatStatusHandler godoc
+// @Summary List SATUSEHAT resource-map sync statuses
+// @Description Newest-first list (capped at 200) of the merchant's resource-map rows.
+// @Tags integration
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merchant UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /merchants/{id}/integration/satusehat/status [get]
 func getSatusehatStatusHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		merchant, ok := loadSatusehatMerchant(c, PermIntegrationStatusView)
@@ -448,5 +493,106 @@ func postSatusehatRetryHandler() gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{"sync_status": "pending"}, "meta": gin.H{}})
+	}
+}
+
+// PostAdmissionSatusehatSyncHandler godoc
+// @Summary Enqueue one outpatient admission for SATUSEHAT Encounter sync
+// @Description Builds the FHIR Encounter payload (status mapped from operations.admission.status, merchant-local RFC3339 period) and upserts a pending resource-map row ('operations.admission'/'Encounter').
+// @Tags integration
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Admission UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /admissions/{id}/satusehat/sync [post]
+func postAdmissionSatusehatSyncHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, ok := parseUUID(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+		q := sqlcgen.New(TxFromContext(c))
+		admission, err := q.GetAdmissionForSatusehatEncounter(c.Request.Context(), id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "admission not found"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if !RequirePermissionForMerchant(c, PermIntegrationConfigManage, admission.MerchantID) {
+			return
+		}
+		if admission.AdmissionType != "outpatient" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "only outpatient admissions are supported"})
+			return
+		}
+		if admission.Status == "cancelled" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "admission is cancelled"})
+			return
+		}
+		ctx := c.Request.Context()
+		cfgRow, err := q.GetSatusehatConfigByMerchant(ctx, admission.MerchantID)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !cfgRow.IsActive) {
+			c.JSON(http.StatusConflict, gin.H{"error": "satusehat integration not configured"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		patientMap, err := q.GetSatusehatMapByLocal(ctx, sqlcgen.GetSatusehatMapByLocalParams{
+			LocalTable: "core.person", LocalID: admission.PersonID, FhirResourceType: "Patient",
+		})
+		patientSynced := err == nil && patientMap.SyncStatus == "synced" &&
+			patientMap.FhirResourceID.Valid && patientMap.FhirResourceID.String != ""
+		if !patientSynced {
+			c.JSON(http.StatusConflict, gin.H{"error": "patient not synced to satusehat"})
+			return
+		}
+		orgFHIRID, ok := satusehatMapFHIRID(c, q, "core.merchant", admission.MerchantID, "Organization")
+		if !ok {
+			return
+		}
+		loc, err := merchantLocation(ctx, q, admission.MerchantID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		periodStart := admission.AdmissionAt.Time.In(loc).Format(time.RFC3339)
+		periodEnd := ""
+		if admission.DischargeAt.Valid {
+			periodEnd = admission.DischargeAt.Time.In(loc).Format(time.RFC3339)
+		}
+		statusFHIR := "in-progress"
+		if admission.Status == "discharged" {
+			statusFHIR = "finished"
+		}
+		payload := connect.BuildEncounterPayload(connect.EncounterInput{
+			MerchantID:  admission.MerchantID.String(),
+			VisitNo:     admission.VisitNo,
+			PatientIHS:  patientMap.FhirResourceID.String,
+			OrgFHIRID:   orgFHIRID,
+			StatusFHIR:  statusFHIR,
+			PeriodStart: periodStart,
+			PeriodEnd:   periodEnd,
+		})
+		mapRowID, err := q.UpsertSatusehatResourceMap(ctx, sqlcgen.UpsertSatusehatResourceMapParams{
+			CompanyID: admission.CompanyID, MerchantID: admission.MerchantID,
+			LocalTable: "operations.admission", LocalID: admission.ID,
+			FhirResourceType: "Encounter", Column6: payload,
+		})
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"map_id": mapRowID.String(), "sync_status": "pending",
+		}, "meta": gin.H{}})
 	}
 }
