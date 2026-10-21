@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -116,6 +117,63 @@ func TestSatusehatUpdateById(t *testing.T) {
 	}
 	if resp.ResourceID != "org-1" {
 		t.Fatalf("ResourceID = %q", resp.ResourceID)
+	}
+}
+
+// TestSatusehatPutInjectsId: worker PUT re-sends a stored payload built
+// WITHOUT "id" (Patient/Encounter builders, temuan review); Send must inject
+// "id" = KnownResourceID into the PUT body. POST (no KnownResourceID) must
+// NOT gain an "id".
+func TestSatusehatPutInjectsId(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v1/accesstoken" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-3", "expires_in": 3600})
+			return
+		}
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"id":"x"}`))
+	}))
+	defer srv.Close()
+
+	a := NewSatusehatAdapter()
+
+	// Patient PUT cannot be reached through Send (search-first always resets
+	// KnownResourceID for Patient), so the injection is asserted via Send on
+	// Encounter/Organization and directly on the helper for Patient.
+	if got := string(injectPayloadID([]byte(`{"resourceType":"Patient","gender":"male"}`), "ihs-123")); !strings.Contains(got, `"id":"ihs-123"`) {
+		t.Fatalf("injectPayloadID Patient = %s", got)
+	}
+
+	// Encounter PUT from a stored payload without "id" (worker re-sync path).
+	if _, err := a.Send(context.Background(), SendRequest{
+		MerchantID:      "m-1",
+		BaseURL:         srv.URL,
+		Credential:      `{"client_id":"cid","client_secret":"csec"}`,
+		ResourceType:    "Encounter",
+		KnownResourceID: "enc-9",
+		Payload:         []byte(`{"resourceType":"Encounter","status":"finished","class":{"system":"http://terminology.hl7.org/CodeSystem/v3-ActCode","code":"AMB","display":"ambulatory"}}`),
+	}); err != nil {
+		t.Fatalf("Send Encounter PUT: %v", err)
+	}
+	body := jsonMap(t, gotBody)
+	if body["id"] != "enc-9" {
+		t.Fatalf("Encounter PUT body id = %v, want enc-9", body["id"])
+	}
+
+	// POST create: no "id" injected.
+	if _, err := a.Send(context.Background(), SendRequest{
+		MerchantID:   "m-1",
+		BaseURL:      srv.URL,
+		Credential:   `{"client_id":"cid","client_secret":"csec"}`,
+		ResourceType: "Patient",
+		Payload:      []byte(`{"resourceType":"Patient","identifier":[{"system":"https://fhir.kemkes.go.id/id/nik","value":"3273011205780001"}],"gender":"male"}`),
+	}); err != nil {
+		t.Fatalf("Send Patient POST: %v", err)
+	}
+	body = jsonMap(t, gotBody)
+	if _, has := body["id"]; has {
+		t.Fatalf("POST body must not carry id: %s", gotBody)
 	}
 }
 
@@ -272,5 +330,101 @@ func TestBuildLocationPayload(t *testing.T) {
 		}},
 		"name": "Ruang Tiga",
 		"mode": "instance",
+	})
+}
+
+// TestBuildPatientPayload: literal shape from the plan, plus the variant
+// without birthDate (omitted key, not empty string).
+func TestBuildPatientPayload(t *testing.T) {
+	got := jsonMap(t, BuildPatientPayload(PatientInput{
+		NIK:       "3273011205780001",
+		FullName:  "Pasien Demo",
+		Gender:    "male",
+		BirthDate: "1990-01-01",
+	}))
+	assertMapEqual(t, got, map[string]any{
+		"resourceType": "Patient",
+		"identifier": []any{map[string]any{
+			"system": "https://fhir.kemkes.go.id/id/nik",
+			"value":  "3273011205780001",
+		}},
+		"name":      []any{map[string]any{"use": "official", "text": "Pasien Demo"}},
+		"gender":    "male",
+		"birthDate": "1990-01-01",
+	})
+
+	// Without birthDate: the key must be absent entirely.
+	got = jsonMap(t, BuildPatientPayload(PatientInput{
+		NIK:      "3273016008820002",
+		FullName: "Pasien Tanpa Tanggal",
+		Gender:   "female",
+	}))
+	assertMapEqual(t, got, map[string]any{
+		"resourceType": "Patient",
+		"identifier": []any{map[string]any{
+			"system": "https://fhir.kemkes.go.id/id/nik",
+			"value":  "3273016008820002",
+		}},
+		"name":   []any{map[string]any{"use": "official", "text": "Pasien Tanpa Tanggal"}},
+		"gender": "female",
+	})
+}
+
+// TestBuildEncounterPayload: literal shape from the plan, plus the variant
+// without period.end and serviceProvider (omitted keys, not empty strings).
+func TestBuildEncounterPayload(t *testing.T) {
+	got := jsonMap(t, BuildEncounterPayload(EncounterInput{
+		MerchantID:  "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		VisitNo:     "RJ-20261020-0001",
+		PatientIHS:  "ihs-123",
+		OrgFHIRID:   "org-123",
+		StatusFHIR:  "in-progress",
+		PeriodStart: "2026-10-20T08:00:00+07:00",
+		PeriodEnd:   "2026-10-20T11:30:00+07:00",
+	}))
+	assertMapEqual(t, got, map[string]any{
+		"resourceType": "Encounter",
+		"status":       "in-progress",
+		"class": map[string]any{
+			"system":  "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+			"code":    "AMB",
+			"display": "ambulatory",
+		},
+		"identifier": []any{map[string]any{
+			"system": "http://sys-ids.kemkes.go.id/encounter/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			"value":  "RJ-20261020-0001",
+		}},
+		"subject":         map[string]any{"reference": "Patient/ihs-123"},
+		"serviceProvider": map[string]any{"reference": "Organization/org-123"},
+		"period": map[string]any{
+			"start": "2026-10-20T08:00:00+07:00",
+			"end":   "2026-10-20T11:30:00+07:00",
+		},
+	})
+
+	// Variant: no OrgFHIRID and no PeriodEnd — keys absent entirely.
+	got = jsonMap(t, BuildEncounterPayload(EncounterInput{
+		MerchantID:  "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		VisitNo:     "RJ-20261020-0002",
+		PatientIHS:  "ihs-456",
+		StatusFHIR:  "finished",
+		PeriodStart: "2026-10-20T09:00:00+07:00",
+	}))
+	assertMapEqual(t, got, map[string]any{
+		"resourceType": "Encounter",
+		"status":       "finished",
+		"class": map[string]any{
+			"system":  "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+			"code":    "AMB",
+			"display": "ambulatory",
+		},
+		"identifier": []any{map[string]any{
+			"system": "http://sys-ids.kemkes.go.id/encounter/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			"value":  "RJ-20261020-0002",
+		}},
+		"subject": map[string]any{"reference": "Patient/ihs-456"},
+		"period": map[string]any{
+			"start": "2026-10-20T09:00:00+07:00",
+		},
 	})
 }

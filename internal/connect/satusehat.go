@@ -87,13 +87,17 @@ func (a *SatusehatAdapter) Send(ctx context.Context, req SendRequest) (SendRespo
 
 	var url string
 	method := http.MethodPost
+	payload := req.Payload
 	if req.KnownResourceID == "" {
 		url = fmt.Sprintf("%s/fhir-r4/v1/%s", req.BaseURL, req.ResourceType)
 	} else {
 		method = http.MethodPut
 		url = fmt.Sprintf("%s/fhir-r4/v1/%s/%s", req.BaseURL, req.ResourceType, req.KnownResourceID)
+		// FHIR update: the body must carry the id being updated (C2 pattern);
+		// stored payloads (worker LastPayload) may not include it.
+		payload = injectPayloadID(req.Payload, req.KnownResourceID)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(req.Payload))
+	httpReq, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
 	if err != nil {
 		return SendResponse{}, err
 	}
@@ -124,6 +128,21 @@ func (a *SatusehatAdapter) Send(ctx context.Context, req SendRequest) (SendRespo
 		resourceID = parsed.ID
 	}
 	return SendResponse{ResourceID: resourceID, HTTPStatus: httpResp.StatusCode, Body: body}, nil
+}
+
+// injectPayloadID sets the top-level "id" of a FHIR JSON payload to id,
+// returning the payload unchanged when it is not a JSON object.
+func injectPayloadID(payload []byte, id string) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil || m == nil {
+		return payload
+	}
+	m["id"], _ = json.Marshal(id)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return b
 }
 
 // findPatientByIDentifier resolves an existing Patient IHS via the FHIR
