@@ -55,6 +55,9 @@ func RegisterStockOutRoutes(rg *gin.RouterGroup) {
 	rg.GET("/inter-merchant-transfers/:id", GetInterMerchantTransferHandler)
 	rg.POST("/inter-merchant-transfers/:id/receive", ReceiveInterMerchantTransferHandler)
 	rg.POST("/inter-merchant-transfers/:id/cancel", CancelInterMerchantTransferHandler)
+
+	// §5.2 #3 lot recall report — company-level (no merchant in the path).
+	rg.GET("/lots/:id/recall-report", RecallReportHandler)
 }
 
 // nextOutboundNo derives the next daily document number (pola

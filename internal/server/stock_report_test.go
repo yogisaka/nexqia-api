@@ -257,3 +257,200 @@ func TestStockReport_Reorder(t *testing.T) {
 		t.Fatalf("want no reorder rows above min, got %d", len(rows))
 	}
 }
+
+// TestStockReport_OnHandStatusFilter — ?status=quarantine returns only
+// quarantine rows; without the param every status comes back; an unknown
+// status is a 400 "invalid status filter" (spec §5.2 #5).
+func TestStockReport_OnHandStatusFilter(t *testing.T) {
+	ctx := context.Background()
+	e := opsSetup(t, "onhandst", "+628111000007")
+	lot := opsSeedLot(t, ctx, e, "LOT-ST1", opsED(400))
+	opsSeedBalanceAt(t, ctx, e, e.w.location, lot, "purchase", 4000) // 4.000 available
+	// One quarantine balance at the same location/lot/source.
+	tx := stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO inventory.stock_balance
+			(company_id, merchant_id, location_id, item_id, lot_id, source, status, quantity)
+		VALUES ($1,$2,$3,$4,$5,'purchase','quarantine','1.500')`,
+		e.w.companyStr, e.w.merchantStr, e.w.location, e.w.item, lot); err != nil {
+		t.Fatalf("seed quarantine balance: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit quarantine: %v", err)
+	}
+	path := "/api/v1/merchants/" + e.w.merchantStr + "/stock"
+
+	// ?status=quarantine → exactly the quarantine row.
+	status, out := opsRequest(t, e, http.MethodGet, path+"?status=quarantine", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET status=quarantine: %d %v", status, opsErr(out))
+	}
+	rows := repOnHandRows(t, out)
+	if len(rows) != 1 || rows[0]["status"] != "quarantine" {
+		t.Fatalf("want 1 quarantine row, got %v", out)
+	}
+	repRatEq(t, rows[0]["quantity"].(string), "1.500")
+
+	// Without the param → both rows (old behavior, ListStockOnHand).
+	status, out = opsRequest(t, e, http.MethodGet, path, nil)
+	if status != http.StatusOK || len(repOnHandRows(t, out)) != 2 {
+		t.Fatalf("no param: %d %v", status, out)
+	}
+
+	// Unknown status → 400 invalid status filter.
+	status, out = opsRequest(t, e, http.MethodGet, path+"?status=weird", nil)
+	if status != http.StatusBadRequest || opsErr(out) != "invalid status filter" {
+		t.Fatalf("bad status: %d %v", status, out)
+	}
+}
+
+// TestRecallReport — company-wide lot recall report (spec §5.2 #3): balances
+// per merchant/location/status across two merchants of one company, issue
+// usages with patient_name only for admission-referenced moves, and no leak
+// of another company's lot.
+func TestRecallReport(t *testing.T) {
+	ctx := context.Background()
+	e := opsSetup(t, "recall", "+628111000005")
+	lot := opsSeedLot(t, ctx, e, "LOT-RC1", opsED(400))
+	opsSeedBalanceAt(t, ctx, e, e.w.location, lot, "purchase", 4000) // 4.000 available
+
+	// Merchant 2 of the same company + one quarantine balance. The location
+	// and balance inserts need the tx pinned to merchant 2 (RLS).
+	tx := stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	var m2Str string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.merchant (company_id, code, name)
+		VALUES ($1, 'M-RC2', 'RS Uji Cabang') RETURNING id::text`,
+		e.w.companyStr).Scan(&m2Str); err != nil {
+		t.Fatalf("seed merchant 2: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit merchant 2: %v", err)
+	}
+	tx2 := stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, m2Str)
+	var loc2Str string
+	if err := tx2.QueryRow(ctx, `
+		INSERT INTO core.location (company_id, merchant_id, kind, code, name, functions)
+		VALUES ($1,$2,'room','GUD-RC2','Gudang Cabang', ARRAY['warehouse']::text[]) RETURNING id::text`,
+		e.w.companyStr, m2Str).Scan(&loc2Str); err != nil {
+		t.Fatalf("seed location 2: %v", err)
+	}
+	if _, err := tx2.Exec(ctx, `
+		INSERT INTO inventory.stock_balance
+			(company_id, merchant_id, location_id, item_id, lot_id, source, status, quantity)
+		VALUES ($1,$2,$3,$4,$5,'purchase','quarantine','1.500')`,
+		e.w.companyStr, m2Str, loc2Str, e.w.item, lot); err != nil {
+		t.Fatalf("seed merchant 2 balance: %v", err)
+	}
+	if err := tx2.Commit(ctx); err != nil {
+		t.Fatalf("commit merchant 2 balance: %v", err)
+	}
+
+	// Issue usages: admission-referenced move (patient) then a plain usage.
+	tx = stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	var personID, deptID, admissionID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.person (company_id, full_name, gender)
+		VALUES ($1, 'Pasien Uji Recall', 'female') RETURNING id::text`,
+		e.w.companyStr).Scan(&personID); err != nil {
+		t.Fatalf("seed person: %v", err)
+	}
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.department (company_id, merchant_id, code, name)
+		VALUES ($1,$2,'RCL01','Poli Recall') RETURNING id::text`,
+		e.w.companyStr, e.w.merchantStr).Scan(&deptID); err != nil {
+		t.Fatalf("seed department: %v", err)
+	}
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO operations.admission
+			(company_id, merchant_id, visit_no, person_id, admission_type, department_id)
+		VALUES ($1,$2,'RCL-0001',$3,'outpatient',$4) RETURNING id::text`,
+		e.w.companyStr, e.w.merchantStr, personID, deptID).Scan(&admissionID); err != nil {
+		t.Fatalf("seed admission: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO inventory.stock_move
+			(company_id, merchant_id, move_date, move_type, location_id, item_id, lot_id,
+			 source, status, quantity, ref_type, ref_id, created_by)
+		VALUES ($1,$2,$3,'issue',$4,$5,$6,'purchase','available','-2.000','admission',$7,$8)`,
+		e.w.companyStr, e.w.merchantStr, e.w.day.Format("2006-01-02"), e.w.location,
+		e.w.item, lot, admissionID, e.w.userStr); err != nil {
+		t.Fatalf("seed admission issue: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit admission issue: %v", err)
+	}
+	tx = stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO inventory.stock_move
+			(company_id, merchant_id, move_date, move_type, location_id, item_id, lot_id,
+			 source, status, quantity, ref_type, created_by)
+		VALUES ($1,$2,$3,'issue',$4,$5,$6,'purchase','available','-1.000','usage',$7)`,
+		e.w.companyStr, e.w.merchantStr, e.w.day.Format("2006-01-02"), e.w.location,
+		e.w.item, lot, e.w.userStr); err != nil {
+		t.Fatalf("seed plain issue: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit plain issue: %v", err)
+	}
+
+	path := "/api/v1/lots/" + lot.String() + "/recall-report"
+	status, out := opsRequest(t, e, http.MethodGet, path, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET recall-report: %d %v", status, opsErr(out))
+	}
+	data, _ := out["data"].(map[string]any)
+	lotB, _ := data["lot"].(map[string]any)
+	if lotB["batch_no"] != "LOT-RC1" {
+		t.Fatalf("lot block: %v", lotB)
+	}
+	balances, _ := data["balances"].([]any)
+	if len(balances) != 2 {
+		t.Fatalf("want 2 balances, got %v", data)
+	}
+	byStatus := map[string]map[string]any{}
+	for _, b := range balances {
+		bm, _ := b.(map[string]any)
+		byStatus[bm["status"].(string)] = bm
+	}
+	avail := byStatus["available"]
+	if avail == nil || avail["merchant_id"] != e.w.merchant.String() ||
+		avail["location_name"] != "Gudang Ops" {
+		t.Fatalf("available balance: %v", avail)
+	}
+	repRatEq(t, avail["quantity"].(string), "4.000")
+	quar := byStatus["quarantine"]
+	if quar == nil || quar["merchant_id"] != m2Str || quar["location_name"] != "Gudang Cabang" {
+		t.Fatalf("quarantine balance: %v", quar)
+	}
+	repRatEq(t, quar["quantity"].(string), "1.500")
+
+	usages, _ := data["usages"].([]any)
+	if len(usages) != 2 {
+		t.Fatalf("want 2 usages, got %v", data)
+	}
+	// Both moves land in the same created_at (same test second); the id DESC
+	// tiebreaker puts the later-inserted plain usage first.
+	u0, _ := usages[0].(map[string]any)
+	if u0["move_type"] != "issue" || u0["patient_name"] != nil {
+		t.Fatalf("plain usage: %v", u0)
+	}
+	repRatEq(t, u0["quantity"].(string), "-1.000")
+	if u0["created_by_name"] == nil || u0["moved_at"] == nil {
+		t.Fatalf("usage meta missing: %v", u0)
+	}
+	u1, _ := usages[1].(map[string]any)
+	if u1["patient_name"] != "Pasien Uji Recall" {
+		t.Fatalf("admission usage must have patient_name: %v", u1)
+	}
+	repRatEq(t, u1["quantity"].(string), "-2.000")
+
+	// A lot of another company does not leak: 404 lot not found.
+	e2 := opsSetup(t, "recall2", "+628111000006")
+	lot2 := opsSeedLot(t, ctx, e2, "LOT-RC-OTHER", opsED(400))
+	status, out = opsRequest(t, e, http.MethodGet,
+		"/api/v1/lots/"+lot2.String()+"/recall-report", nil)
+	if status != http.StatusNotFound || opsErr(out) != "lot not found" {
+		t.Fatalf("cross-company lot: %d %v", status, out)
+	}
+}

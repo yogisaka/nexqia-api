@@ -193,3 +193,57 @@ RETURNING *;
 -- name: CountInterMerchantTransfersSince :one
 SELECT COUNT(*) FROM inventory.inter_merchant_transfer
 WHERE company_id = $1 AND created_at >= $2;
+
+-- §5.2 #3 lot recall report (company-wide; the handler re-pins
+-- app.current_merchant_id per merchant because stock_balance / stock_move RLS
+-- pin rows to the session merchant).
+
+-- All non-empty balances of one lot across the company. id is an internal
+-- dedup key (the handler re-pins app.current_merchant_id per merchant; on
+-- connections where RLS is not enforced the loop would double-count).
+-- name: ListRecallBalances :many
+SELECT b.id, b.merchant_id, m.name AS merchant_name, b.location_id,
+       loc.name AS location_name, b.status, b.quantity
+FROM inventory.stock_balance b
+JOIN core.merchant m ON m.id = b.merchant_id
+JOIN core.location loc ON loc.id = b.location_id
+WHERE b.company_id = $1 AND b.lot_id = $2 AND b.quantity > 0
+ORDER BY m.name, loc.name, b.status, b.id;
+
+-- Latest 500 issue moves of one lot across the company. patient_name is only
+-- filled when the move references an admission; NULL otherwise. id is an
+-- internal dedup key (see ListRecallBalances).
+-- name: ListRecallUsages :many
+SELECT mv.id, mv.created_at AS moved_at, m.name AS merchant_name,
+       loc.name AS location_name, mv.move_type, mv.quantity,
+       COALESCE(p.full_name, u.username, '')::text AS created_by_name,
+       COALESCE(CASE WHEN mv.ref_type = 'admission' THEN per.full_name END, '')::text AS patient_name
+FROM inventory.stock_move mv
+JOIN core.merchant m ON m.id = mv.merchant_id
+JOIN core.location loc ON loc.id = mv.location_id
+LEFT JOIN core.app_user u ON u.id = mv.created_by
+LEFT JOIN core.person p ON p.id = u.person_id
+LEFT JOIN operations.admission ad ON mv.ref_type = 'admission' AND ad.id = mv.ref_id
+LEFT JOIN core.person per ON per.id = ad.person_id
+WHERE mv.company_id = $1 AND mv.lot_id = $2 AND mv.move_type = 'issue'
+ORDER BY mv.created_at DESC, mv.id DESC
+LIMIT 500;
+
+-- §5.2 #5 stock on hand filtered to one required balance status.
+-- name: ListStockOnHandByStatus :many
+SELECT b.location_id, b.source, b.status, b.quantity,
+       l.batch_no, l.expiry_date, l.is_recalled,
+       i.id AS item_id, i.code AS item_code, i.name AS item_name,
+       u.code AS base_unit_code,
+       COALESCE(ic.avg_cost, 0)::numeric AS avg_cost,
+       ROUND(b.quantity * COALESCE(ic.avg_cost, 0), 2)::numeric AS value
+FROM inventory.stock_balance b
+JOIN inventory.lot l ON l.id = b.lot_id
+JOIN inventory.item i ON i.id = b.item_id
+LEFT JOIN inventory.unit u ON u.id = i.base_unit_id
+LEFT JOIN inventory.item_cost ic ON ic.merchant_id = b.merchant_id AND ic.item_id = b.item_id
+WHERE b.merchant_id = $1 AND b.quantity > 0 AND b.status = sqlc.arg('status')::text
+  AND (sqlc.narg('location_id')::uuid IS NULL OR b.location_id = sqlc.narg('location_id'))
+  AND (sqlc.narg('item_id')::uuid IS NULL OR b.item_id = sqlc.narg('item_id'))
+  AND (sqlc.narg('q')::text IS NULL OR i.code ILIKE '%' || sqlc.narg('q') || '%' OR i.name ILIKE '%' || sqlc.narg('q') || '%')
+ORDER BY b.location_id, i.code, l.batch_no, b.id;

@@ -103,17 +103,37 @@ func StockOnHandHandler(c *gin.Context) {
 	}
 	status := nargQueryText(c, "status")
 	if status.Valid && !validStockStatus(status.String) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status filter"})
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
-	rows, err := q.ListStockOnHand(c.Request.Context(), sqlcgen.ListStockOnHandParams{
-		MerchantID: merchantID,
-		LocationID: locID,
-		ItemID:     itemID,
-		Status:     status,
-		Q:          nargQueryText(c, "q"),
-	})
+	var rows []sqlcgen.ListStockOnHandRow
+	var err error
+	if status.Valid {
+		// Status filter requested → the dedicated status query (spec §5.2 #5).
+		byStatus, errS := q.ListStockOnHandByStatus(c.Request.Context(), sqlcgen.ListStockOnHandByStatusParams{
+			MerchantID: merchantID,
+			Status:     status.String,
+			LocationID: locID,
+			ItemID:     itemID,
+			Q:          nargQueryText(c, "q"),
+		})
+		if errS == nil {
+			rows = make([]sqlcgen.ListStockOnHandRow, len(byStatus))
+			for i, r := range byStatus {
+				rows[i] = sqlcgen.ListStockOnHandRow(r)
+			}
+		}
+		err = errS
+	} else {
+		rows, err = q.ListStockOnHand(c.Request.Context(), sqlcgen.ListStockOnHandParams{
+			MerchantID: merchantID,
+			LocationID: locID,
+			ItemID:     itemID,
+			Status:     status,
+			Q:          nargQueryText(c, "q"),
+		})
+	}
 	if err != nil {
 		respondInternalError(c, err)
 		return
@@ -378,4 +398,121 @@ func StockReorderHandler(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": out, "meta": gin.H{}})
+}
+
+// §5.2 #3 lot recall report (spec 2026-10-20-inventory-17b-procurement-
+// special-cases): every remaining balance and the latest issue usages of one
+// lot, company-wide.
+
+// RecallReportHandler godoc
+// @Summary Lot recall report: lot, balances and issue usages across the company
+// @Tags inventory
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Lot UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /lots/{id}/recall-report [get]
+func RecallReportHandler(c *gin.Context) {
+	lotID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if !RequireCompanyLevelPermission(c, PermStockView) {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	lot, err := q.GetLotByID(c.Request.Context(), lotID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && lot.CompanyID != AuthCompanyID(c)) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "lot not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	// stock_balance / stock_move RLS pin rows to app.current_merchant_id, so the
+	// company-wide scan re-pins the GUC per merchant of the company inside the
+	// request transaction. Patient names never reach the application log — this
+	// handler logs nothing.
+	merchants, err := q.ListMerchantsByCompany(c.Request.Context(), sqlcgen.ListMerchantsByCompanyParams{
+		CompanyID: AuthCompanyID(c),
+		Limit:     1000,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	balances := make([]gin.H, 0, len(merchants))
+	usages := make([]gin.H, 0)
+	seenBal := map[pgtype.UUID]bool{}
+	seenUse := map[pgtype.UUID]bool{}
+	tx := TxFromContext(c)
+	for _, m := range merchants {
+		if _, err := tx.Exec(c.Request.Context(),
+			"SELECT set_config('app.current_merchant_id', $1, true)", m.ID.String()); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		bs, errB := q.ListRecallBalances(c.Request.Context(), sqlcgen.ListRecallBalancesParams{
+			CompanyID: AuthCompanyID(c),
+			LotID:     lotID,
+		})
+		if errB != nil {
+			respondInternalError(c, errB)
+			return
+		}
+		for _, b := range bs {
+			if seenBal[b.ID] {
+				continue // RLS already filtered; skip duplicated scan rows
+			}
+			seenBal[b.ID] = true
+			balances = append(balances, gin.H{
+				"merchant_id":   b.MerchantID.String(),
+				"merchant_name": b.MerchantName,
+				"location_id":   b.LocationID.String(),
+				"location_name": b.LocationName,
+				"status":        b.Status,
+				"quantity":      numericExact(b.Quantity),
+			})
+		}
+		us, errU := q.ListRecallUsages(c.Request.Context(), sqlcgen.ListRecallUsagesParams{
+			CompanyID: AuthCompanyID(c),
+			LotID:     lotID,
+		})
+		if errU != nil {
+			respondInternalError(c, errU)
+			return
+		}
+		for _, u := range us {
+			if seenUse[u.ID] {
+				continue
+			}
+			seenUse[u.ID] = true
+			// created_by_name / patient_name arrive as "" when unknown /
+			// when the move has no admission ref.
+			var patientName, createdByName any
+			if u.PatientName != "" {
+				patientName = u.PatientName
+			}
+			if u.CreatedByName != "" {
+				createdByName = u.CreatedByName
+			}
+			usages = append(usages, gin.H{
+				"moved_at":        tsOrNil(u.MovedAt),
+				"merchant_name":   u.MerchantName,
+				"location_name":   u.LocationName,
+				"move_type":       u.MoveType,
+				"quantity":        numericExact(u.Quantity),
+				"created_by_name": createdByName,
+				"patient_name":    patientName,
+			})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"lot":      lotJSON(lot),
+		"balances": balances,
+		"usages":   usages,
+	}, "meta": gin.H{}})
 }
