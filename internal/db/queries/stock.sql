@@ -393,6 +393,18 @@ WHERE b.merchant_id = $1 AND b.quantity > 0 AND l.expiry_date IS NOT NULL
 GROUP BY l.expiry_date
 ORDER BY l.expiry_date;
 
+-- name: ListNearExpiryBudContainers :many
+-- Opened containers with a live beyond-use date for the near-expiry report
+-- (spec 2026-10-20-inventory-17b §7.2 #1): reported in a separate
+-- bud_containers list so lot balances are never double-counted.
+SELECT oc.id, oc.item_id, i.name AS item_name, l.batch_no,
+       oc.remaining_base_qty, oc.bud_at
+FROM inventory.opened_container oc
+JOIN inventory.item i ON i.id = oc.item_id
+JOIN inventory.lot l ON l.id = oc.lot_id
+WHERE oc.merchant_id = $1 AND oc.status = 'open' AND oc.remaining_base_qty > 0
+ORDER BY oc.bud_at ASC;
+
 -- name: ListStockReorderRows :many
 SELECT sl.location_id, sl.item_id, sl.min_qty, sl.max_qty,
        i.code AS item_code, i.name AS item_name,

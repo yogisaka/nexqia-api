@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // repRatEq asserts two decimal strings are the same number (scale may
@@ -452,5 +453,120 @@ func TestRecallReport(t *testing.T) {
 		"/api/v1/lots/"+lot2.String()+"/recall-report", nil)
 	if status != http.StatusNotFound || opsErr(out) != "lot not found" {
 		t.Fatalf("cross-company lot: %d %v", status, out)
+	}
+}
+
+// TestStockReport_NearExpiryBud — opened containers merge into the
+// near-expiry report as a separate bud_containers list (spec
+// 2026-10-20-inventory-17b §7.2 #1) with the same bucket rules as the lot
+// buckets; bucket quantities stay IDENTICAL with/without containers (the
+// container contents still sit in the lot balance — anti double-count).
+func TestStockReport_NearExpiryBud(t *testing.T) {
+	ctx := context.Background()
+	e := opsSetup(t, "edbud", "+628111000008")
+	path := "/api/v1/merchants/" + e.w.merchantStr + "/stock/near-expiry"
+
+	// Baseline buckets WITHOUT containers: one expired and one within_1 lot.
+	expLot := opsSeedLot(t, ctx, e, "LOT-BUD-EXP", opsED(-5))
+	opsSeedBalanceAt(t, ctx, e, e.w.location, expLot, "purchase", 1000) // 1 unit
+	in1Lot := opsSeedLot(t, ctx, e, "LOT-BUD-1", opsED(30))
+	opsSeedBalanceAt(t, ctx, e, e.w.location, in1Lot, "purchase", 1000) // 1 unit
+	status, before := opsRequest(t, e, http.MethodGet, path, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET near-expiry baseline: %d %v", status, opsErr(before))
+	}
+
+	// Vaccine item with BUD rules (open 24 h) plus lot and balance to feed
+	// the containers (seeding mirrors TestColdChainRoutesHTTP).
+	seed := stockRuntimeTx(t, ctx, e.w.pool, e.w.companyStr, e.w.merchantStr)
+	vax := ccSeedVaccineItem(t, ctx, seed, e.w, "EDB")
+	world := *e.w
+	world.item = vax
+	vaxLot := stockSeedLot(t, ctx, seed, &world, "LOT-BUD-VAX", nil, false)
+	ccSeedBalance(t, ctx, seed, &world, vax, vaxLot, 3_000) // 3 units
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit seed: %v", err)
+	}
+
+	now := time.Now()
+	openAt := func(bud time.Time) string {
+		return bud.Add(-24 * time.Hour).Format(time.RFC3339) // open rule = 24 h
+	}
+	openContainer := func(openedAt, qty string) string {
+		st, out := opsRequest(t, e, http.MethodPost,
+			"/api/v1/merchants/"+e.w.merchantStr+"/opened-containers", map[string]any{
+				"item_id": vax.String(), "lot_id": vaxLot.String(),
+				"location_id": e.w.location.String(),
+				"opened_at":   openedAt, "remaining_base_qty": qty,
+			})
+		if st != http.StatusCreated {
+			t.Fatalf("opened container: %d %v", st, opsErr(out))
+		}
+		id, _ := out["data"].(map[string]any)["id"].(string)
+		return id
+	}
+	// bud = now − 48 h: certainly before the merchant day → expired.
+	expiredID := openContainer(openAt(now.Add(-48*time.Hour)), "1")
+	// bud = now + 24 h: still within the m1 window → within_1.
+	in1ID := openContainer(openAt(now.Add(24*time.Hour)), "1")
+	// This one is fully consumed via usage → finished → must NOT be reported.
+	finishedID := openContainer(openAt(now.Add(24*time.Hour)), "1")
+	st, out := opsRequest(t, e, http.MethodPost, opsUsagePath(e), map[string]any{
+		"location_id": e.w.location.String(), "item_id": vax.String(),
+		"quantity": "1", "reason": "habis dipakai",
+		"opened_container_id": finishedID, "vvm_stage": 1,
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("usage from container: %d %v", st, opsErr(out))
+	}
+
+	status, out = opsRequest(t, e, http.MethodGet, path, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET near-expiry: %d %v", status, opsErr(out))
+	}
+	data, _ := out["data"].(map[string]any)
+	// Anti double-count: bucket quantities identical to the sans-container run.
+	for bucket, want := range map[string]string{
+		"expired": "1.000", "within_1": "1.000", "within_2": "0",
+	} {
+		b, okB := data[bucket].(map[string]any)
+		if !okB {
+			t.Fatalf("bucket %s missing: %v", bucket, data)
+		}
+		beforeB, _ := before["data"].(map[string]any)[bucket].(map[string]any)
+		if b["quantity"] != want || beforeB["quantity"] != want {
+			t.Fatalf("%s quantity: got %v (before %v), want %s", bucket, b["quantity"], beforeB["quantity"], want)
+		}
+	}
+	// bud_containers: exactly the two open containers, bucketed like the lots.
+	list, okL := data["bud_containers"].([]any)
+	if !okL || len(list) != 2 {
+		t.Fatalf("bud_containers = %v, want exactly 2", data["bud_containers"])
+	}
+	byID := map[string]map[string]any{}
+	for _, raw := range list {
+		m, _ := raw.(map[string]any)
+		byID[m["container_id"].(string)] = m
+	}
+	if m := byID[expiredID]; m == nil || m["bucket"] != "expired" {
+		t.Fatalf("container %s: %v, want expired", expiredID, m)
+	}
+	if m := byID[in1ID]; m == nil || m["bucket"] != "within_1" {
+		t.Fatalf("container %s: %v, want within_1", in1ID, m)
+	}
+	if _, gone := byID[finishedID]; gone {
+		t.Fatalf("finished container %s must not be reported", finishedID)
+	}
+	for _, id := range []string{expiredID, in1ID} {
+		m := byID[id]
+		if m["remaining_base_qty"] != "1.000" {
+			t.Fatalf("container %s remaining: %v", id, m["remaining_base_qty"])
+		}
+		if m["item_name"] != "Vaksin Uji EDB" || m["batch_no"] != "LOT-BUD-VAX" {
+			t.Fatalf("container %s names: %v", id, m)
+		}
+		if _, err := time.Parse(time.RFC3339, m["bud_at"].(string)); err != nil {
+			t.Fatalf("container %s bud_at not RFC3339: %v", id, m["bud_at"])
+		}
 	}
 }

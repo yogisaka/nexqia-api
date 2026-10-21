@@ -306,7 +306,13 @@ func StockNearExpiryHandler(c *gin.Context) {
 		respondInternalError(c, errLoc)
 		return
 	}
-	today := localDayStart(time.Now(), loc)
+	// The merchant-local day comes from the transaction time (merchant_day.go),
+	// not raw time.Now().
+	today, errDay := txDayStart(c.Request.Context(), q, loc)
+	if errDay != nil {
+		respondInternalError(c, errDay)
+		return
+	}
 	cut1 := today.AddDate(0, int(m1), 0)
 	cut2 := today.AddDate(0, int(m2), 0)
 	rows, err := q.ListNearExpiryTotals(c.Request.Context(), merchantID)
@@ -330,10 +336,42 @@ func StockNearExpiryHandler(c *gin.Context) {
 			in2Val.Add(in2Val, ratFromString(numericExact(r.Value)))
 		}
 	}
+	// Opened containers (spec 2026-10-20-inventory-17b §7.2 #1) are merged as
+	// a SEPARATE bud_containers list: their contents still sit in the lot
+	// balance above, so folding them into the buckets would double-count.
+	budRows, errBud := q.ListNearExpiryBudContainers(c.Request.Context(), merchantID)
+	if errBud != nil {
+		respondInternalError(c, errBud)
+		return
+	}
+	budContainers := make([]gin.H, 0, len(budRows))
+	for _, r := range budRows {
+		bud := r.BudAt.Time
+		var bucket string
+		switch {
+		case bud.Before(today):
+			bucket = "expired"
+		case !bud.After(cut1):
+			bucket = "within_1"
+		case !bud.After(cut2):
+			bucket = "within_2"
+		default:
+			continue // beyond every near-expiry window, like the lot buckets
+		}
+		budContainers = append(budContainers, gin.H{
+			"container_id":       r.ID.String(),
+			"item_name":          r.ItemName,
+			"batch_no":           r.BatchNo,
+			"remaining_base_qty": numericExact(r.RemainingBaseQty),
+			"bud_at":             bud.Format(time.RFC3339),
+			"bucket":             bucket,
+		})
+	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"expired":  nearExpiryBucket(expiredQty, expiredVal),
-		"within_1": nearExpiryBucket(in1Qty, in1Val),
-		"within_2": nearExpiryBucket(in2Qty, in2Val),
+		"expired":        nearExpiryBucket(expiredQty, expiredVal),
+		"within_1":       nearExpiryBucket(in1Qty, in1Val),
+		"within_2":       nearExpiryBucket(in2Qty, in2Val),
+		"bud_containers": budContainers,
 	}, "meta": gin.H{}})
 }
 
