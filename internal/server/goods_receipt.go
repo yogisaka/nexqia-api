@@ -498,24 +498,24 @@ func receiptLineJSON(l sqlcgen.InventoryGoodsReceiptLine) gin.H {
 
 func goodsReceiptJSON(r sqlcgen.InventoryGoodsReceipt, lines []sqlcgen.InventoryGoodsReceiptLine) gin.H {
 	out := gin.H{
-		"id":                 r.ID.String(),
-		"merchant_id":        r.MerchantID.String(),
-		"supplier_id":        uuidOrNil(r.SupplierID),
-		"location_id":        r.LocationID.String(),
-		"source":             r.Source,
-		"purchase_order_id":  uuidOrNil(r.PurchaseOrderID),
-		"invoice_no":         textOrNil(r.InvoiceNo),
-		"invoice_date":       dateOrNil(r.InvoiceDate),
-		"received_on":        dateText(r.ReceivedOn),
-		"invoice_discount":   numericJSON(r.InvoiceDiscount),
-		"freight":            numericJSON(r.Freight),
-		"vat_included":       r.VatIncluded,
-		"vat_percent":        numericJSON(r.VatPercent),
-		"status":             r.Status,
-		"note":               textOrNil(r.Note),
-		"void_reason":        textOrNil(r.VoidReason),
-		"posted_at":          tsOrNil(r.PostedAt),
-		"row_version":        r.RowVersion,
+		"id":                r.ID.String(),
+		"merchant_id":       r.MerchantID.String(),
+		"supplier_id":       uuidOrNil(r.SupplierID),
+		"location_id":       r.LocationID.String(),
+		"source":            r.Source,
+		"purchase_order_id": uuidOrNil(r.PurchaseOrderID),
+		"invoice_no":        textOrNil(r.InvoiceNo),
+		"invoice_date":      dateOrNil(r.InvoiceDate),
+		"received_on":       dateText(r.ReceivedOn),
+		"invoice_discount":  numericJSON(r.InvoiceDiscount),
+		"freight":           numericJSON(r.Freight),
+		"vat_included":      r.VatIncluded,
+		"vat_percent":       numericJSON(r.VatPercent),
+		"status":            r.Status,
+		"note":              textOrNil(r.Note),
+		"void_reason":       textOrNil(r.VoidReason),
+		"posted_at":         tsOrNil(r.PostedAt),
+		"row_version":       r.RowVersion,
 	}
 	if lines != nil {
 		rendered := make([]gin.H, 0, len(lines))
@@ -544,17 +544,17 @@ type receiptLineRequest struct {
 }
 
 type receiptRequest struct {
-	SupplierID      string               `json:"supplier_id"`
-	LocationID      string               `json:"location_id" binding:"required"`
-	Source          string               `json:"source"`
-	InvoiceNo       string               `json:"invoice_no"`
-	InvoiceDate     string               `json:"invoice_date"`
-	ReceivedOn      string               `json:"received_on" binding:"required"`
-	InvoiceDiscount string               `json:"invoice_discount"`
-	Freight         string               `json:"freight"`
-	VatIncluded     *bool                `json:"vat_included"`
-	VatPercent      string               `json:"vat_percent"`
-	Note            string               `json:"note"`
+	SupplierID      string `json:"supplier_id"`
+	LocationID      string `json:"location_id" binding:"required"`
+	Source          string `json:"source"`
+	InvoiceNo       string `json:"invoice_no"`
+	InvoiceDate     string `json:"invoice_date"`
+	ReceivedOn      string `json:"received_on" binding:"required"`
+	InvoiceDiscount string `json:"invoice_discount"`
+	Freight         string `json:"freight"`
+	VatIncluded     *bool  `json:"vat_included"`
+	VatPercent      string `json:"vat_percent"`
+	Note            string `json:"note"`
 	// Optional PO linkage: receiving against this purchase order validates
 	// the supplier, the referenced lines and the order status.
 	PurchaseOrderID *string              `json:"purchase_order_id"`
@@ -1109,8 +1109,33 @@ func UpdateGoodsReceiptHandler(c *gin.Context) {
 	if !insertReceiptLines(c, q, updated, lines) {
 		return
 	}
-	if !linkGoodsReceiptPO(c, updated, po.ID) {
-		return
+	if po.ID.Valid {
+		if !linkGoodsReceiptPO(c, updated, po.ID) {
+			return
+		}
+	} else if r.PurchaseOrderID.Valid {
+		// The PATCH dropped the PO linkage: clear the stale header link so
+		// the close guard does not read a phantom receipt. Only while the
+		// old order is still unused — cancel-guard semantics (every line
+		// received_base_qty = 0).
+		oldLines, err := q.ListPurchaseOrderLines(c.Request.Context(), r.PurchaseOrderID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		for _, l := range oldLines {
+			if numericToRat(l.ReceivedBaseQty).Sign() != 0 {
+				c.JSON(http.StatusConflict, gin.H{"error": "order cannot be unlinked"})
+				return
+			}
+		}
+		if _, err := TxFromContext(c).Exec(c.Request.Context(),
+			"UPDATE inventory.goods_receipt SET purchase_order_id = NULL WHERE id = $1", r.ID); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		// `updated` was read before the unlink — keep the response honest.
+		updated.PurchaseOrderID = pgtype.UUID{}
 	}
 	saved, err := q.ListGoodsReceiptLines(c.Request.Context(), r.ID)
 	if err != nil {

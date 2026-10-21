@@ -611,6 +611,18 @@ type convertPurchaseRequestRequest struct {
 // @Failure 400 {object} apiErrorResponse
 // @Failure 409 {object} apiErrorResponse
 // @Router /purchase-requests/{id}/convert [post]
+// setMerchantGUC flips the transaction-scoped RLS merchant GUC inside the
+// request transaction (pola getPinLockFlagForMerchant); writes 500 and
+// returns false on failure.
+func setMerchantGUC(c *gin.Context, merchantID pgtype.UUID) bool {
+	if _, err := TxFromContext(c).Exec(c.Request.Context(),
+		"SELECT set_config('app.current_merchant_id', $1, true)", merchantID.String()); err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	return true
+}
+
 func ConvertPurchaseRequestHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	pr, ok := loadPurchaseRequest(c, q, c.Param("id"))
@@ -649,6 +661,15 @@ func ConvertPurchaseRequestHandler(c *gin.Context) {
 	target := pr.MerchantID
 	if (mode == "sentral" || mode == "hibrid") && hq.Valid {
 		target = hq
+	}
+	// The PO (and its lines) is written at the TARGET merchant (spec §4.2
+	// #1), so the caller needs purchase.manage there too, and the RLS GUC
+	// must move to the target before those writes.
+	if target != pr.MerchantID && !RequirePermissionForMerchant(c, PermPurchaseManage, target) {
+		return
+	}
+	if target != pr.MerchantID && !setMerchantGUC(c, target) {
+		return
 	}
 	sup, err := q.GetSupplierByID(c.Request.Context(), supplierID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && sup.MerchantID.Valid && sup.MerchantID != target) {
@@ -735,7 +756,15 @@ func ConvertPurchaseRequestHandler(c *gin.Context) {
 			return
 		}
 	}
+	// The PR status flip writes back on the PR's own merchant — move the
+	// RLS GUC there and back for the trailing PO line read.
+	if target != pr.MerchantID && !setMerchantGUC(c, pr.MerchantID) {
+		return
+	}
 	if _, okM := markPurchaseRequest(c, q, pr.ID, "approved", "converted", pgtype.Text{}); !okM {
+		return
+	}
+	if target != pr.MerchantID && !setMerchantGUC(c, target) {
 		return
 	}
 	saved, err := q.ListPurchaseOrderLines(c.Request.Context(), po.ID)

@@ -307,6 +307,132 @@ func TestPurchaseRequestRejectNeedsReason(t *testing.T) {
 	}
 }
 
+// TestPurchaseRequestConvertCrossMerchant — sentral mode, PR at the branch:
+// convert writes the PO at the headquarters merchant (RLS GUC moves to the
+// target inside the same transaction) and requires purchase.manage at the
+// target too; a caller without the HQ grant gets 403.
+func TestPurchaseRequestConvertCrossMerchant(t *testing.T) {
+	e := grSetup(t, "prxmer", "081234630011")
+	branchID, branchLoc := poSeedBranch(t, e, "prxm")
+	poSeedSetting(t, e, "sentral", e.merchantID)
+	supplierID := grCreateSupplier(t, e, "SUP-PR-X") // merchant-level at HQ = target
+	itemID, unitID := grItem(t, e, "PR-XM-1", nil)
+
+	perms := []string{server.PermPurchaseRequest, server.PermPurchaseApprove, server.PermPurchaseManage}
+	userID := seedMerchantStaff(t, e.ctx, e.pool, e.companyID, branchID, "staff.prxm", "", perms...)
+	// Extra role at the HQ merchant so the target-side permission check passes.
+	hqRole := "70707070-7070-7070-7070-707070707070"
+	if _, err := e.pool.Exec(e.ctx, `
+		INSERT INTO core.role (id, company_id, name) VALUES ($1, $2, 'staff.prxm.hq')`, hqRole, e.companyID); err != nil {
+		t.Fatalf("seed hq role: %v", err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `
+		INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)`,
+		userID, e.merchantID, hqRole); err != nil {
+		t.Fatalf("seed hq user_merchant_role: %v", err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `
+		INSERT INTO core.role_permission (role_id, permission_id)
+		SELECT $1, id FROM core.permission WHERE code = $2`, hqRole, server.PermPurchaseManage); err != nil {
+		t.Fatalf("grant hq manage: %v", err)
+	}
+	token, err := auth.GenerateToken(testJWTSecret, userID, e.companyID, branchID, "", "staff.prxm", "prxm-device", time.Hour)
+	if err != nil {
+		t.Fatalf("generate staff token: %v", err)
+	}
+
+	createPR := func() string {
+		t.Helper()
+		status, out := poRequest(t, e, branchID, token, http.MethodPost,
+			"/api/v1/merchants/"+branchID+"/purchase-requests", map[string]any{
+				"location_id": branchLoc, "needed_on": grToday(7),
+				"lines": []map[string]any{{"item_id": itemID, "item_unit_id": unitID, "pack_qty": "10"}},
+			})
+		if status != http.StatusCreated {
+			t.Fatalf("create PR expected 201, got %d: %v", status, out)
+		}
+		prID := out["data"].(map[string]any)["id"].(string)
+		for _, action := range []string{"submit", "approve"} {
+			status, out = poRequest(t, e, branchID, token, http.MethodPost,
+				"/api/v1/purchase-requests/"+prID+"/"+action, nil)
+			if status != http.StatusOK {
+				t.Fatalf("PR %s expected 200, got %d: %v", action, status, out)
+			}
+		}
+		return prID
+	}
+
+	// Happy path: branch session → PO materializes at HQ.
+	prID := createPR()
+	status, out := poRequest(t, e, branchID, token, http.MethodPost,
+		"/api/v1/purchase-requests/"+prID+"/convert", map[string]any{
+			"supplier_id": supplierID, "location_id": e.locationID,
+		})
+	if status != http.StatusCreated {
+		t.Fatalf("convert expected 201, got %d: %v", status, out)
+	}
+	po := out["data"].(map[string]any)
+	if po["merchant_id"] != e.merchantID || po["status"] != "draft" {
+		t.Fatalf("converted PO = %v, want draft at HQ %s", po, e.merchantID)
+	}
+
+	// Without the HQ grant the same convert is 403 (checked at the target).
+	if _, err := e.pool.Exec(e.ctx,
+		"DELETE FROM core.user_merchant_role WHERE user_id = $1 AND merchant_id = $2", userID, e.merchantID); err != nil {
+		t.Fatalf("drop hq role: %v", err)
+	}
+	prID2 := createPR()
+	status, out = poRequest(t, e, branchID, token, http.MethodPost,
+		"/api/v1/purchase-requests/"+prID2+"/convert", map[string]any{
+			"supplier_id": supplierID, "location_id": e.locationID,
+		})
+	if status != http.StatusForbidden {
+		t.Fatalf("convert without HQ perm expected 403, got %d: %v", status, out)
+	}
+}
+
+// TestGoodsReceiptPOLinkUnlink — PATCHing a draft GR without
+// purchase_order_id clears the stale header link, so closing the PO no
+// longer trips on a phantom draft receipt.
+func TestGoodsReceiptPOLinkUnlink(t *testing.T) {
+	e := grSetup(t, "polinku", "081234630012")
+	supplierID := grCreateSupplier(t, e, "SUP-PO-8")
+	itemID, unitID := grItem(t, e, "PO-UL-1", nil)
+
+	po := poCreateAndAssert(t, e, e.merchantID, e.token, poBody(supplierID, e.locationID,
+		[]map[string]any{poLineIn(itemID, unitID, nil)}, nil), http.StatusCreated)
+	poID := po["id"].(string)
+	poLineID := po["lines"].([]any)[0].(map[string]any)["id"].(string)
+	poSend(t, e, poID)
+
+	status, out, grID := grRequest2(t, e, http.MethodPost, "/api/v1/merchants/"+e.merchantID+"/goods-receipts",
+		grLinkedBody(e, supplierID, poID, []map[string]any{grLinkedLine(itemID, unitID, poLineID, "1")}))
+	if status != http.StatusCreated {
+		t.Fatalf("create linked draft expected 201, got %d: %v", status, out)
+	}
+
+	// The create response predates the PO-link UPDATE (trg_touch_row bumps
+	// row_version) — reload the draft for the current row_version.
+	status, out = grRequest(t, e, http.MethodGet, "/api/v1/goods-receipts/"+grID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get draft expected 200, got %d: %v", status, out)
+	}
+	patch := grDraftBody(e, supplierID, itemID, unitID, nil)
+	patch["row_version"] = out["data"].(map[string]any)["row_version"]
+	status, out = grRequest(t, e, http.MethodPatch, "/api/v1/goods-receipts/"+grID, patch)
+	if status != http.StatusOK {
+		t.Fatalf("patch expected 200, got %d: %v", status, out)
+	}
+	if out["data"].(map[string]any)["purchase_order_id"] != nil {
+		t.Fatalf("purchase_order_id not cleared: %v", out["data"])
+	}
+
+	status, out = grRequest(t, e, http.MethodPost, "/api/v1/purchase-orders/"+poID+"/close", nil)
+	if status != http.StatusOK {
+		t.Fatalf("close expected 200, got %d: %v", status, out)
+	}
+}
+
 // grRequest2 is grRequest returning the id too (helper above has no triple
 // form; kept local to this file to avoid touching the goods-receipt file).
 func grRequest2(t *testing.T, e *grEnv, method, path string, body map[string]any) (int, map[string]any, string) {
