@@ -20525,7 +20525,18 @@ const docTemplate = `{
                     "description": "Optional PO linkage (spec §4.2 #4): the PO line this receipt line\nfulfils; null/empty = a line without a purchase order.",
                     "type": "string"
                 },
+                "serials": {
+                    "description": "Serial numbers (spec 17b §6.2 #2): one per base unit when the item\ntracks serials.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "short_shelf_life_reason": {
+                    "type": "string"
+                },
+                "supplier_id": {
+                    "description": "Consignment dimension (spec 17b §6.2 #1): required on every line of a\nconsignment receipt, ignored for other sources.",
                     "type": "string"
                 }
             }

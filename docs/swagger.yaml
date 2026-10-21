@@ -1626,7 +1626,19 @@ definitions:
           Optional PO linkage (spec §4.2 #4): the PO line this receipt line
           fulfils; null/empty = a line without a purchase order.
         type: string
+      serials:
+        description: |-
+          Serial numbers (spec 17b §6.2 #2): one per base unit when the item
+          tracks serials.
+        items:
+          type: string
+        type: array
       short_shelf_life_reason:
+        type: string
+      supplier_id:
+        description: |-
+          Consignment dimension (spec 17b §6.2 #1): required on every line of a
+          consignment receipt, ignored for other sources.
         type: string
     required:
     - item_id

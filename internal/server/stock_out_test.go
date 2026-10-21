@@ -191,6 +191,9 @@ func TestSupplierReturnConsignmentNoCost(t *testing.T) {
 	supplierID := grCreateSupplier(t, e, "SUP-SR-2")
 	itemID, unitRowID := grItem(t, e, "SR-CC-1", nil)
 	body := grDraftBody(e, supplierID, itemID, unitRowID, map[string]any{"source": "consignment"})
+	// Consignment receipts need a per-line supplier (spec 17b §6.2 #1,
+	// amendment 2026-10-21).
+	body["lines"].([]map[string]any)[0]["supplier_id"] = supplierID
 	receipt := grPostAndAssert(t, e, body)
 	lotID := receipt["lines"].([]any)[0].(map[string]any)["lot_id"].(string)
 	if got := grAvgCost(t, e, itemID); got != "" {
