@@ -166,6 +166,49 @@ definitions:
       text_version:
         type: string
     type: object
+  server.contractPriceRequest:
+    properties:
+      item_id:
+        type: string
+      item_unit_id:
+        type: string
+      kind:
+        type: string
+      note:
+        type: string
+      pack_price:
+        type: string
+      supplier_id:
+        type: string
+      valid_from:
+        type: string
+      valid_until:
+        type: string
+    required:
+    - item_id
+    - item_unit_id
+    - kind
+    - pack_price
+    - supplier_id
+    - valid_from
+    type: object
+  server.convertPurchaseRequestRequest:
+    properties:
+      location_id:
+        description: |-
+          Optional destination location; defaults to the PR location when the PO
+          stays on the PR's merchant, required when it moves to headquarters.
+        type: string
+      note:
+        type: string
+      supplier_id:
+        description: |-
+          The PO's supplier — purchase_request carries none and
+          purchase_order.supplier_id is NOT NULL (KEPUTUSAN, spec §4.2 #1).
+        type: string
+    required:
+    - supplier_id
+    type: object
   server.copyScheduleWeekRequest:
     properties:
       from_week_start:
@@ -1002,6 +1045,15 @@ definitions:
       stock_locked_until:
         type: string
     type: object
+  server.patchProcurementSettingsRequest:
+    properties:
+      headquarters_merchant_id:
+        type: string
+      mode:
+        type: string
+    required:
+    - mode
+    type: object
   server.patchSupplierRequest:
     type: object
   server.patientAllergyRequest:
@@ -1283,6 +1335,40 @@ definitions:
     - adjustment_percent
     - item_type
     type: object
+  server.purchaseRequestLineRequest:
+    properties:
+      item_id:
+        type: string
+      item_unit_id:
+        type: string
+      note:
+        type: string
+      pack_qty:
+        type: string
+    required:
+    - item_id
+    - item_unit_id
+    - pack_qty
+    type: object
+  server.purchaseRequestPayload:
+    properties:
+      lines:
+        items:
+          $ref: '#/definitions/server.purchaseRequestLineRequest'
+        minItems: 1
+        type: array
+      location_id:
+        type: string
+      needed_on:
+        type: string
+      note:
+        type: string
+      row_version:
+        type: integer
+    required:
+    - lines
+    - location_id
+    type: object
   server.putDocumentRequirementsRequest:
     properties:
       document_types:
@@ -1355,6 +1441,15 @@ definitions:
         type: array
     required:
     - adjustments
+    type: object
+  server.putProcurementCentralItemsRequest:
+    properties:
+      item_ids:
+        items:
+          type: string
+        type: array
+    required:
+    - item_ids
     type: object
   server.putServiceRulesRequest:
     properties:
@@ -1490,6 +1585,13 @@ definitions:
     - password_confirmation
     - phone
     - username
+    type: object
+  server.rejectPurchaseRequestRequest:
+    properties:
+      rejection_reason:
+        type: string
+    required:
+    - rejection_reason
     type: object
   server.reopenBillingRequest:
     properties:
@@ -4361,6 +4463,104 @@ paths:
       summary: Set a company's default MRN format
       tags:
       - mrn-config
+  /companies/{id}/procurement-central-items:
+    get:
+      parameters:
+      - description: Company UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List items that must be procured through the headquarters
+      tags:
+      - inventory
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Company UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Item id list
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putProcurementCentralItemsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace the whole central-item list in one transaction
+      tags:
+      - inventory
+  /companies/{id}/procurement-settings:
+    get:
+      parameters:
+      - description: Company UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Get the company's procurement mode settings
+      tags:
+      - inventory
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Company UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Procurement settings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.patchProcurementSettingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Set the procurement mode and headquarters merchant
+      tags:
+      - inventory
   /companies/lookup:
     get:
       description: Public, unauthenticated. Used by the login screen to resolve X-Company-ID
@@ -4413,6 +4613,66 @@ paths:
       summary: Get the active consent text version for a code
       tags:
       - patient-consent
+  /contract-prices:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the company's contract price rows
+      tags:
+      - inventory
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Contract price
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.contractPriceRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Add a contract price row (revisi = baris valid_from baru)
+      tags:
+      - inventory
+  /contract-prices/{id}:
+    delete:
+      parameters:
+      - description: Contract price UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a contract price row
+      tags:
+      - inventory
   /counters:
     post:
       consumes:
@@ -6353,6 +6613,30 @@ paths:
       summary: Create a claim batch for one payer and period (spec §4.2.1)
       tags:
       - claim-batch
+  /merchants/{id}/contract-prices:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Filter by item UUID
+        in: query
+        name: item_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List contract prices in force today for a merchant (optional item_id)
+      tags:
+      - inventory
   /merchants/{id}/counters:
     get:
       parameters:
@@ -7189,6 +7473,53 @@ paths:
       summary: Regenerate price proposals for all formulary items of a merchant
       tags:
       - tariff
+  /merchants/{id}/purchase-requests:
+    get:
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a merchant's purchase requests (newest first)
+      tags:
+      - inventory
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: PR draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.purchaseRequestPayload'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a purchase-request draft with lines
+      tags:
+      - inventory
   /merchants/{id}/queue-flows:
     get:
       parameters:
@@ -10767,6 +11098,182 @@ paths:
       summary: Reject a pending price proposal
       tags:
       - tariff
+  /purchase-requests/{id}:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Purchase request UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: PR draft
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.purchaseRequestPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace a draft purchase request (header + full line replace)
+      tags:
+      - inventory
+  /purchase-requests/{id}/approve:
+    post:
+      parameters:
+      - description: Purchase request UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Approve a submitted purchase request
+      tags:
+      - inventory
+  /purchase-requests/{id}/cancel:
+    post:
+      parameters:
+      - description: Purchase request UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cancel a draft or submitted purchase request
+      tags:
+      - inventory
+  /purchase-requests/{id}/convert:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Purchase request UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Convert options
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.convertPurchaseRequestRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Convert an approved purchase request into a draft purchase order
+      tags:
+      - inventory
+  /purchase-requests/{id}/reject:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Purchase request UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Rejection reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.rejectPurchaseRequestRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Reject a submitted purchase request (reason required)
+      tags:
+      - inventory
+  /purchase-requests/{id}/submit:
+    post:
+      parameters:
+      - description: Purchase request UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Submit a draft purchase request (locks it from edits)
+      tags:
+      - inventory
   /queue:
     get:
       parameters:

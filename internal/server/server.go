@@ -132,6 +132,9 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	RegisterReceivableRoutes(locked)
 	RegisterFeeRoutes(locked)
 	RegisterStockRoutes(locked)
+	// Procurement: PR lifecycle, contract prices, procurement settings
+	// (spec 2026-10-20-inventory-17b §4.3, migration 000080).
+	RegisterProcurementRoutes(locked)
 	RegisterFeePayoutRoutes(locked, cfg)
 	RegisterPhysicianRoutes(locked)
 	RegisterPhysicianScheduleRoutes(locked)
