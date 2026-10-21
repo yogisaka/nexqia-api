@@ -43,7 +43,7 @@ SELECT * FROM core.merchant WHERE id = $1 AND deleted_at IS NULL;
 -- name: ListMerchantsByCompany :many
 SELECT * FROM core.merchant
 WHERE company_id = $1 AND deleted_at IS NULL
-ORDER BY name
+ORDER BY name, id
 LIMIT $2 OFFSET $3;
 
 -- name: UpdateMerchant :one
