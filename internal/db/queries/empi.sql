@@ -119,6 +119,33 @@ WHERE m.id = $1;
 -- sudah difilter deleted_at IS NULL.
 SELECT id FROM platform.list_companies($1, $2);
 
+-- name: ResolveEmpiLinkByPerson :one
+SELECT l.master_person_id, m.full_name, m.birth_date, m.gender,
+       m.merged_into_master_person_id
+FROM empi.person_link l JOIN empi.master_person m ON m.id = l.master_person_id
+WHERE l.company_id = $1 AND l.person_id = $2 AND l.status = 'active';
+
+-- name: ListEmpiLinksByMaster :many
+-- company_name lewat fungsi SECURITY DEFINER empi.list_links_by_master
+-- (migrasi 000086, keputusan user Opsi B): JOIN core.company langsung kena
+-- RLS company (000003:23-25) dan menyembunyikan link lintas company di bawah
+-- GUC caller (bug ledger G2 task1). Urutan l.id ditetapkan di dalam fungsi.
+SELECT company_id, person_id, full_name, birth_date, gender, status, company_name
+FROM empi.list_links_by_master($1);
+
+-- name: GetEmpiMaster :one
+SELECT id, full_name, birth_date, gender, merged_into_master_person_id
+FROM empi.master_person WHERE id = $1;
+
+-- name: CountEmpiPendingCandidatesByMaster :one
+SELECT count(DISTINCT cp.id) FROM empi.candidate_pair cp
+JOIN empi.person_link l ON l.person_id IN (cp.person_a_id, cp.person_b_id)
+    AND l.company_id IN (cp.person_a_company_id, cp.person_b_company_id)
+WHERE l.master_person_id = $1 AND cp.status = 'pending';
+
+-- name: GetPersonMrn :one
+SELECT medical_record_no, full_name FROM core.person WHERE id = $1;
+
 -- name: ListPersonsForEmpiBackfill :many
 -- Kursor (created_at, id): urutan ini menentukan golden first-non-empty —
 -- WAJIB deterministik (spec §9). Dibaca di bawah GUC company batch.

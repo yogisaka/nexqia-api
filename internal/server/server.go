@@ -109,6 +109,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// 2026-09-29-merchant-security-settings-design.md §7).
 	RegisterSecuritySettingsRoutes(locked, hasher, limiter, redisClient, cfg)
 	RegisterPersonRoutes(locked, cfg)
+	RegisterEmpiRoutes(locked)
 	// Patient data-processing consent (spec 2026-10-17-patient-documents §5.3).
 	RegisterPersonConsentRoutes(locked)
 	// Patient document upload/download (spec 2026-10-17-patient-documents
