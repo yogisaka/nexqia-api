@@ -18331,6 +18331,207 @@ const docTemplate = `{
                 }
             }
         },
+        "/staff-credential-status": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "staff_credential"
+                ],
+                "summary": "List staff credential expiry status (physicians + staff)",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/staff-credentials": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "staff_credential"
+                ],
+                "summary": "Create a staff credential",
+                "parameters": [
+                    {
+                        "description": "Credential data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createStaffCredentialRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/staff-credentials/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "staff_credential"
+                ],
+                "summary": "Soft-delete a staff credential",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Credential UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "staff_credential"
+                ],
+                "summary": "Replace a staff credential's license number and valid_until",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Credential UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Credential data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updateStaffCredentialRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/stock-counts/{id}": {
             "delete": {
                 "security": [
@@ -20492,6 +20693,9 @@ const docTemplate = `{
                 "sip_number": {
                     "type": "string"
                 },
+                "sip_valid_until": {
+                    "type": "string"
+                },
                 "specialty_concept_id": {
                     "type": "string"
                 },
@@ -20784,6 +20988,23 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "procedure_concept_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.createStaffCredentialRequest": {
+            "type": "object",
+            "properties": {
+                "credential_kind": {
+                    "type": "string"
+                },
+                "license_number": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                },
+                "valid_until": {
                     "type": "string"
                 }
             }
@@ -23486,6 +23707,9 @@ const docTemplate = `{
                 "sip_number": {
                     "type": "string"
                 },
+                "sip_valid_until": {
+                    "type": "string"
+                },
                 "specialty_concept_id": {
                     "type": "string"
                 },
@@ -23676,6 +23900,17 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "procedure_concept_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.updateStaffCredentialRequest": {
+            "type": "object",
+            "properties": {
+                "license_number": {
+                    "type": "string"
+                },
+                "valid_until": {
                     "type": "string"
                 }
             }
