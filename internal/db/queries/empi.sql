@@ -182,6 +182,33 @@ WHERE l.master_person_id = $1 AND cp.status = 'pending';
 -- name: GetPersonMrn :one
 SELECT medical_record_no, full_name FROM core.person WHERE id = $1;
 
+-- name: ListEmpiCandidatePairs :many
+SELECT cp.id, cp.score, cp.reason, cp.status, cp.note,
+       a.company_id AS a_company_id, ca.name AS a_company_name,
+       a.person_id AS a_person_id, a.full_name AS a_full_name,
+       a.birth_date AS a_birth_date, a.gender AS a_gender,
+       a.nik_search_hash IS NOT NULL AS a_has_nik,
+       a.master_person_id AS a_master_person_id,
+       b.company_id AS b_company_id, cb.name AS b_company_name,
+       b.person_id AS b_person_id, b.full_name AS b_full_name,
+       b.birth_date AS b_birth_date, b.gender AS b_gender,
+       b.nik_search_hash IS NOT NULL AS b_has_nik,
+       b.master_person_id AS b_master_person_id
+FROM empi.candidate_pair cp
+LEFT JOIN empi.person_link a ON a.person_id = cp.person_a_id AND a.company_id = cp.person_a_company_id
+LEFT JOIN empi.person_link b ON b.person_id = cp.person_b_id AND b.company_id = cp.person_b_company_id
+JOIN core.company ca ON ca.id = cp.person_a_company_id
+JOIN core.company cb ON cb.id = cp.person_b_company_id
+WHERE cp.status = 'pending'
+ORDER BY cp.score DESC, cp.created_at
+LIMIT $1 OFFSET $2;
+
+-- name: DismissEmpiCandidatePair :one
+UPDATE empi.candidate_pair
+SET status = 'dismissed', note = COALESCE($2, note), decided_by = $3, decided_at = now()
+WHERE id = $1 AND status = 'pending'
+RETURNING id, status;
+
 -- name: ListPersonsForEmpiBackfill :many
 -- Kursor (created_at, id): urutan ini menentukan golden first-non-empty —
 -- WAJIB deterministik (spec §9). Dibaca di bawah GUC company batch.

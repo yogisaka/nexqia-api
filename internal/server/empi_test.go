@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yogisaka/nexqia-api/internal/server"
@@ -230,5 +231,180 @@ func TestEmpiMasterDetail_IncludesMergeState(t *testing.T) {
 		"/api/v1/empi/master-persons/99999999-9999-9999-9999-999999999999", token, companyA, merchantA, nil)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown master expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// empiInsertCandidatePair seeds one empi.candidate_pair row directly and
+// returns its id (constraint 000085: person_a_company_id <> person_b_company_id,
+// UNIQUE (person_a_id, person_b_id), reason enum same_nik/birth_gender_name/phone_name).
+func empiInsertCandidatePair(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
+	personA, companyA, personB, companyB string, score int32, reason string) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO empi.candidate_pair (person_a_id, person_b_id, person_a_company_id, person_b_company_id, score, reason) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::text",
+		personA, personB, companyA, companyB, score, reason).Scan(&id); err != nil {
+		t.Fatalf("seed candidate pair: %v", err)
+	}
+	return id
+}
+
+func TestEmpiCandidateList_PendingOnlyWithSides(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := mergeTestRouter(t, ctx, pool)
+	companyA, merchantA, _, _, _ := seedAccountOwner(t, ctx, pool, router, "empicp.l1", "081234820001")
+	companyB := empiSeedCompany(t, ctx, pool, "eeeeeeee-d000-0000-0000-000000000001", "empi-cp-l1")
+	token := mergeUserToken(t, ctx, pool, companyA, merchantA, "empicpm-l1", []string{server.PermEmpiMasterManage})
+
+	// Pasangan pending: a di company A (hash ada), b di company B (link TANPA
+	// hash → has_nik false). Master + link di-seed agar kedua sisi ter-render.
+	a1 := empiInsertPerson(t, ctx, pool, companyA, "Siti Aminah", empiHashH1, "1990-04-12")
+	b1 := empiInsertPerson(t, ctx, pool, companyB, "Siti Aminah", empiHashH1, "1990-04-12")
+	master := "eeeeeeee-d000-0000-0000-00000000d001"
+	empiSeedMaster(t, ctx, pool, master, "Siti Aminah", empiStrPtr("1990-04-12"))
+	empiSeedLink(t, ctx, pool, "eeeeeeee-d000-0000-0000-0000000001a1", master, companyA, a1, empiHashH1, "Siti Aminah", empiStrPtr("1990-04-12"))
+	empiSeedLink(t, ctx, pool, "eeeeeeee-d000-0000-0000-0000000001b1", master, companyB, b1, "", "Siti Aminah", empiStrPtr("1990-04-12"))
+	pairID := empiInsertCandidatePair(t, ctx, pool, a1, companyA, b1, companyB, 100, "same_nik")
+
+	// Pasangan kedua di-dismiss via UPDATE langsung → tak boleh muncul.
+	c2a := empiInsertPerson(t, ctx, pool, companyA, "Budi Santoso", empiHashH2, "1985-01-02")
+	c2b := empiInsertPerson(t, ctx, pool, companyB, "Budi Santoso", empiHashH2, "1985-01-02")
+	empiInsertCandidatePair(t, ctx, pool, c2a, companyA, c2b, companyB, 70, "birth_gender_name")
+	if _, err := pool.Exec(ctx,
+		"UPDATE empi.candidate_pair SET status = 'dismissed' WHERE person_a_id = $1 AND person_b_id = $2", c2a, c2b); err != nil {
+		t.Fatalf("dismiss second pair: %v", err)
+	}
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/empi/candidate-pairs", token, companyA, merchantA, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v (%s)", err, rec.Body.String())
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected only the pending pair, got %d rows: %v", len(resp.Data), resp.Data)
+	}
+	item := resp.Data[0]
+	if item["id"] != pairID || item["status"] != "pending" {
+		t.Errorf("expected pending pair %s, got %v", pairID, item)
+	}
+	if got, ok := item["score"].(float64); !ok || got != 100 {
+		t.Errorf("expected score 100, got %v", item["score"])
+	}
+	if item["reason"] != "same_nik" {
+		t.Errorf("expected reason same_nik, got %v", item["reason"])
+	}
+	if item["note"] != nil {
+		t.Errorf("expected note null, got %v", item["note"])
+	}
+	var nameA, nameB string
+	if err := pool.QueryRow(ctx, "SELECT name FROM core.company WHERE id = $1", companyA).Scan(&nameA); err != nil {
+		t.Fatalf("read company A name: %v", err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT name FROM core.company WHERE id = $1", companyB).Scan(&nameB); err != nil {
+		t.Fatalf("read company B name: %v", err)
+	}
+	sideA := item["a"].(map[string]any)
+	if sideA["company_id"] != companyA || sideA["company_name"] != nameA || sideA["person_id"] != a1 {
+		t.Errorf("side A mismatch: %v", sideA)
+	}
+	if sideA["full_name"] != "Siti Aminah" || sideA["birth_date"] != "1990-04-12" || sideA["gender"] != "female" {
+		t.Errorf("side A identity mismatch: %v", sideA)
+	}
+	if sideA["has_nik"] != true || sideA["master_person_id"] != master {
+		t.Errorf("side A has_nik/master mismatch: %v", sideA)
+	}
+	sideB := item["b"].(map[string]any)
+	if sideB["company_id"] != companyB || sideB["company_name"] != nameB || sideB["person_id"] != b1 {
+		t.Errorf("side B mismatch: %v", sideB)
+	}
+	// Link B di-seed tanpa nik_search_hash → has_nik false.
+	if sideB["has_nik"] != false || sideB["master_person_id"] != master {
+		t.Errorf("side B has_nik/master mismatch: %v", sideB)
+	}
+}
+
+func TestEmpiCandidateDismiss_SetsStatus(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := mergeTestRouter(t, ctx, pool)
+	companyA, merchantA, _, _, _ := seedAccountOwner(t, ctx, pool, router, "empicp.d1", "081234820002")
+	companyB := empiSeedCompany(t, ctx, pool, "eeeeeeee-d000-0000-0000-000000000002", "empi-cp-d1")
+	token := mergeUserToken(t, ctx, pool, companyA, merchantA, "empicpm-d1", []string{server.PermEmpiMasterManage})
+	a1 := empiInsertPerson(t, ctx, pool, companyA, "Siti Aminah", empiHashH1, "1990-04-12")
+	b1 := empiInsertPerson(t, ctx, pool, companyB, "Siti Aminah", empiHashH1, "1990-04-12")
+	pairID := empiInsertCandidatePair(t, ctx, pool, a1, companyA, b1, companyB, 100, "same_nik")
+
+	rec := accountRequest(router, http.MethodPost,
+		"/api/v1/empi/candidate-pairs/"+pairID+"/dismiss", token, companyA, merchantA,
+		[]byte(`{"note":"bukan pasien sama"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dismiss expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v (%s)", err, rec.Body.String())
+	}
+	if resp.Data["id"] != pairID || resp.Data["status"] != "dismissed" {
+		t.Errorf("expected dismissed pair %s, got %v", pairID, resp.Data)
+	}
+
+	// decided_by/decided_at terisi + note tersimpan.
+	var note string
+	var decidedBy pgtype.UUID
+	var decidedAt pgtype.Timestamptz
+	if err := pool.QueryRow(ctx,
+		"SELECT note, decided_by, decided_at FROM empi.candidate_pair WHERE id = $1", pairID,
+	).Scan(&note, &decidedBy, &decidedAt); err != nil {
+		t.Fatalf("read dismissed pair: %v", err)
+	}
+	if note != "bukan pasien sama" || !decidedBy.Valid || !decidedAt.Valid {
+		t.Errorf("expected note + decided_by/decided_at filled, got %q %v %v", note, decidedBy, decidedAt)
+	}
+
+	// Dismiss ulang → 409 (bukan pending lagi).
+	rec = accountRequest(router, http.MethodPost,
+		"/api/v1/empi/candidate-pairs/"+pairID+"/dismiss", token, companyA, merchantA, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("re-dismiss expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error response: %v (%s)", err, rec.Body.String())
+	}
+	if errResp.Error != "candidate pair is not pending" {
+		t.Errorf("expected error 'candidate pair is not pending', got %q", errResp.Error)
+	}
+}
+
+func TestEmpiCandidateEndpoints_RequireManagePermission(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := mergeTestRouter(t, ctx, pool)
+	companyA, merchantA, _, _, _ := seedAccountOwner(t, ctx, pool, router, "empicp.p1", "081234820003")
+	companyB := empiSeedCompany(t, ctx, pool, "eeeeeeee-d000-0000-0000-000000000003", "empi-cp-p1")
+	// Token hanya empi.master.view — tanpa empi.master.manage.
+	token := mergeUserToken(t, ctx, pool, companyA, merchantA, "empicpv-p1", []string{server.PermEmpiMasterView})
+	a1 := empiInsertPerson(t, ctx, pool, companyA, "Siti Aminah", empiHashH1, "1990-04-12")
+	b1 := empiInsertPerson(t, ctx, pool, companyB, "Siti Aminah", empiHashH1, "1990-04-12")
+	pairID := empiInsertCandidatePair(t, ctx, pool, a1, companyA, b1, companyB, 100, "same_nik")
+
+	rec := accountRequest(router, http.MethodGet, "/api/v1/empi/candidate-pairs", token, companyA, merchantA, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("list with view-only token expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = accountRequest(router, http.MethodPost,
+		"/api/v1/empi/candidate-pairs/"+pairID+"/dismiss", token, companyA, merchantA, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("dismiss with view-only token expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
