@@ -374,6 +374,12 @@ func CreatePersonHandler(cfg config.Config) gin.HandlerFunc {
 				return
 			}
 		}
+		// Ingest EMPI setelah SEMUA write person/consent/exemption/duplicate sukses,
+		// sebelum respons (spec empi §6.1); fail-hard dalam tx yang sama.
+		if err := EmpiIngestPerson(c.Request.Context(), tx, AuthCompanyID(c), person.ID); err != nil {
+			respondInternalError(c, err)
+			return
+		}
 		consentRow, err := q.GetLatestPersonConsent(c.Request.Context(), person.ID)
 		if err != nil {
 			respondInternalError(c, err)
@@ -673,6 +679,11 @@ func UpdatePersonHandler(cfg config.Config) gin.HandlerFunc {
 			respondInternalError(c, err)
 			return
 		}
+		// Ingest EMPI setelah semua write sukses, sebelum respons (spec empi §6.1).
+		if err := EmpiIngestPerson(c.Request.Context(), tx, AuthCompanyID(c), person.ID); err != nil {
+			respondInternalError(c, err)
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"data": person, "meta": gin.H{}, "warnings": warnings})
 	}
 }
@@ -710,6 +721,11 @@ func DeletePersonHandler(c *gin.Context) {
 		return
 	}
 	if err := q.SoftDeletePerson(c.Request.Context(), sqlcgen.SoftDeletePersonParams{ID: id, DeletedBy: AuthUserID(c)}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	// Ingest EMPI: detach link + recompute golden (spec empi §6.1 langkah 5).
+	if err := EmpiIngestPerson(c.Request.Context(), TxFromContext(c), AuthCompanyID(c), id); err != nil {
 		respondInternalError(c, err)
 		return
 	}
