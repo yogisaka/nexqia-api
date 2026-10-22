@@ -2,8 +2,11 @@
 package server
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -32,6 +35,7 @@ func RegisterQueueFlowRoutes(rg *gin.RouterGroup) {
 	rg.DELETE("/queue-flows/:id", DeleteQueueFlowHandler)
 	rg.PUT("/queue-flows/:id/stages", ReplaceQueueFlowStagesHandler)
 	rg.POST("/queue-flows/from-preset/:preset", CreateQueueFlowFromPresetHandler)
+	rg.POST("/queue-flows/:id/duplicate", DuplicateQueueFlowHandler)
 	rg.GET("/queue-flows/presets", ListQueueFlowPresetsHandler)
 }
 
@@ -600,4 +604,121 @@ func ReplaceQueueFlowStagesHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"stages": out}, "meta": gin.H{}})
+}
+
+type duplicateQueueFlowRequest struct {
+	Name string `json:"name"`
+}
+
+// DuplicateQueueFlowHandler godoc
+// @Summary Duplicate a queue flow with its stages
+// @Description Copies the flow (is_default=false, is_active=true) and all its
+// @Description stages. The copy gets the first free name among "<name> (salinan)"
+// @Description … "<name> (salinan 5)", or the requested name (409 when taken).
+// @Tags queue-flow
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Flow UUID"
+// @Param request body duplicateQueueFlowRequest false "Optional name override"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /queue-flows/{id}/duplicate [post]
+func DuplicateQueueFlowHandler(c *gin.Context) {
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	ctx := c.Request.Context()
+	tx := TxFromContext(c)
+	q := sqlcgen.New(tx)
+	flow, err := q.GetQueueFlowByID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "queue flow not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermQueueConfigure, flow.MerchantID) {
+		return
+	}
+	var req duplicateQueueFlowRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	candidates := []string{name}
+	if name == "" {
+		candidates = []string{
+			flow.Name + " (salinan)", flow.Name + " (salinan 2)", flow.Name + " (salinan 3)",
+			flow.Name + " (salinan 4)", flow.Name + " (salinan 5)",
+		}
+	}
+	var newFlow sqlcgen.OperationsQueueFlow
+	for _, cand := range candidates {
+		// Each candidate needs its own savepoint: a UNIQUE violation aborts
+		// the surrounding transaction, so retrying in the same tx would fail
+		// with "current transaction is aborted" instead of the next candidate.
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		f, err := sqlcgen.New(sp).CreateQueueFlow(ctx, sqlcgen.CreateQueueFlowParams{
+			CompanyID: flow.CompanyID, MerchantID: flow.MerchantID, Name: cand,
+			ServiceTypes: flow.ServiceTypes, DepartmentIds: flow.DepartmentIds,
+			IsDefault: false, IsActive: true, CreatedBy: AuthUserID(c),
+		})
+		if isUniqueViolation(err) {
+			_ = sp.Rollback(ctx)
+			continue
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		if err := sp.Commit(ctx); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		newFlow = f
+		break
+	}
+	if newFlow.ID == (pgtype.UUID{}) {
+		c.JSON(http.StatusConflict, gin.H{"error": "flow name already exists"})
+		return
+	}
+	stages, err := q.ListQueueStagesByFlow(ctx, flow.ID)
+	if err != nil {
+		c.Error(err)
+		respondInternalError(c, err)
+		return
+	}
+	stageList := make([]gin.H, 0, len(stages))
+	for _, s := range stages {
+		st, err := q.CreateQueueStageFull(ctx, sqlcgen.CreateQueueStageFullParams{
+			CompanyID: flow.CompanyID, MerchantID: flow.MerchantID, FlowID: newFlow.ID,
+			Seq: s.Seq, Name: s.Name, Kind: s.Kind,
+			NumberPrefix: s.NumberPrefix, Skippable: s.Skippable,
+			RequiresCheckin: s.RequiresCheckin,
+			BpjsTaskStart:   s.BpjsTaskStart, BpjsTaskEnd: s.BpjsTaskEnd,
+			ServedByPermission: s.ServedByPermission,
+		})
+		if err != nil {
+			c.Error(err)
+			respondInternalError(c, err)
+			return
+		}
+		stageList = append(stageList, queueStageJSON(st))
+	}
+	out := queueFlowJSON(newFlow)
+	out["stages"] = stageList
+	c.JSON(http.StatusCreated, gin.H{"data": out, "meta": gin.H{}})
 }

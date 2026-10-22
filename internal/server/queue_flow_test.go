@@ -510,3 +510,117 @@ func TestQueueFlow_UpdateScope(t *testing.T) {
 		t.Fatalf("POST vip service_types: expected 400 %q, got %d: %v", scopeErr, code, resp)
 	}
 }
+
+func TestQueueFlow_Duplicate(t *testing.T) {
+	env := qeNewEnv(t, "dup")
+
+	// 1. Flow with 3 custom stages → duplicate without body → 201, full copy.
+	code, resp := qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows", map[string]any{
+		"merchant_id": env.merchantID, "name": "Alur Dup",
+		"service_types":  []string{"umum", "bpjs"},
+		"department_ids": []string{env.seedDepartment(t, "dup-dep-1")},
+		"stages": []map[string]any{
+			{"seq": 1, "name": "Admisi", "kind": "admission", "number_prefix": "AB", "served_by_permission": "operations.counter.manage"},
+			{"seq": 2, "name": "Tunggu", "kind": "custom", "skippable": true, "served_by_permission": "operations.visit.manage"},
+			{"seq": 3, "name": "Dokter", "kind": "physician", "bpjs_task_start": 1, "bpjs_task_end": 3, "served_by_permission": "operations.visit.manage"},
+		},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create source flow expected 201, got %d: %v", code, resp)
+	}
+	src := resp["data"].(map[string]any)
+	srcID := src["id"].(string)
+	srcStages := src["stages"].([]any)
+
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/"+srcID+"/duplicate", nil)
+	if code != http.StatusCreated {
+		t.Fatalf("duplicate expected 201, got %d: %v", code, resp)
+	}
+	dst := resp["data"].(map[string]any)
+	if dst["name"] != "Alur Dup (salinan)" {
+		t.Fatalf("duplicate name: expected 'Alur Dup (salinan)', got %v", dst["name"])
+	}
+	if dst["is_default"] != false || dst["is_active"] != true {
+		t.Fatalf("duplicate flags: expected is_default=false is_active=true, got %v/%v", dst["is_default"], dst["is_active"])
+	}
+	if dst["id"] == srcID {
+		t.Fatalf("duplicate must have a new id")
+	}
+	if got := dst["service_types"].([]any); len(got) != 2 || got[0] != "umum" || got[1] != "bpjs" {
+		t.Fatalf("service_types not copied: %v", dst["service_types"])
+	}
+	if got := dst["department_ids"].([]any); len(got) != len(src["department_ids"].([]any)) {
+		t.Fatalf("department_ids not copied: %v", dst["department_ids"])
+	}
+	dstStages := dst["stages"].([]any)
+	if len(dstStages) != 3 || len(srcStages) != 3 {
+		t.Fatalf("expected 3 stages on both, src %d dst %d", len(srcStages), len(dstStages))
+	}
+	for i, raw := range dstStages {
+		d := raw.(map[string]any)
+		s := srcStages[i].(map[string]any)
+		if d["id"] == s["id"] || d["flow_id"] == s["flow_id"] {
+			t.Fatalf("stage %d must get new id/flow_id: %v vs %v", i, d, s)
+		}
+		for _, k := range []string{"seq", "name", "kind", "number_prefix", "skippable", "requires_checkin", "bpjs_task_start", "bpjs_task_end", "served_by_permission"} {
+			if d[k] != s[k] {
+				t.Fatalf("stage %d field %s: expected %v, got %v", i, k, s[k], d[k])
+			}
+		}
+	}
+
+	// 2. "X" and "X (salinan)" exist → duplicate "X" lands on "X (salinan 2)".
+	mkFlow := func(name string) string {
+		code, resp := qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows", map[string]any{
+			"merchant_id": env.merchantID, "name": name,
+		})
+		if code != http.StatusCreated {
+			t.Fatalf("create %s expected 201, got %d: %v", name, code, resp)
+		}
+		return resp["data"].(map[string]any)["id"].(string)
+	}
+	xID := mkFlow("Dup X")
+	mkFlow("Dup X (salinan)")
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/"+xID+"/duplicate", nil)
+	if code != http.StatusCreated {
+		t.Fatalf("duplicate X expected 201, got %d: %v", code, resp)
+	}
+	if got := resp["data"].(map[string]any)["name"]; got != "Dup X (salinan 2)" {
+		t.Fatalf("expected 'Dup X (salinan 2)', got %v", got)
+	}
+
+	// 3. Explicit taken name → 409.
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/"+xID+"/duplicate", map[string]any{"name": "Dup X"})
+	if code != http.StatusConflict || resp["error"] != "flow name already exists" {
+		t.Fatalf("duplicate taken name: expected 409 'flow name already exists', got %d: %v", code, resp)
+	}
+
+	// 4. Soft-deleted flow → 404.
+	delID := mkFlow("Dup Hapus")
+	code, resp = qeRequest(t, env, http.MethodDelete, "/api/v1/queue-flows/"+delID, nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("delete expected 204, got %d: %v", code, resp)
+	}
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/"+delID+"/duplicate", nil)
+	if code != http.StatusNotFound || resp["error"] != "queue flow not found" {
+		t.Fatalf("duplicate deleted flow: expected 404 'queue flow not found', got %d: %v", code, resp)
+	}
+
+	// 5. Without operations.queue.configure → 403.
+	noPermToken := mergeUserToken(t, t.Context(), env.pool, env.companyID, env.merchantID, "qeng.dup.noperm", nil)
+	code, resp = qeRequestToken(t, env.router, http.MethodPost, "/api/v1/queue-flows/"+xID+"/duplicate",
+		noPermToken, env.companyID, env.merchantID, nil)
+	if code != http.StatusForbidden {
+		t.Fatalf("duplicate without permission expected 403, got %d: %v", code, resp)
+	}
+
+	// 6. Flow without stages → 201 with empty stages array.
+	emptyID := mkFlow("Dup Kosong")
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/"+emptyID+"/duplicate", nil)
+	if code != http.StatusCreated {
+		t.Fatalf("duplicate empty flow expected 201, got %d: %v", code, resp)
+	}
+	if got, ok := resp["data"].(map[string]any)["stages"].([]any); !ok || len(got) != 0 {
+		t.Fatalf("expected empty stages array, got %v", resp["data"].(map[string]any)["stages"])
+	}
+}
