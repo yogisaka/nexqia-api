@@ -209,7 +209,7 @@ func empiCandidateSide(companyID pgtype.UUID, companyName string, personID pgtyp
 }
 
 // empiCandidateJSON renders one candidate pair with its a/b sides.
-func empiCandidateJSON(r sqlcgen.ListEmpiCandidatePairsRow) gin.H {
+func empiCandidateJSON(r sqlcgen.EmpiCandidatePairListing) gin.H {
 	return gin.H{
 		"id":     r.ID,
 		"score":  r.Score,
@@ -617,12 +617,22 @@ func UnmergeEmpiMasterHandler(c *gin.Context) {
 	}
 
 	// Kembalikan tiap link ke master loser, lalu pulihkan master loser.
+	// Guard master winner di query: link pada saat restore menunjuk master
+	// winner (hasil merge); bila sudah pindah ke master lain (unmerge tidak
+	// berurutan setelah merge berikutnya), 0 baris ter-update → 409,
+	// transaksi di-rollback oleh RunRequestTx, link tidak dipindah salah
+	// (temuan review G2 #2).
 	loser := snapshot.LoserMaster.ID
 	for _, l := range snapshot.Links {
-		if err := q.RestoreEmpiLinkMaster(ctx, sqlcgen.RestoreEmpiLinkMasterParams{
-			MasterPersonID: loser, ID: l.LinkID,
-		}); err != nil {
+		moved, err := q.RestoreEmpiLinkMaster(ctx, sqlcgen.RestoreEmpiLinkMasterParams{
+			MasterPersonID: loser, ID: l.LinkID, MasterPersonID_2: logRow.WinnerMasterPersonID,
+		})
+		if err != nil {
 			respondInternalError(c, err)
+			return
+		}
+		if moved == 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "merge log is stale; a link no longer points to the loser master"})
 			return
 		}
 	}

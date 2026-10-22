@@ -183,25 +183,16 @@ WHERE l.master_person_id = $1 AND cp.status = 'pending';
 SELECT medical_record_no, full_name FROM core.person WHERE id = $1;
 
 -- name: ListEmpiCandidatePairs :many
-SELECT cp.id, cp.score, cp.reason, cp.status, cp.note,
-       a.company_id AS a_company_id, ca.name AS a_company_name,
-       a.person_id AS a_person_id, a.full_name AS a_full_name,
-       a.birth_date AS a_birth_date, a.gender AS a_gender,
-       a.nik_search_hash IS NOT NULL AS a_has_nik,
-       a.master_person_id AS a_master_person_id,
-       b.company_id AS b_company_id, cb.name AS b_company_name,
-       b.person_id AS b_person_id, b.full_name AS b_full_name,
-       b.birth_date AS b_birth_date, b.gender AS b_gender,
-       b.nik_search_hash IS NOT NULL AS b_has_nik,
-       b.master_person_id AS b_master_person_id
-FROM empi.candidate_pair cp
-LEFT JOIN empi.person_link a ON a.person_id = cp.person_a_id AND a.company_id = cp.person_a_company_id
-LEFT JOIN empi.person_link b ON b.person_id = cp.person_b_id AND b.company_id = cp.person_b_company_id
-JOIN core.company ca ON ca.id = cp.person_a_company_id
-JOIN core.company cb ON cb.id = cp.person_b_company_id
-WHERE cp.status = 'pending'
-ORDER BY cp.score DESC, cp.created_at
-LIMIT $1 OFFSET $2;
+-- Pasangan lintas company lewat fungsi SECURITY DEFINER empi.list_candidate_pairs
+-- (migrasi 000087, temuan review G2 #1): JOIN core.company langsung kena RLS
+-- company (000003:23-25) dan mengosongkan review queue di bawah GUC caller.
+-- Urutan score DESC, created_at ditetapkan di dalam fungsi.
+SELECT id, score, reason, status, note,
+       a_company_id, a_company_name, a_person_id, a_full_name,
+       a_birth_date, a_gender, a_has_nik, a_master_person_id,
+       b_company_id, b_company_name, b_person_id, b_full_name,
+       b_birth_date, b_gender, b_has_nik, b_master_person_id
+FROM empi.list_candidate_pairs(sqlc.arg('limit'), sqlc.arg('offset'));
 
 -- name: DismissEmpiCandidatePair :one
 UPDATE empi.candidate_pair
@@ -241,8 +232,13 @@ FROM empi.merge_log ORDER BY merged_at DESC LIMIT $1 OFFSET $2;
 SELECT id, winner_master_person_id, loser_master_person_id, snapshot, reason, merged_by, merged_at, unmerged_by, unmerged_at
 FROM empi.merge_log WHERE id = $1;
 
--- name: RestoreEmpiLinkMaster :exec
-UPDATE empi.person_link SET master_person_id = $1 WHERE id = $2;
+-- name: RestoreEmpiLinkMaster :execrows
+-- Guard master winner ($3 dari merge log): saat restore, link masih menunjuk
+-- master winner; unmerge TIDAK berurutan (link sudah pindah ke master lain
+-- lewat merge berikutnya) tidak boleh memindahkan link ke master yang salah
+-- (temuan review G2 #2) — 0 baris ter-update = gagal terkontrol di handler.
+UPDATE empi.person_link SET master_person_id = $1
+WHERE id = $2 AND master_person_id = $3;
 
 -- name: MarkEmpiMasterUnmerged :exec
 UPDATE empi.master_person SET merged_into_master_person_id = NULL WHERE id = $1;

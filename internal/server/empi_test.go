@@ -724,6 +724,69 @@ func TestEmpiUnmerge_TwiceConflict(t *testing.T) {
 	}
 }
 
+// TestEmpiUnmerge_ChainedMerge_OldLogConflict: unmerge TIDAK berurutan —
+// merge M2→M1 (log lama), lalu merge M1→M3 memindahkan semua link (termasuk
+// link asli M2) ke M3 — unmerge log lama HARUS gagal terkontrol (409) dan link
+// TIDAK boleh dipindah ke M2 yang salah (temuan review G2 #2, guard
+// master_person_id di RestoreEmpiLinkMaster).
+func TestEmpiUnmerge_ChainedMerge_OldLogConflict(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router, companyA, companyB, merchantA, token, a1, b1, masterA, masterB, pairID := empiMergeSetup(t, ctx, pool, "c1", "08")
+	empiConfirmMerge(t, router, token, companyA, merchantA, pairID, masterA)
+	logOld := empiMergeLogID(t, ctx, pool, masterA, masterB)
+
+	// Merge berikutnya M1→M3: person c1 di company B, hash lain → master baru.
+	c1 := empiInsertPerson(t, ctx, pool, companyB, "Budi Berbeda", "cc00112233445566778899aabb"+"08"+"0000", "1985-01-02")
+	empiIngest(t, ctx, pool, companyB, c1)
+	masterC := empiMasterOfPerson(t, ctx, pool, c1)
+	if masterC == masterA || masterC == masterB {
+		t.Fatalf("precondition: expected third master, got %s", masterC)
+	}
+	pairID2 := empiEnsureCandidatePair(t, ctx, pool, a1, companyA, c1, companyB, 80, "birth_gender_name")
+	empiConfirmMerge(t, router, token, companyA, merchantA, pairID2, masterC)
+
+	// Precondition: link b1 (asli masterB) kini menunjuk masterC.
+	if got := empiMasterOfPerson(t, ctx, pool, b1); got != masterC {
+		t.Fatalf("precondition: expected b1 link on %s after chained merge, got %s", masterC, got)
+	}
+
+	// Unmerge log lama (M2→M1): guard menolak — link b1 sudah pindah dari
+	// winner M1 ke M3, bukan lagi milik merge log lama.
+	rec := empiUnmerge(t, router, token, companyA, merchantA, logOld, `{"reason":"undo lama"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale unmerge expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error response: %v (%s)", err, rec.Body.String())
+	}
+	if resp.Error != "merge log is stale; a link no longer points to the loser master" {
+		t.Errorf("unexpected error %q", resp.Error)
+	}
+
+	// Link b1 TIDAK dipindah ke masterB yang salah; tetap di masterC.
+	if got := empiMasterOfPerson(t, ctx, pool, b1); got != masterC {
+		t.Errorf("expected b1 link untouched on %s, got %s", masterC, got)
+	}
+	if got := empiMasterOfPerson(t, ctx, pool, a1); got != masterC {
+		t.Errorf("expected a1 link untouched on %s, got %s", masterC, got)
+	}
+
+	// Transaksi rollback: log lama masih belum unmerged, masterB masih merged.
+	if got := empiMasterField(t, ctx, pool,
+		"SELECT unmerged_at::text FROM empi.merge_log WHERE id = $1", logOld); got != nil {
+		t.Errorf("expected stale log still unmerged_at NULL, got %v", got)
+	}
+	// masterB tetap merged_into masterA (merge M1→M3 hanya menyentuh masterA).
+	if got := empiMasterField(t, ctx, pool,
+		"SELECT merged_into_master_person_id::text FROM empi.master_person WHERE id = $1", masterB); got != masterA {
+		t.Errorf("expected masterB still merged into %s, got %v", masterA, got)
+	}
+}
+
 func TestEmpiMergeLogs_List(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
