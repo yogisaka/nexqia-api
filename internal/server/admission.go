@@ -20,6 +20,7 @@ import (
 
 func RegisterAdmissionRoutes(rg *gin.RouterGroup) {
 	rg.POST("/admissions", CreateAdmissionHandler)
+	rg.POST("/admissions/:id/visit-token", ReissueVisitTokenHandler)
 	rg.GET("/admissions", AccessLog("admission", "list", ""), ListAdmissionsHandler)
 	rg.GET("/admissions/payer-summary", PayerSummaryHandler)
 	rg.GET("/admissions/:id", AccessLog("admission", "view", "id"), GetAdmissionHandler)
@@ -152,6 +153,7 @@ type createAdmissionRequest struct {
 	TreatmentBarriers  string `json:"treatment_barriers"`
 	SpecialPatientType string `json:"special_patient_type"`
 	NeedsCompanion     bool   `json:"needs_companion"`
+	FallRisk           bool   `json:"fall_risk"`
 	CompanionName      string `json:"companion_name"`
 	ReferralOrigin     string `json:"referral_origin"`
 	ScheduleID         string `json:"schedule_id"`
@@ -401,7 +403,7 @@ func CreateAdmissionHandler(c *gin.Context) {
 		AdmissionType: "outpatient", DepartmentID: departmentID, PhysicianID: effectivePhysician,
 		PrimaryPayerID: primaryPayerID, Complaint: optText(req.Complaint),
 		ReferralSource: optText(req.ReferralSource), Note: optText(req.Note),
-		CreatedBy: AuthUserID(c), ScheduleID: admissionScheduleID,
+		CreatedBy: AuthUserID(c), ScheduleID: admissionScheduleID, FallRisk: req.FallRisk,
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -473,7 +475,42 @@ func CreateAdmissionHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"admission": admissionJSON(admission), "queue": queue, "journey": journey}, "meta": gin.H{}})
+
+	// Visit identity token (spec 2026-10-20-qr-visit-media-design.md §4.1/§6):
+	// issued in the same request tx — a failure here rolls the whole admission
+	// back (201 without a token row would be a bug). A QR render failure is
+	// NOT a request failure: admission stays successful with qr_png null.
+	rows, err := q.ListVisitMediaConfig(ctx, merchantID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	media := resolveVisitMedia(rows, admission.DepartmentID)
+	raw, hash, err := randomTokenCode("NQV1-")
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if _, err := q.CreateVisitToken(ctx, sqlcgen.CreateVisitTokenParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID, AdmissionID: admission.ID,
+		TokenHash: hash, Media: media,
+		ExpiresAt: pgtype.Timestamptz{Time: visitTokenExpiry(time.Now(), loc), Valid: true},
+		CreatedBy: AuthUserID(c),
+	}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	allergy, err := q.CountActivePatientAllergies(ctx, admission.PersonID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	qr, qrErr := QRPNGDataURI(raw)
+	var nullableQR any
+	if qrErr == nil {
+		nullableQR = qr
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"admission": admissionJSON(admission), "queue": queue, "journey": journey, "visit_media": gin.H{"media": media, "token": raw, "qr_png": nullableQR, "allergy_alert": allergy > 0, "fall_risk": req.FallRisk}}, "meta": gin.H{}})
 }
 
 // ListAdmissionsHandler godoc

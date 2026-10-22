@@ -157,6 +157,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	RegisterAdmissionRoutes(locked)
 	RegisterDisplayRoutes(locked)
 	RegisterQueueFlowRoutes(locked)
+	RegisterVisitMediaRoutes(locked)
 	RegisterDisplayBoardRoutes(locked)
 	// Device display feed: tenant transaction + per-device rate limit, but NO
 	// AuthMiddleware — the board token is the credential (spec
