@@ -102,7 +102,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	RegisterOnboardingRoutes(locked)
 	RegisterMRNConfigRoutes(locked)
 	RegisterDiagnosisConfigRoutes(locked)
-	RegisterRBACRoutes(locked, hasher)
+	RegisterRBACRoutes(locked, cfg, hasher)
 	RegisterMFARoutes(locked, enc, hasher)
 	RegisterAccountRoutes(locked, hasher, limiter, cfg)
 	// PIN-lock + MFA policy management per merchant (spec

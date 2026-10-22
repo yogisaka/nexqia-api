@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/auth"
+	"github.com/yogisaka/nexqia-api/internal/config"
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
 
@@ -19,8 +21,9 @@ import (
 // join tables (docs/07-core-ddl.md §2 "RBAC"). Permission catalog is seed/migration-managed,
 // only exposed here as read-only. Every handler scopes to AuthCompanyID(c) and gates
 // mutations behind RequirePermission — see internal/server/auth.go.
-func RegisterRBACRoutes(rg *gin.RouterGroup, hasher *auth.PasswordHasher) {
+func RegisterRBACRoutes(rg *gin.RouterGroup, cfg config.Config, hasher *auth.PasswordHasher) {
 	rg.POST("/users", CreateAppUserHandler(hasher))
+	rg.POST("/users/with-person", CreateAppUserWithPersonHandler(cfg, hasher))
 	rg.GET("/users", ListAppUsersHandler)
 	rg.GET("/users/:id", GetAppUserHandler)
 	rg.PATCH("/users/:id", UpdateAppUserHandler)
@@ -110,6 +113,145 @@ func CreateAppUserHandler(hasher *auth.PasswordHasher) gin.HandlerFunc {
 			PersonID:     personID,
 			Username:     req.Username,
 			Email:        pgtype.Text{String: req.Email, Valid: req.Email != ""},
+			Phone:        pgtype.Text{},
+			PasswordHash: hash,
+			CreatedBy:    AuthUserID(c),
+		})
+		if err != nil {
+			if isUniqueViolation(err) {
+				// A failed INSERT aborts the TenantMiddleware transaction, so
+				// the response must mark the request aborted — otherwise the
+				// middleware would try to commit an already-failed tx.
+				msg := "data pengguna sudah ada"
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) {
+					switch {
+					case strings.Contains(pgErr.ConstraintName, "username"):
+						msg = "username sudah dipakai di perusahaan ini"
+					case strings.Contains(pgErr.ConstraintName, "email"):
+						msg = "email sudah terdaftar"
+					case strings.Contains(pgErr.ConstraintName, "phone"):
+						msg = "nomor HP sudah terdaftar"
+					}
+				}
+				c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": msg})
+				return
+			}
+			respondInternalError(c, err)
+			return
+		}
+		user.PasswordHash = ""
+		c.JSON(http.StatusCreated, gin.H{"data": user, "meta": gin.H{}})
+	}
+}
+
+type createAppUserWithPersonRequest struct {
+	CompanyID string `json:"company_id" binding:"required"`
+	FullName  string `json:"full_name" binding:"required"`
+	NIK       string `json:"nik"`
+	BirthDate string `json:"birth_date"`
+	Gender    string `json:"gender"`
+	Phone     string `json:"phone"`
+	Email     string `json:"email"`
+	Address   string `json:"address"`
+	Username  string `json:"username" binding:"required"`
+	Password  string `json:"password" binding:"required,min=8"`
+}
+
+// CreateAppUserWithPersonHandler godoc
+// @Summary Create an app user with a person in one transaction
+// @Tags rbac
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body createAppUserWithPersonRequest true "App user + person data"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Failure 503 {object} apiErrorResponse
+// @Router /users/with-person [post]
+func CreateAppUserWithPersonHandler(cfg config.Config, hasher *auth.PasswordHasher) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req createAppUserWithPersonRequest
+		if !bindJSONOrFields(c, &req) {
+			return
+		}
+		companyID, ok := parseUUID(req.CompanyID)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid company_id"})
+			return
+		}
+		if companyID != AuthCompanyID(c) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "cannot create user outside your own company"})
+			return
+		}
+		if !RequirePermission(c, PermUserManage) {
+			return
+		}
+		// Person internal (profile staff path): format checks only, no consent,
+		// no MRN, no duplicate gate — warnings are ignored by contract.
+		fields, _ := validatePerson(personRequest{
+			NIK: req.NIK, FullName: req.FullName, BirthDate: req.BirthDate,
+			Gender: req.Gender, Phone: req.Phone, Email: req.Email, Address: req.Address,
+		}, time.Now())
+		if len(fields) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "validation_failed", "fields": fields})
+			return
+		}
+		birthDate, err := optDate(req.BirthDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid birth_date, expected YYYY-MM-DD"})
+			return
+		}
+		hash, err := hasher.Hash(c.Request.Context(), req.Password)
+		if err != nil {
+			if errors.Is(err, auth.ErrHashQueueTimeout) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service temporarily unavailable"})
+				return
+			}
+			respondInternalError(c, err)
+			return
+		}
+		tx := TxFromContext(c)
+		nik, err := encryptNIK(c.Request.Context(), tx, req.NIK, cfg.NIKEncryptionKey)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		nikHash, err := hashNIK(c.Request.Context(), tx, req.NIK, cfg.NIKSearchKey)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		q := sqlcgen.New(tx)
+		person, err := q.CreatePerson(c.Request.Context(), sqlcgen.CreatePersonParams{
+			CompanyID:       companyID,
+			Nik:             nik,
+			MedicalRecordNo: pgtype.Text{},
+			FullName:        req.FullName,
+			BirthDate:       birthDate,
+			Gender:          optText(req.Gender),
+			Phone:           optText(req.Phone),
+			Email:           optText(req.Email),
+			Address:         optText(req.Address),
+			NikSearchHash:   optText(nikHash),
+			CreatedBy:       AuthUserID(c),
+		})
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_person_nik_hash" {
+				c.JSON(http.StatusConflict, gin.H{"error": "nik already registered"})
+				return
+			}
+			respondInternalError(c, err)
+			return
+		}
+		user, err := q.CreateAppUser(c.Request.Context(), sqlcgen.CreateAppUserParams{
+			CompanyID:    companyID,
+			PersonID:     person.ID,
+			Username:     req.Username,
+			Email:        optText(req.Email),
 			Phone:        pgtype.Text{},
 			PasswordHash: hash,
 			CreatedBy:    AuthUserID(c),
