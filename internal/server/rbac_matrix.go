@@ -22,6 +22,7 @@ import (
 var roleMatrixWidgetKeys = map[string]struct{}{
 	"kpi": {}, "queue": {}, "counterCall": {}, "quickActions": {},
 	"doctorSchedule": {}, "visitAnalytics": {}, "patientType": {}, "notifications": {},
+	"credentialAlerts": {},
 }
 
 // roleMatrixConflictMessage is the optimistic-lock failure of PUT

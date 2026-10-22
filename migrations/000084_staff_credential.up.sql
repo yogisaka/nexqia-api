@@ -84,7 +84,7 @@ AS $$
     FROM core.physician p
     JOIN core.person pe ON pe.id = p.person_id
     LEFT JOIN LATERAL (
-        SELECT au2.id, au2.email FROM core.app_user au2
+        SELECT au2.id, au2.email, au2.username FROM core.app_user au2
         WHERE au2.person_id = p.person_id AND au2.deleted_at IS NULL AND au2.is_active
         ORDER BY au2.created_at
         LIMIT 1
