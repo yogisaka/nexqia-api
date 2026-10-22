@@ -82,6 +82,42 @@ ON CONFLICT (person_a_id, person_b_id) DO UPDATE SET
 WHERE empi.candidate_pair.status <> 'linked'
 RETURNING id, status;
 
+-- name: FindEmpiProbableCandidates :many
+WITH n AS (
+    SELECT l.* FROM empi.person_link l
+    WHERE l.company_id = $1 AND l.person_id = $2 AND l.status = 'active'
+)
+SELECT o.person_id AS other_person_id, o.company_id AS other_company_id,
+       CASE
+           WHEN n.birth_date = o.birth_date AND n.gender IS NOT NULL AND n.gender = o.gender
+                AND similarity(n.full_name, o.full_name) >= 0.5 THEN 80
+           WHEN n.phone IS NOT NULL AND n.phone <> '' AND n.phone = o.phone
+                AND similarity(n.full_name, o.full_name) >= 0.5 THEN 70
+       END::int AS score,
+       CASE
+           WHEN n.birth_date = o.birth_date AND n.gender IS NOT NULL AND n.gender = o.gender
+                AND similarity(n.full_name, o.full_name) >= 0.5 THEN 'birth_gender_name'
+           WHEN n.phone IS NOT NULL AND n.phone <> '' AND n.phone = o.phone
+                AND similarity(n.full_name, o.full_name) >= 0.5 THEN 'phone_name'
+       END AS reason
+FROM n JOIN empi.person_link o
+  ON o.status = 'active'
+ AND o.company_id <> n.company_id
+ AND o.master_person_id <> n.master_person_id
+ AND (o.birth_date = n.birth_date
+      OR (n.phone IS NOT NULL AND n.phone <> '' AND o.phone = n.phone))
+WHERE ((n.birth_date = o.birth_date AND n.gender IS NOT NULL AND n.gender = o.gender
+         AND similarity(n.full_name, o.full_name) >= 0.5)
+    OR (n.phone IS NOT NULL AND n.phone <> '' AND n.phone = o.phone
+        AND similarity(n.full_name, o.full_name) >= 0.5))
+   AND NOT EXISTS (
+      SELECT 1 FROM empi.candidate_pair cp
+      WHERE cp.person_a_id = LEAST(n.person_id, o.person_id)
+        AND cp.person_b_id = GREATEST(n.person_id, o.person_id)
+        AND cp.status IN ('dismissed','linked')
+  )
+ORDER BY score DESC, o.person_id;
+
 -- name: RecomputeEmpiMasterGolden :exec
 -- Survivorship deterministik (spec §5.1): manual_fields menang; else nilai
 -- pertama non-kosong dari link aktif menurut urutan link.id (uuidv7 ≈ urutan

@@ -756,3 +756,157 @@ func TestEmpiBackfill_PoisonAdvancesCursor(t *testing.T) {
 		}
 	}
 }
+
+// empiSetPhone sets core.person.phone before ingest (helper test probabilistik).
+func empiSetPhone(t *testing.T, ctx context.Context, pool *pgxpool.Pool, personID, phone string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, "UPDATE core.person SET phone = $1 WHERE id = $2", phone, personID); err != nil {
+		t.Fatalf("set phone %s: %v", personID, err)
+	}
+}
+
+// empiDismissAllProbabilistic dismisses every candidate_pair (UPDATE langsung,
+// pola TestEmpiIngest_SameNikReopensDismissedPair).
+func empiDismissAllProbabilistic(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(ctx,
+		"UPDATE empi.candidate_pair SET status='dismissed', decided_by=$1, decided_at=now() WHERE reason IN ('birth_gender_name','phone_name')",
+		"eeeeeeee-b100-0000-0000-0000000000d1"); err != nil {
+		t.Fatalf("dismiss pairs: %v", err)
+	}
+}
+
+// TestEmpiProbabilistic_BirthGenderName (plan G2 Task 2, spec §6.2): dua company,
+// dob+gender sama, nama mirip → 1 pair birth_gender_name skor 80 pending.
+func TestEmpiProbabilistic_BirthGenderName(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	companyA := empiSeedCompany(t, ctx, pool, "eeeeeeee-b200-0000-0000-000000000001", "empi-pb-a")
+	companyB := empiSeedCompany(t, ctx, pool, "eeeeeeee-b200-0000-0000-000000000002", "empi-pb-b")
+
+	a1 := empiInsertPerson(t, ctx, pool, companyA, "Siti Aminah", "", "1990-01-01")
+	empiIngest(t, ctx, pool, companyA, a1)
+	b1 := empiInsertPerson(t, ctx, pool, companyB, "Siti Aminah.", "", "1990-01-01")
+	empiIngest(t, ctx, pool, companyB, b1)
+
+	// Hitungan dari definisi: cabang birth_gender_name (dob sama + gender sama +
+	// similarity >= 0.5) tercapai, cabang phone tidak (phone kosong) → skor 80.
+	var score int32
+	var reason, status string
+	if err := pool.QueryRow(ctx,
+		"SELECT score, reason, status FROM empi.candidate_pair").Scan(&score, &reason, &status); err != nil {
+		t.Fatalf("read candidate pair: %v", err)
+	}
+	if reason != "birth_gender_name" || score != 80 || status != "pending" {
+		t.Errorf("expected birth_gender_name/80/pending, got %s/%d/%s", reason, score, status)
+	}
+}
+
+// TestEmpiProbabilistic_PhoneName: phone sama + nama mirip, dob beda → skor 70
+// phone_name (cabang birth tidak tercapai karena dob beda).
+func TestEmpiProbabilistic_PhoneName(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	companyA := empiSeedCompany(t, ctx, pool, "eeeeeeee-b300-0000-0000-000000000001", "empi-pp-a")
+	companyB := empiSeedCompany(t, ctx, pool, "eeeeeeee-b300-0000-0000-000000000002", "empi-pp-b")
+
+	a1 := empiInsertPerson(t, ctx, pool, companyA, "Budi Santoso", "", "1980-01-01")
+	empiSetPhone(t, ctx, pool, a1, "081111110001")
+	empiIngest(t, ctx, pool, companyA, a1)
+	b1 := empiInsertPerson(t, ctx, pool, companyB, "Budi Santoso.", "", "1985-05-05")
+	empiSetPhone(t, ctx, pool, b1, "081111110001")
+	empiIngest(t, ctx, pool, companyB, b1)
+
+	var score int32
+	var reason, status string
+	if err := pool.QueryRow(ctx,
+		"SELECT score, reason, status FROM empi.candidate_pair").Scan(&score, &reason, &status); err != nil {
+		t.Fatalf("read candidate pair: %v", err)
+	}
+	if reason != "phone_name" || score != 70 || status != "pending" {
+		t.Errorf("expected phone_name/70/pending, got %s/%d/%s", reason, score, status)
+	}
+}
+
+// TestEmpiProbabilistic_ExcludesSameCompanyDismissedSameMaster: (a) satu company
+// → tanpa pair; (b) pair dismissed (kedua cabang skor) tidak dibuat ulang saat
+// re-ingest (NOT EXISTS); (c) dua person sama hash (satu master) → tanpa pair.
+func TestEmpiProbabilistic_ExcludesSameCompanyDismissedSameMaster(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+
+	// (a) dua person SATU company, dob+gender sama, nama mirip → tanpa pair.
+	companyA := empiSeedCompany(t, ctx, pool, "eeeeeeee-b400-0000-0000-000000000001", "empi-px-a")
+	a1 := empiInsertPerson(t, ctx, pool, companyA, "Siti Aminah", "", "1990-01-01")
+	empiIngest(t, ctx, pool, companyA, a1)
+	a2 := empiInsertPerson(t, ctx, pool, companyA, "Siti Aminah.", "", "1990-01-01")
+	empiIngest(t, ctx, pool, companyA, a2)
+	if got := empiCount(t, ctx, pool, "SELECT count(*) FROM empi.candidate_pair"); got != 0 {
+		t.Errorf("(a) same-company: expected 0 pair, got %d", got)
+	}
+
+	// (b) kedua cabang skor: pasangan birth_gender_name (company B/C) dan
+	// phone_name (company D/E) di-dismiss, lalu re-ingest → tetap dismissed.
+	// Dob unik per section: section lain tidak ikut menghasilkan pair.
+	companyB := empiSeedCompany(t, ctx, pool, "eeeeeeee-b400-0000-0000-000000000002", "empi-px-b")
+	companyC := empiSeedCompany(t, ctx, pool, "eeeeeeee-b400-0000-0000-000000000003", "empi-px-c")
+	bb1 := empiInsertPerson(t, ctx, pool, companyB, "Siti Aminah", "", "1991-02-02")
+	empiIngest(t, ctx, pool, companyB, bb1)
+	cb1 := empiInsertPerson(t, ctx, pool, companyC, "Siti Aminah.", "", "1991-02-02")
+	empiIngest(t, ctx, pool, companyC, cb1)
+
+	companyD := empiSeedCompany(t, ctx, pool, "eeeeeeee-b400-0000-0000-000000000004", "empi-px-d")
+	companyE := empiSeedCompany(t, ctx, pool, "eeeeeeee-b400-0000-0000-000000000005", "empi-px-e")
+	dd1 := empiInsertPerson(t, ctx, pool, companyD, "Budi Santoso", "", "1980-01-01")
+	empiSetPhone(t, ctx, pool, dd1, "081111110002")
+	empiIngest(t, ctx, pool, companyD, dd1)
+	ee1 := empiInsertPerson(t, ctx, pool, companyE, "Budi Santoso.", "", "1985-05-05")
+	empiSetPhone(t, ctx, pool, ee1, "081111110002")
+	empiIngest(t, ctx, pool, companyE, ee1)
+
+	if got := empiCount(t, ctx, pool,
+		"SELECT count(*) FROM empi.candidate_pair WHERE reason='birth_gender_name'"); got != 1 {
+		t.Fatalf("(b) precondition: expected 1 birth_gender_name pair, got %d", got)
+	}
+	if got := empiCount(t, ctx, pool,
+		"SELECT count(*) FROM empi.candidate_pair WHERE reason='phone_name'"); got != 1 {
+		t.Fatalf("(b) precondition: expected 1 phone_name pair, got %d", got)
+	}
+	empiDismissAllProbabilistic(t, ctx, pool)
+
+	empiIngest(t, ctx, pool, companyB, bb1)
+	empiIngest(t, ctx, pool, companyC, cb1)
+	empiIngest(t, ctx, pool, companyD, dd1)
+	empiIngest(t, ctx, pool, companyE, ee1)
+	if got := empiCount(t, ctx, pool,
+		"SELECT count(*) FROM empi.candidate_pair WHERE status='dismissed'"); got != 2 {
+		t.Errorf("(b) after re-ingest: expected 2 pairs still dismissed, got %d", got)
+	}
+	if got := empiCount(t, ctx, pool,
+		"SELECT count(*) FROM empi.candidate_pair WHERE status<>'dismissed'"); got != 0 {
+		t.Errorf("(b) after re-ingest: expected no non-dismissed pair, got %d", got)
+	}
+
+	// (c) dua person sama hash lintas company (dob+nama mirip) → auto-link satu
+	// master → tanpa pair probabilistik (master_person_id harus berbeda).
+	companyF := empiSeedCompany(t, ctx, pool, "eeeeeeee-b400-0000-0000-000000000006", "empi-px-f")
+	f1 := empiInsertPerson(t, ctx, pool, companyF, "Tini Aminah", empiHashH1, "1992-03-03")
+	empiIngest(t, ctx, pool, companyF, f1)
+	companyG := empiSeedCompany(t, ctx, pool, "eeeeeeee-b400-0000-0000-000000000007", "empi-px-g")
+	g1 := empiInsertPerson(t, ctx, pool, companyG, "Tini Aminah", empiHashH1, "1992-03-03")
+	empiIngest(t, ctx, pool, companyG, g1)
+	var sameMaster int64
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM empi.person_link l1 JOIN empi.person_link l2 ON l1.master_person_id = l2.master_person_id WHERE l1.person_id = $1 AND l2.person_id = $2",
+		f1, g1).Scan(&sameMaster); err != nil {
+		t.Fatalf("(c) join links: %v", err)
+	}
+	if sameMaster != 1 {
+		t.Fatalf("(c) precondition: expected F1+G1 on same master, got %d", sameMaster)
+	}
+	if got := empiCount(t, ctx, pool,
+		"SELECT count(*) FROM empi.candidate_pair cp JOIN empi.person_link la ON la.person_id = cp.person_a_id JOIN empi.person_link lb ON lb.person_id = cp.person_b_id WHERE la.person_id IN ($1,$2) OR lb.person_id IN ($1,$2)",
+		f1, g1); got != 0 {
+		t.Errorf("(c) same-master: expected 0 probabilistic pair, got %d", got)
+	}
+}

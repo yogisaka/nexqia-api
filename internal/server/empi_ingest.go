@@ -169,6 +169,24 @@ func EmpiIngestPerson(ctx context.Context, tx pgx.Tx, companyID, personID pgtype
 	if err := q.RecomputeEmpiMasterGolden(ctx, target); err != nil {
 		return fmt.Errorf("empi ingest: recompute golden: %w", err)
 	}
+
+	// Deteksi probabilistik lintas company (plan G2 Task 2, spec §6.2): kandidat
+	// birth_gender_name (80) / phone_name (70) — TIDAK ada auto-link.
+	probable, err := q.FindEmpiProbableCandidates(ctx, sqlcgen.FindEmpiProbableCandidatesParams{
+		CompanyID: companyID, PersonID: personID,
+	})
+	if err != nil {
+		return fmt.Errorf("empi ingest: find probable candidates: %w", err)
+	}
+	for _, c := range probable {
+		if _, err := q.UpsertEmpiCandidatePair(ctx, sqlcgen.UpsertEmpiCandidatePairParams{
+			Column1: personID, Column2: c.OtherPersonID,
+			Column3: companyID, Column4: c.OtherCompanyID,
+			Score: c.Score, Reason: c.Reason.(string),
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("empi ingest: upsert probabilistic candidate: %w", err)
+		}
+	}
 	return nil
 }
 
