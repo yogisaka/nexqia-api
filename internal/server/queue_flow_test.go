@@ -625,6 +625,20 @@ func TestQueueFlow_Duplicate(t *testing.T) {
 	if got, ok := resp["data"].(map[string]any)["stages"].([]any); !ok || len(got) != 0 {
 		t.Fatalf("expected empty stages array, got %v", resp["data"].(map[string]any)["stages"])
 	}
+
+	// 7. All 5 implicit candidates taken ("(salinan)" … "(salinan 5)", see
+	// queue_flow.go candidates slice) → duplicate without name → 409.
+	habID := mkFlow("Dup Habis")
+	for i := 0; i < 5; i++ {
+		code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/"+habID+"/duplicate", nil)
+		if code != http.StatusCreated {
+			t.Fatalf("duplicate habis #%d expected 201, got %d: %v", i+1, code, resp)
+		}
+	}
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/"+habID+"/duplicate", nil)
+	if code != http.StatusConflict || resp["error"] != "flow name already exists" {
+		t.Fatalf("duplicate exhausted candidates: expected 409 'flow name already exists', got %d: %v", code, resp)
+	}
 }
 
 // TestQueueFlow_Preview — read-only preview (plan 2026-10-21-queue-enrichment
