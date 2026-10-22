@@ -16,8 +16,9 @@ var (
 )
 
 const (
-	subjectWelcome        = "Selamat datang di NEXQIA — kode perusahaan Anda"
-	subjectNewDeviceLogin = "Login baru ke akun NEXQIA Anda"
+	subjectWelcome          = "Selamat datang di NEXQIA — kode perusahaan Anda"
+	subjectNewDeviceLogin   = "Login baru ke akun NEXQIA Anda"
+	subjectCredentialExpiry = "Pengingat: masa berlaku STR/SIP/SIPA"
 )
 
 // WelcomeData fills the registration email (spec §3.4). Never carries a password.
@@ -46,6 +47,30 @@ func RenderWelcome(d WelcomeData) (Message, error) {
 // RenderNewDeviceLogin renders the new-device login alert; the caller sets To.
 func RenderNewDeviceLogin(d NewDeviceData) (Message, error) {
 	return render("new_device_login", subjectNewDeviceLogin, d)
+}
+
+// CredentialExpiryItem fills one license line of the expiry reminder.
+type CredentialExpiryItem struct {
+	StaffName      string
+	CredentialKind string // str | sip | sipa
+	LicenseNumber  string
+	ValidUntil     string // YYYY-MM-DD
+	DaysRemaining  int    // negatif = sudah lewat
+}
+
+// CredentialExpiryData fills the periodic credential expiry reminder
+// (spec 2026-10-20-staff-credential-expiry-design §4.3). IsAdmin = true for
+// the merchant admin digest, false for the license owner's own summary.
+type CredentialExpiryData struct {
+	RecipientName string
+	MerchantName  string
+	IsAdmin       bool
+	Items         []CredentialExpiryItem
+}
+
+// RenderCredentialExpiry renders the credential expiry reminder; the caller sets To.
+func RenderCredentialExpiry(d CredentialExpiryData) (Message, error) {
+	return render("staff_credential_expiry", subjectCredentialExpiry, d)
 }
 
 func render(name, subject string, data any) (Message, error) {
