@@ -132,3 +132,23 @@ UPDATE operations.counter
 SET code = $2, name = $3, is_active = $4, stage_id = $5, location_id = $6, binding = $7, updated_by = $8
 WHERE id = $1
 RETURNING *;
+
+-- name: ListTodayScheduleBindingsForFlow :many
+-- Preview antrean (#47 spec §4.3): jadwal dokter hari ini untuk department
+-- alur (uuid[] kosong = semua department merchant); ruang = override sesi
+-- hari ini, fallback ruang pola (pola scheduleRoomCounter).
+SELECT s.department_id, d.name AS department_name, s.physician_id,
+       per.full_name AS physician_name,
+       COALESCE(ss.room_id, s.room_id) AS room_id, loc.name AS room_name,
+       s.start_time, s.end_time, ss.status AS session_status
+FROM operations.physician_schedule s
+JOIN core.physician ph ON ph.id = s.physician_id
+JOIN core.person per ON per.id = ph.person_id
+JOIN core.department d ON d.id = s.department_id
+LEFT JOIN operations.schedule_session ss ON ss.schedule_id = s.id AND ss.session_date = $3
+LEFT JOIN core.location loc ON loc.id = COALESCE(ss.room_id, s.room_id)
+WHERE s.merchant_id = $1 AND s.day_of_week = $2
+  AND s.is_active AND s.deleted_at IS NULL
+  AND s.effective_from <= $4 AND (s.effective_to IS NULL OR s.effective_to >= $4)
+  AND (CARDINALITY($5::uuid[]) = 0 OR s.department_id = ANY($5))
+ORDER BY d.name, s.start_time, per.full_name;

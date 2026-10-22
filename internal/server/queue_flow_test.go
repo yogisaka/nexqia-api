@@ -3,8 +3,10 @@
 package server_test
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // TestQueueFlow_* covers the flow configuration API (plan #23 task 3 kontrak
@@ -622,5 +624,211 @@ func TestQueueFlow_Duplicate(t *testing.T) {
 	}
 	if got, ok := resp["data"].(map[string]any)["stages"].([]any); !ok || len(got) != 0 {
 		t.Fatalf("expected empty stages array, got %v", resp["data"].(map[string]any)["stages"])
+	}
+}
+
+// TestQueueFlow_Preview — read-only preview (plan 2026-10-21-queue-enrichment
+// #47 spec §4.3): today's next numbers per stage and today's doctor schedule
+// bindings with session-room override.
+func TestQueueFlow_Preview(t *testing.T) {
+	env := qeNewEnv(t, "preview")
+
+	// Merchant-local "today" (default timezone Asia/Jakarta — merchant_day.go).
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Now().In(loc)
+	y, m, d := now.Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	todayStr := today.Format("2006-01-02")
+	dow := int16(today.Weekday())
+
+	deptID := env.seedDepartment(t, "UMU")
+	flowID := env.seedFlow(t, "Alur Preview", []string{"umum", "bpjs", "asuransi"}, []string{deptID}, false, []qeStage{
+		{seq: 1, name: "Admisi", kind: "admission", prefix: "AB", perm: "operations.counter.manage"},
+		{seq: 2, name: "Tunggu", kind: "custom", perm: "operations.visit.manage"},
+	})
+	stage1 := env.stageID(t, flowID, 1)
+	personID := env.seedPerson(t, "Pasien Preview")
+	// 3 tiket hari ini untuk tahap 1 → next_number tahap 1 = AB-004
+	// (definisi kontrak: count(stage hari ini) + 1).
+	for i := 1; i <= 3; i++ {
+		if _, err := env.pool.Exec(t.Context(),
+			"INSERT INTO operations.queue (company_id, merchant_id, queue_type, department_id, person_id, queue_number, stage_id) VALUES ($1, $2, 'umum', $3, $4, $5, $6)",
+			env.companyID, env.merchantID, deptID, personID, fmt.Sprintf("AB-%03d", i), stage1); err != nil {
+			t.Fatalf("seed ticket %d: %v", i, err)
+		}
+	}
+
+	// 1. Dengan department_id: next_number tahap 1 "AB-004", tahap 2 (tanpa
+	// prefix) pakai kode department "UMU-001".
+	code, resp := qeRequest(t, env, http.MethodGet, "/api/v1/queue-flows/"+flowID+"/preview?department_id="+deptID, nil)
+	if code != http.StatusOK {
+		t.Fatalf("preview expected 200, got %d: %v", code, resp)
+	}
+	data := resp["data"].(map[string]any)
+	if data["date"] != todayStr {
+		t.Fatalf("expected date %s (zona merchant), got %v", todayStr, data["date"])
+	}
+	dept := data["department"].(map[string]any)
+	if dept["code"] != "UMU" || dept["id"] != deptID {
+		t.Fatalf("expected department {id, code UMU, name}, got %v", dept)
+	}
+	stages := data["stages"].([]any)
+	if len(stages) != 2 {
+		t.Fatalf("expected 2 stages, got %d", len(stages))
+	}
+	if got := stages[0].(map[string]any)["next_number"]; got != "AB-004" {
+		t.Fatalf("stage 1 next_number: expected AB-004, got %v", got)
+	}
+	if got := stages[1].(map[string]any)["next_number"]; got != "UMU-001" {
+		t.Fatalf("stage 2 next_number: expected UMU-001, got %v", got)
+	}
+
+	// 2. Tanpa department_id: tahap tanpa prefix → null next_number,
+	// department null; tahap berprefix tetap "AB-004".
+	code, resp = qeRequest(t, env, http.MethodGet, "/api/v1/queue-flows/"+flowID+"/preview", nil)
+	if code != http.StatusOK {
+		t.Fatalf("preview (no dept) expected 200, got %d: %v", code, resp)
+	}
+	data = resp["data"].(map[string]any)
+	if data["department"] != nil {
+		t.Fatalf("expected department null, got %v", data["department"])
+	}
+	stages = data["stages"].([]any)
+	if got := stages[1].(map[string]any)["next_number"]; got != nil {
+		t.Fatalf("stage 2 next_number without department: expected null, got %v", got)
+	}
+	if got := stages[0].(map[string]any)["next_number"]; got != "AB-004" {
+		t.Fatalf("stage 1 next_number: expected AB-004, got %v", got)
+	}
+	if _, ok := data["doctors"].([]any); !ok {
+		t.Fatalf("doctors must always be an array, got %v", data["doctors"])
+	}
+
+	// 3. Jadwal hari ini untuk department alur: satu dengan sesi 'leave' +
+	// room override, satu tanpa sesi → status null, room pola.
+	// chk_schedule_session_leave menuntut leave_id NOT NULL untuk 'leave' →
+	// insert operations.physician_leave dulu (migration 000056).
+	physPerson := env.seedPerson(t, "Dr Sesi")
+	var physician1 string
+	if err := env.pool.QueryRow(t.Context(),
+		"INSERT INTO core.physician (company_id, merchant_id, person_id) VALUES ($1, $2, $3) RETURNING id::text",
+		env.companyID, env.merchantID, physPerson).Scan(&physician1); err != nil {
+		t.Fatalf("seed physician 1: %v", err)
+	}
+	physPerson2 := env.seedPerson(t, "Dr Pola")
+	var physician2 string
+	if err := env.pool.QueryRow(t.Context(),
+		"INSERT INTO core.physician (company_id, merchant_id, person_id) VALUES ($1, $2, $3) RETURNING id::text",
+		env.companyID, env.merchantID, physPerson2).Scan(&physician2); err != nil {
+		t.Fatalf("seed physician 2: %v", err)
+	}
+	var roomA, roomB string
+	if err := env.pool.QueryRow(t.Context(),
+		"INSERT INTO core.location (company_id, merchant_id, kind, code, name) VALUES ($1, $2, 'room', 'PV-R1', 'Ruang Pola') RETURNING id::text",
+		env.companyID, env.merchantID).Scan(&roomA); err != nil {
+		t.Fatalf("seed room A: %v", err)
+	}
+	if err := env.pool.QueryRow(t.Context(),
+		"INSERT INTO core.location (company_id, merchant_id, kind, code, name) VALUES ($1, $2, 'room', 'PV-R2', 'Ruang Sesi') RETURNING id::text",
+		env.companyID, env.merchantID).Scan(&roomB); err != nil {
+		t.Fatalf("seed room B: %v", err)
+	}
+	var schedule1, schedule2 string
+	if err := env.pool.QueryRow(t.Context(),
+		"INSERT INTO operations.physician_schedule (company_id, merchant_id, physician_id, department_id, day_of_week, start_time, end_time, effective_from, room_id) VALUES ($1, $2, $3, $4, $5, '08:00', '14:00', '2026-01-01', $6) RETURNING id::text",
+		env.companyID, env.merchantID, physician1, deptID, dow, roomA).Scan(&schedule1); err != nil {
+		t.Fatalf("seed schedule 1: %v", err)
+	}
+	if err := env.pool.QueryRow(t.Context(),
+		"INSERT INTO operations.physician_schedule (company_id, merchant_id, physician_id, department_id, day_of_week, start_time, end_time, effective_from, room_id) VALUES ($1, $2, $3, $4, $5, '09:00', '12:00', '2026-01-01', $6) RETURNING id::text",
+		env.companyID, env.merchantID, physician2, deptID, dow, roomA).Scan(&schedule2); err != nil {
+		t.Fatalf("seed schedule 2: %v", err)
+	}
+	var leaveID string
+	if err := env.pool.QueryRow(t.Context(),
+		"INSERT INTO operations.physician_leave (company_id, merchant_id, physician_id, date_from, date_to) VALUES ($1, $2, $3, $4::date, $4::date) RETURNING id::text",
+		env.companyID, env.merchantID, physician1, todayStr).Scan(&leaveID); err != nil {
+		t.Fatalf("seed physician_leave: %v", err)
+	}
+	if _, err := env.pool.Exec(t.Context(),
+		"INSERT INTO operations.schedule_session (company_id, merchant_id, schedule_id, session_date, physician_id, department_id, room_id, start_time, end_time, status, leave_id) VALUES ($1, $2, $3, $4::date, $5, $6, $7, '08:00', '14:00', 'leave', $8)",
+		env.companyID, env.merchantID, schedule1, todayStr, physician1, deptID, roomB, leaveID); err != nil {
+		t.Fatalf("seed schedule_session leave: %v", err)
+	}
+
+	code, resp = qeRequest(t, env, http.MethodGet, "/api/v1/queue-flows/"+flowID+"/preview?department_id="+deptID, nil)
+	if code != http.StatusOK {
+		t.Fatalf("preview with schedules expected 200, got %d: %v", code, resp)
+	}
+	doctors := resp["data"].(map[string]any)["doctors"].([]any)
+	if len(doctors) != 2 {
+		t.Fatalf("expected 2 doctors, got %d: %v", len(doctors), doctors)
+	}
+	byPhys := map[string]map[string]any{}
+	for _, raw := range doctors {
+		doc := raw.(map[string]any)
+		byPhys[doc["physician_id"].(string)] = doc
+		if doc["department_name"] != "UMU" {
+			t.Fatalf("doctor department_name: expected UMU, got %v", doc["department_name"])
+		}
+	}
+	leaveDoc := byPhys[physician1]
+	if leaveDoc == nil {
+		t.Fatalf("leave doctor missing from doctors: %v", doctors)
+	}
+	if leaveDoc["status"] != "leave" {
+		t.Fatalf("leave doctor status: expected leave, got %v", leaveDoc["status"])
+	}
+	if leaveDoc["room_name"] != "Ruang Sesi" {
+		t.Fatalf("leave doctor room: expected session override 'Ruang Sesi', got %v", leaveDoc["room_name"])
+	}
+	if leaveDoc["start_time"] != "08:00" || leaveDoc["end_time"] != "14:00" {
+		t.Fatalf("leave doctor times must be HH:MM, got %v..%v", leaveDoc["start_time"], leaveDoc["end_time"])
+	}
+	polaDoc := byPhys[physician2]
+	if polaDoc == nil {
+		t.Fatalf("pattern doctor missing from doctors: %v", doctors)
+	}
+	if polaDoc["status"] != nil {
+		t.Fatalf("pattern doctor status: expected null (no session), got %v", polaDoc["status"])
+	}
+	if polaDoc["room_name"] != "Ruang Pola" {
+		t.Fatalf("pattern doctor room: expected pattern room 'Ruang Pola', got %v", polaDoc["room_name"])
+	}
+
+	// 4. Merchant tanpa jadwal → doctors kosong, tetap 200.
+	env2 := qeNewEnv(t, "preview.kosong")
+	flow2 := env2.seedFlow(t, "Alur Kosong", []string{"umum"}, nil, false, []qeStage{
+		{seq: 1, name: "Admisi", kind: "admission", perm: "operations.counter.manage"},
+	})
+	code, resp = qeRequest(t, env2, http.MethodGet, "/api/v1/queue-flows/"+flow2+"/preview", nil)
+	if code != http.StatusOK {
+		t.Fatalf("preview without schedules expected 200, got %d: %v", code, resp)
+	}
+	if got := resp["data"].(map[string]any)["doctors"].([]any); len(got) != 0 {
+		t.Fatalf("expected empty doctors, got %v", got)
+	}
+
+	// 5. Error cases.
+	code, resp = qeRequest(t, env, http.MethodGet, "/api/v1/queue-flows/"+flowID+"/preview?department_id=xyz", nil)
+	if code != http.StatusBadRequest || resp["error"] != "invalid department_id" {
+		t.Fatalf("bad department_id: expected 400 'invalid department_id', got %d: %v", code, resp)
+	}
+	code, resp = qeRequest(t, env, http.MethodGet, "/api/v1/queue-flows/bukan-uuid/preview", nil)
+	if code != http.StatusBadRequest || resp["error"] != "invalid id" {
+		t.Fatalf("bad flow id: expected 400 'invalid id', got %d: %v", code, resp)
+	}
+	code, resp = qeRequest(t, env, http.MethodGet, "/api/v1/queue-flows/11111111-1111-1111-1111-111111111111/preview", nil)
+	if code != http.StatusNotFound || resp["error"] != "queue flow not found" {
+		t.Fatalf("unknown flow: expected 404 'queue flow not found', got %d: %v", code, resp)
+	}
+	noPermToken := mergeUserToken(t, t.Context(), env.pool, env.companyID, env.merchantID, "qeng.preview.noperm", nil)
+	code, resp = qeRequestToken(t, env.router, http.MethodGet, "/api/v1/queue-flows/"+flowID+"/preview",
+		noPermToken, env.companyID, env.merchantID, nil)
+	if code != http.StatusForbidden {
+		t.Fatalf("preview without permission expected 403, got %d: %v", code, resp)
 	}
 }

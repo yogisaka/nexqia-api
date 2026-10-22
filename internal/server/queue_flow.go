@@ -37,6 +37,7 @@ func RegisterQueueFlowRoutes(rg *gin.RouterGroup) {
 	rg.POST("/queue-flows/from-preset/:preset", CreateQueueFlowFromPresetHandler)
 	rg.POST("/queue-flows/:id/duplicate", DuplicateQueueFlowHandler)
 	rg.GET("/queue-flows/presets", ListQueueFlowPresetsHandler)
+	rg.GET("/queue-flows/:id/preview", QueueFlowPreviewHandler)
 }
 
 // RequireAnyPermissionForMerchant grants access when the caller holds ANY of
