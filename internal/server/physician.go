@@ -78,6 +78,7 @@ type createPhysicianRequest struct {
 	PersonID           string `json:"person_id" binding:"required"`
 	StrNumber          string `json:"str_number"`
 	SipNumber          string `json:"sip_number"`
+	SipValidUntil      string `json:"sip_valid_until"`
 	SpecialtyConceptID string `json:"specialty_concept_id"`
 	physicianEmploymentFields
 }
@@ -114,6 +115,11 @@ func CreatePhysicianHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person_id"})
 		return
 	}
+	sipValidUntil, ok := parseDateStr(req.SipValidUntil)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sip_valid_until"})
+		return
+	}
 	q := sqlcgen.New(TxFromContext(c))
 	physician, err := q.CreatePhysician(c.Request.Context(), sqlcgen.CreatePhysicianParams{
 		CompanyID:          AuthCompanyID(c),
@@ -121,8 +127,10 @@ func CreatePhysicianHandler(c *gin.Context) {
 		PersonID:           personID,
 		StrNumber:          optText(req.StrNumber),
 		SipNumber:          optText(req.SipNumber),
+		SipValidUntil:      sipValidUntil,
 		SpecialtyConceptID: optUUID(req.SpecialtyConceptID),
 		CreatedBy:          AuthUserID(c),
+		UpdatedBy:          AuthUserID(c),
 	})
 	if err != nil {
 		respondInternalError(c, err)
@@ -216,6 +224,7 @@ func GetPhysicianHandler(c *gin.Context) {
 type updatePhysicianRequest struct {
 	StrNumber          string `json:"str_number"`
 	SipNumber          string `json:"sip_number"`
+	SipValidUntil      string `json:"sip_valid_until"`
 	SpecialtyConceptID string `json:"specialty_concept_id"`
 	IsActive           bool   `json:"is_active"`
 	physicianEmploymentFields
@@ -255,10 +264,16 @@ func UpdatePhysicianHandler(c *gin.Context) {
 	if !bindJSONOrFields(c, &req) {
 		return
 	}
+	sipValidUntil, ok := parseDateStr(req.SipValidUntil)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sip_valid_until"})
+		return
+	}
 	physician, err := q.UpdatePhysician(c.Request.Context(), sqlcgen.UpdatePhysicianParams{
 		ID:                 id,
 		StrNumber:          optText(req.StrNumber),
 		SipNumber:          optText(req.SipNumber),
+		SipValidUntil:      sipValidUntil,
 		SpecialtyConceptID: optUUID(req.SpecialtyConceptID),
 		IsActive:           req.IsActive,
 		UpdatedBy:          AuthUserID(c),

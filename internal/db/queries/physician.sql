@@ -2,8 +2,8 @@
 -- core.physician (docs/07-core-ddl.md §5 "Physician")
 
 -- name: CreatePhysician :one
-INSERT INTO core.physician (company_id, merchant_id, person_id, str_number, sip_number, specialty_concept_id, created_by, updated_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+INSERT INTO core.physician (company_id, merchant_id, person_id, str_number, sip_number, sip_valid_until, specialty_concept_id, created_by, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetPhysicianByID :one
@@ -26,7 +26,7 @@ LIMIT $2 OFFSET $3;
 
 -- name: UpdatePhysician :one
 UPDATE core.physician
-SET str_number = $2, sip_number = $3, specialty_concept_id = $4, is_active = $5, updated_by = $6
+SET str_number = $2, sip_number = $3, sip_valid_until = $4, specialty_concept_id = $5, is_active = $6, updated_by = $7
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING *;
 

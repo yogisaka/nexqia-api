@@ -213,6 +213,108 @@ func TestStaffCredentialStatusIncludesPhysicianAndStaff(t *testing.T) {
 	}
 }
 
+// TestPhysicianSipValidUntilRoundTrip drives the physician CRUD API: create
+// with sip_valid_until → GET carries it → PATCH changes it → PATCH "" NULLs it
+// → PATCH invalid date → 400 — and GET /staff-credential-status reflects the
+// final NULL (physician SIP row flips from dated to "unknown").
+func TestPhysicianSipValidUntilRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := server.NewRouter(pool, newTestRedisClient(t, ctx), testConfig())
+	companyID, merchantID, _, _, _ := seedAccountOwner(t, ctx, pool, router, "cred.siprt.owner", "081234570007")
+
+	uid := "11111111-1111-4111-8111-111111111111"
+	rid := "12121212-2121-4212-8121-212121212121"
+	staffUserID := seedCredentialUser(t, ctx, pool, companyID, merchantID, uid, rid, "cred.siprt.staff", "",
+		server.PermPhysicianManage, server.PermUserManage)
+	token := credentialToken(t, staffUserID, companyID, merchantID, rid, "cred.siprt.staff")
+
+	// Person row seeded directly (pool role bypasses RLS); physician via API.
+	personID := "31313131-3131-4311-8131-313131313131"
+	if _, err := pool.Exec(ctx, "INSERT INTO core.person (id, company_id, full_name, gender) VALUES ($1, $2, 'dr. Sip Roundtrip', 'male')", personID, companyID); err != nil {
+		t.Fatalf("seed person: %v", err)
+	}
+
+	// Compute expectations from the contract, not from code: 2026-12-31 must
+	// round-trip verbatim.
+	rec := credentialRequest(t, router, token, companyID, merchantID, http.MethodPost, "/api/v1/physicians",
+		[]byte(`{"merchant_id":"`+merchantID+`","person_id":"`+personID+`","str_number":"STR-RT-1","sip_number":"SIP-RT-1","sip_valid_until":"2026-12-31"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create physician expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Data struct {
+			ID            string  `json:"ID"`
+			SipValidUntil *string `json:"SipValidUntil"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v: %s", err, rec.Body.String())
+	}
+	if created.Data.ID == "" || created.Data.SipValidUntil == nil || *created.Data.SipValidUntil != "2026-12-31" {
+		t.Fatalf("created physician must carry sip_valid_until 2026-12-31, got: %s", rec.Body.String())
+	}
+	physicianID := created.Data.ID
+
+	getSip := func() *string {
+		t.Helper()
+		rec := credentialRequest(t, router, token, companyID, merchantID, http.MethodGet, "/api/v1/physicians/"+physicianID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET physician expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data struct {
+				SipValidUntil *string `json:"SipValidUntil"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode GET physician: %v: %s", err, rec.Body.String())
+		}
+		return resp.Data.SipValidUntil
+	}
+	if v := getSip(); v == nil || *v != "2026-12-31" {
+		t.Fatalf("GET must return 2026-12-31, got %v", v)
+	}
+
+	// PATCH to a new date.
+	rec = credentialRequest(t, router, token, companyID, merchantID, http.MethodPatch, "/api/v1/physicians/"+physicianID,
+		[]byte(`{"str_number":"STR-RT-1","sip_number":"SIP-RT-1","sip_valid_until":"2027-06-30","is_active":true}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH date expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if v := getSip(); v == nil || *v != "2027-06-30" {
+		t.Fatalf("after PATCH GET must return 2027-06-30, got %v", v)
+	}
+
+	// PATCH "" → NULL.
+	rec = credentialRequest(t, router, token, companyID, merchantID, http.MethodPatch, "/api/v1/physicians/"+physicianID,
+		[]byte(`{"str_number":"STR-RT-1","sip_number":"SIP-RT-1","sip_valid_until":"","is_active":true}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH empty expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if v := getSip(); v != nil {
+		t.Fatalf("after empty PATCH GET must return null, got %v", v)
+	}
+
+	// PATCH invalid format → 400 with the contract message.
+	rec = credentialRequest(t, router, token, companyID, merchantID, http.MethodPatch, "/api/v1/physicians/"+physicianID,
+		[]byte(`{"str_number":"STR-RT-1","sip_number":"SIP-RT-1","sip_valid_until":"31-12-2026","is_active":true}`))
+	if rec.Code != http.StatusBadRequest || credentialError(t, rec) != "invalid sip_valid_until" {
+		t.Fatalf("invalid date expected 400 invalid sip_valid_until, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Status endpoint reflects the final NULL: the physician SIP row is unknown.
+	rec = credentialRequest(t, router, token, companyID, merchantID, http.MethodGet, "/api/v1/staff-credential-status", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rows, _ := decodeCredentialStatus(t, rec)
+	sip := findStatusRow(t, rows, "sip", "SIP-RT-1")
+	if sip.Status != "unknown" || sip.ValidUntil != nil {
+		t.Fatalf("status must show physician sip unknown after NULL, got %+v", sip)
+	}
+}
+
 func TestStaffCredentialStatusBoundary(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
