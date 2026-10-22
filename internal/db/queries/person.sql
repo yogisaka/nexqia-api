@@ -40,7 +40,7 @@ LIMIT $2 OFFSET $3;
 
 -- name: SearchPersonsByName :many
 SELECT p.* FROM core.person p
-WHERE p.company_id = $1 AND p.deleted_at IS NULL AND (
+WHERE p.company_id = $1 AND p.deleted_at IS NULL AND p.medical_record_no IS NOT NULL AND (
     p.full_name ILIKE '%' || $2 || '%'
     OR p.medical_record_no ILIKE '%' || $2 || '%'
     OR p.phone ILIKE '%' || $2 || '%'
