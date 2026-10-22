@@ -16,3 +16,7 @@ SELECT core.purge_emails(sqlc.arg(older_than)::timestamptz)::integer AS deleted;
 
 -- name: UserDeviceSeen :one
 SELECT core.user_device_seen(sqlc.arg(user_id)::uuid, sqlc.arg(device_id)::text)::boolean AS seen;
+
+-- name: EnqueueCredentialEmail :exec
+SELECT core.enqueue_credential_email(sqlc.arg(company_id)::uuid, sqlc.arg(to_address)::text,
+    sqlc.arg(subject)::text, sqlc.arg(body_text)::text, sqlc.arg(body_html)::text, sqlc.arg(dedup_key)::text);
