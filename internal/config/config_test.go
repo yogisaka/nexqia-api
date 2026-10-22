@@ -249,6 +249,48 @@ func TestGetEnvInt_OverridesDefaultAndPanicsOnInvalid(t *testing.T) {
 	getEnvInt("RATE_LIMIT_API_BURST", 20)
 }
 
+// TestValidateMailCredentialFieldsOptionalWhenUnset — review-ready finding
+// (plan 2026-10-20-staff-credential-expiry-a2-email-worker Task 5): credential
+// settings left at zero are valid (zero-Config fixtures stay legal), but once
+// either field is set the pair must both be positive.
+func TestValidateMailCredentialFieldsOptionalWhenUnset(t *testing.T) {
+	base := Config{
+		MailDriver:                 "log",
+		SMTPPort:                   587,
+		MailPollIntervalSeconds:    10,
+		MailBatchSize:              20,
+		MailMaxAttempts:            5,
+		MailOutboxRetentionDays:    30,
+		ConnectPollIntervalSeconds: 10,
+		ConnectBatchSize:           20,
+	}
+
+	if err := validateMail(base); err != nil {
+		t.Errorf("expected unset credential fields to stay valid, got %v", err)
+	}
+
+	// Partial: interval set, warn days still 0 → must fail.
+	partial := base
+	partial.CredentialCheckIntervalHours = 24
+	if err := validateMail(partial); err == nil || !strings.Contains(err.Error(), "credential check config") {
+		t.Errorf("expected partially set credential config to fail, got %v", err)
+	}
+
+	partial = base
+	partial.CredentialWarnDays = 30
+	if err := validateMail(partial); err == nil || !strings.Contains(err.Error(), "credential check config") {
+		t.Errorf("expected partially set credential config to fail, got %v", err)
+	}
+
+	// Both set positive → valid.
+	both := base
+	both.CredentialCheckIntervalHours = 24
+	both.CredentialWarnDays = 30
+	if err := validateMail(both); err != nil {
+		t.Errorf("expected fully set credential config to pass, got %v", err)
+	}
+}
+
 func TestValidateMail(t *testing.T) {
 	valid := Config{
 		MailDriver: "smtp", SMTPHost: "smtp.gmail.com", SMTPPort: 587, SMTPUsername: "a@gmail.com",

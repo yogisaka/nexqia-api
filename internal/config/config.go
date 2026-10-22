@@ -304,8 +304,12 @@ func validateMail(cfg Config) error {
 			return fmt.Errorf("%s must be > 0, got %d", f.name, f.value)
 		}
 	}
-	if cfg.CredentialCheckIntervalHours <= 0 || cfg.CredentialWarnDays <= 0 {
-		return fmt.Errorf("credential check config must be positive")
+	// Only enforced once either credential field is set: the zero Config of
+	// unit-test fixtures (no credential settings at all) stays valid.
+	if cfg.CredentialCheckIntervalHours > 0 || cfg.CredentialWarnDays > 0 {
+		if cfg.CredentialCheckIntervalHours <= 0 || cfg.CredentialWarnDays <= 0 {
+			return fmt.Errorf("credential check config must be positive")
+		}
 	}
 	return nil
 }
