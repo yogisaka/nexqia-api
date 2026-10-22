@@ -688,3 +688,71 @@ func TestEmpiBackfill_IdempotentConvergent(t *testing.T) {
 		}
 	}
 }
+
+// TestEmpiBackfill_PoisonAdvancesCursor: person yang bikin ingest error
+// deterministik (hash sama dengan dua master yang link aktifnya menunjuk
+// person di company SAMA → UpsertEmpiCandidatePair melanggar CHECK
+// person_a_company_id <> person_b_company_id) tidak boleh membuat backfill
+// mengulang batch yang sama tanpa batas: kursor (created_at, id) tetap maju,
+// person sebelum/sesudah "racun" tetap terproses, failed > 0.
+func TestEmpiBackfill_PoisonAdvancesCursor(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	company := empiSeedCompany(t, ctx, pool, "eeeeeeee-9000-0000-0000-000000000003", "empi-bf-poison")
+
+	// Dua master ber-hash sama di empi.person_link, link aktifnya menunjuk
+	// person di company yang sama: ingest person yang membawa hash itu gagal
+	// deterministik (CHECK person_a_company_id <> person_b_company_id).
+	// Person target link TANPA hash — core.person punya UNIQUE (company_id,
+	// nik_search_hash), hash hanya dibawa person "racun".
+	m1 := "eeeeeeee-9000-0000-0000-0000000000a1"
+	m2 := "eeeeeeee-9000-0000-0000-0000000000a2"
+	empiSeedMaster(t, ctx, pool, m1, "M Satu", nil)
+	empiSeedMaster(t, ctx, pool, m2, "M Dua", nil)
+	ly := empiInsertPerson(t, ctx, pool, company, "L Y", "", "1980-01-01")
+	lz := empiInsertPerson(t, ctx, pool, company, "L Z", "", "1981-02-02")
+	empiSeedLink(t, ctx, pool, "eeeeeeee-9000-0000-0000-0000000000b1", m1, company, ly, empiHashH1, "L Y", nil)
+	empiSeedLink(t, ctx, pool, "eeeeeeee-9000-0000-0000-0000000000b2", m2, company, lz, empiHashH1, "L Z", nil)
+
+	// Urutan created_at eksplisit: racun PALING AWAL — bila ly/lz (yang link
+	// seed-nya membawa hash) terlanjur di-ingest lebih dulu, UpsertEmpiPersonLink
+	// memindahkan link seed itu dan menghapus hash-nya, sehingga racun tidak
+	// gagal lagi. Dengan racun pertama, batch-nya gagal + rollback (link seed
+	// tetap utuh), lalu ly/lz di-ingest normal.
+	ok1 := empiInsertPerson(t, ctx, pool, company, "Ok Satu", "", "1990-01-01")
+	poison := empiInsertPerson(t, ctx, pool, company, "Racun", empiHashH1, "1990-06-06")
+	ok2 := empiInsertPerson(t, ctx, pool, company, "Ok Dua", "", "1991-03-03")
+	setCreatedAt := func(pid string, minute int) {
+		t.Helper()
+		if _, err := pool.Exec(ctx,
+			"UPDATE core.person SET created_at = $1 WHERE id = $2",
+			time.Date(2026, 1, 3, 10, minute, 0, 0, time.UTC), pid); err != nil {
+			t.Fatalf("set created_at %s: %v", pid, err)
+		}
+	}
+	setCreatedAt(poison, 0)
+	setCreatedAt(ly, 1)
+	setCreatedAt(lz, 2)
+	setCreatedAt(ok1, 3)
+	setCreatedAt(ok2, 4)
+
+	// batchSize=1: poison gagal (CHECK), ly/lz/ok1/ok2 sukses — kursor harus
+	// tetap maju saat poison gagal (sebaliknya loop tak berujung di batch itu).
+	processed, failed, err := server.BackfillEmpiCompany(ctx, pool, empiUUID(t, company), 1)
+	if err != nil {
+		t.Fatalf("backfill with poison: %v", err)
+	}
+	// Hitungan dari definisi: poison gagal (1); ly, lz, ok1, ok2 sukses (4).
+	if processed != 4 || failed != 1 {
+		t.Errorf("expected processed=4 failed=1, got processed=%d failed=%d", processed, failed)
+	}
+	// Racun sendiri TIDAK punya link (batch-nya rollback).
+	if got := empiCount(t, ctx, pool, "SELECT count(*) FROM empi.person_link WHERE person_id = $1", poison); got != 0 {
+		t.Errorf("expected no link for rolled-back poison, got %d", got)
+	}
+	for name, pid := range map[string]string{"ok1": ok1, "ok2": ok2} {
+		if got := empiCount(t, ctx, pool, "SELECT count(*) FROM empi.person_link WHERE person_id = $1 AND status='active'", pid); got != 1 {
+			t.Errorf("expected %s ingested despite poison batches, got %d links", name, got)
+		}
+	}
+}

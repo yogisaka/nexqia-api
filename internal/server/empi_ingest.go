@@ -241,22 +241,9 @@ func BackfillEmpiCompany(ctx context.Context, pool *pgxpool.Pool, companyID pgty
 			return processed, failed, nil
 		}
 
-		var batchErr error
-		for _, personID := range persons {
-			if err := EmpiIngestPerson(ctx, tx, companyID, personID); err != nil {
-				batchErr = err
-				break
-			}
-		}
-		if batchErr != nil {
-			_ = tx.Rollback(ctx)
-			failed += len(persons)
-			slog.Error("empi backfill: batch rolled back",
-				"company_id", companyID.String(), "person_id", persons[0].String())
-			continue
-		}
-
-		// Kursor maju ke (created_at, id) person terakhir batch.
+		// Kursor maju ke (created_at, id) person terakhir batch. Dibaca SEBELUM
+		// ingest supaya tetap tersedia saat batch gagal: kursor tetap maju,
+		// person "racun" tidak mengulang batch yang sama tanpa batas.
 		var lastTime pgtype.Timestamptz
 		if err := tx.QueryRow(ctx,
 			"SELECT created_at FROM core.person WHERE id = $1", persons[len(persons)-1],
@@ -266,6 +253,25 @@ func BackfillEmpiCompany(ctx context.Context, pool *pgxpool.Pool, companyID pgty
 		}
 		cursorTime = lastTime
 		cursorID = persons[len(persons)-1]
+
+		var batchErr error
+		var failedPerson pgtype.UUID
+		for _, personID := range persons {
+			if err := EmpiIngestPerson(ctx, tx, companyID, personID); err != nil {
+				batchErr = err
+				failedPerson = personID
+				break
+			}
+		}
+		if batchErr != nil {
+			_ = tx.Rollback(ctx)
+			failed += len(persons)
+			slog.Error("empi backfill: batch rolled back",
+				"company_id", companyID.String(), "person_id", failedPerson.String(),
+				"error", batchErr)
+			continue
+		}
+
 		if err := tx.Commit(ctx); err != nil {
 			return processed, failed, fmt.Errorf("empi backfill: commit: %w", err)
 		}

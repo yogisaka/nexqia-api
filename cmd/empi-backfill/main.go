@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
@@ -34,7 +35,15 @@ func main() {
 	}
 	defer pool.Close()
 
-	companyFilter := flag.String("company", "", "optional company UUID (only that company is backfilled)")
+	// -company diparse jadi UUID dan dibandingkan binary (bukan string
+	// case-sensitive); flag kosong = tanpa filter.
+	var companyFilter pgtype.UUID
+	flag.Func("company", "optional company UUID (only that company is backfilled)", func(s string) error {
+		if err := companyFilter.Scan(s); err != nil {
+			return fmt.Errorf("invalid -company UUID %q: %w", s, err)
+		}
+		return nil
+	})
 	batchSize := flag.Int("batch", 500, "persons per transaction batch")
 	flag.Parse()
 
@@ -53,7 +62,7 @@ func main() {
 			break
 		}
 		for _, companyID := range companies {
-			if *companyFilter != "" && companyID.String() != *companyFilter {
+			if companyFilter.Valid && companyID != companyFilter {
 				continue
 			}
 			processed, failed, err := server.BackfillEmpiCompany(ctx, pool, companyID, *batchSize)
