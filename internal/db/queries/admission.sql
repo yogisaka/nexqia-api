@@ -6,13 +6,14 @@
 -- Param order: $1 company_id, $2 merchant_id, $3 visit_no, $4 person_id,
 -- $5 admission_type, $6 department_id, $7 physician_id, $8 primary_payer_id,
 -- $9 complaint, $10 referral_source, $11 note, $12 created_by/updated_by,
--- $13 schedule_id (optional session pattern, spec 2026-10-01-b §3).
+-- $13 schedule_id (optional session pattern, spec 2026-10-01-b §3),
+-- $14 fall_risk (spec 2026-10-20-qr-visit-media-design.md §4.1).
 INSERT INTO operations.admission (
     company_id, merchant_id, visit_no, person_id, admission_type, department_id,
     physician_id, primary_payer_id, complaint, referral_source, note, created_by, updated_by,
-    schedule_id
+    schedule_id, fall_risk
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13, $14)
 RETURNING *;
 
 -- name: CreateAdmissionGuarantor :one
