@@ -478,6 +478,32 @@ func MergePersonsHandler(cfg config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// 9b. EMPI re-ingest (plan G1 Task 4): detach the loser link, recompute
+		// the loser master's golden, refresh the winner snapshot — same tx.
+		loserLink, err := q.GetEmpiLinkByPerson(ctx, sqlcgen.GetEmpiLinkByPersonParams{
+			CompanyID: AuthCompanyID(c), PersonID: mergedID,
+		})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			respondInternalError(c, err)
+			return
+		}
+		if err == nil {
+			if err := q.DetachEmpiLink(ctx, sqlcgen.DetachEmpiLinkParams{
+				CompanyID: AuthCompanyID(c), PersonID: mergedID,
+			}); err != nil {
+				respondInternalError(c, err)
+				return
+			}
+			if err := q.RecomputeEmpiMasterGolden(ctx, loserLink.MasterPersonID); err != nil {
+				respondInternalError(c, err)
+				return
+			}
+		}
+		if err := EmpiIngestPerson(ctx, TxFromContext(c), AuthCompanyID(c), survivorID); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+
 		// 10. Response.
 		var movedMap map[string][]string
 		if err := json.Unmarshal(moved, &movedMap); err != nil {
@@ -801,6 +827,15 @@ func UnmergePersonHandler(c *gin.Context) {
 	if err != nil {
 		respondInternalError(c, err)
 		return
+	}
+
+	// 4b. EMPI re-ingest (plan G1 Task 4): both records are live again, each
+	// re-evaluated (hash ulang) in the same tx.
+	for _, pid := range []pgtype.UUID{logRow.SurvivingPersonID, logRow.MergedPersonID} {
+		if err := EmpiIngestPerson(ctx, TxFromContext(c), AuthCompanyID(c), pid); err != nil {
+			respondInternalError(c, err)
+			return
+		}
 	}
 
 	// 5. Response.

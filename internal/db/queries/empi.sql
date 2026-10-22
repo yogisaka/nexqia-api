@@ -67,9 +67,9 @@ ORDER BY id LIMIT 1;
 -- memfilter pasangan dismissed/linked sebelum memanggil).
 INSERT INTO empi.candidate_pair
     (person_a_id, person_b_id, person_a_company_id, person_b_company_id, score, reason)
-VALUES (LEAST($1, $2), GREATEST($1, $2),
-        CASE WHEN $1 < $2 THEN $3 ELSE $4 END,
-        CASE WHEN $1 < $2 THEN $4 ELSE $3 END,
+VALUES (LEAST($1::uuid, $2::uuid), GREATEST($1::uuid, $2::uuid),
+        CASE WHEN $1::uuid < $2::uuid THEN $3::uuid ELSE $4::uuid END,
+        CASE WHEN $1::uuid < $2::uuid THEN $4::uuid ELSE $3::uuid END,
         $5, $6)
 ON CONFLICT (person_a_id, person_b_id) DO UPDATE SET
     score = EXCLUDED.score, reason = EXCLUDED.reason,
@@ -124,6 +124,6 @@ SELECT id FROM platform.list_companies($1, $2);
 -- WAJIB deterministik (spec §9). Dibaca di bawah GUC company batch.
 SELECT id FROM core.person
 WHERE company_id = $1 AND deleted_at IS NULL
-  AND (created_at, id) > ($2, $3)
+  AND (created_at, id) > ($2, $3::uuid)
 ORDER BY created_at, id
 LIMIT $4;

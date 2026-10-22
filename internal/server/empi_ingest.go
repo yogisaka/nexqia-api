@@ -9,9 +9,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
@@ -199,4 +202,73 @@ func nullIfEmpty(t pgtype.Text) pgtype.Text {
 		return pgtype.Text{}
 	}
 	return t
+}
+
+// BackfillEmpiCompany meng-ingest ulang seluruh person aktif satu company ke
+// EMPI (spec §9, plan G1 Task 4), kursor deterministik (created_at, id).
+// Per batch SATU tx (GUC company + ingest per person): gagal satu person =
+// rollback seluruh batch, dicatat sebagai failed (UUID person di log slog,
+// tanpa PII), kursor tetap maju. Idempoten — re-run aman (snapshot upsert).
+func BackfillEmpiCompany(ctx context.Context, pool *pgxpool.Pool, companyID pgtype.UUID, batchSize int) (processed, failed int, err error) {
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	cursorTime := pgtype.Timestamptz{Time: time.Unix(0, 0), Valid: true}
+	var cursorID pgtype.UUID
+
+	for {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return processed, failed, fmt.Errorf("empi backfill: begin: %w", err)
+		}
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_company_id', $1, true)", companyID.String()); err != nil {
+			_ = tx.Rollback(ctx)
+			return processed, failed, fmt.Errorf("empi backfill: set guc: %w", err)
+		}
+
+		// List DI DALAM tx yang sama: query core.person butuh GUC company (RLS).
+		persons, err := sqlcgen.New(tx).ListPersonsForEmpiBackfill(ctx, sqlcgen.ListPersonsForEmpiBackfillParams{
+			CompanyID: companyID, CreatedAt: cursorTime, Column3: cursorID, Limit: int32(batchSize),
+		})
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return processed, failed, fmt.Errorf("empi backfill: list persons: %w", err)
+		}
+		if len(persons) == 0 {
+			if err := tx.Commit(ctx); err != nil {
+				return processed, failed, fmt.Errorf("empi backfill: commit: %w", err)
+			}
+			return processed, failed, nil
+		}
+
+		var batchErr error
+		for _, personID := range persons {
+			if err := EmpiIngestPerson(ctx, tx, companyID, personID); err != nil {
+				batchErr = err
+				break
+			}
+		}
+		if batchErr != nil {
+			_ = tx.Rollback(ctx)
+			failed += len(persons)
+			slog.Error("empi backfill: batch rolled back",
+				"company_id", companyID.String(), "person_id", persons[0].String())
+			continue
+		}
+
+		// Kursor maju ke (created_at, id) person terakhir batch.
+		var lastTime pgtype.Timestamptz
+		if err := tx.QueryRow(ctx,
+			"SELECT created_at FROM core.person WHERE id = $1", persons[len(persons)-1],
+		).Scan(&lastTime); err != nil {
+			_ = tx.Rollback(ctx)
+			return processed, failed, fmt.Errorf("empi backfill: read cursor: %w", err)
+		}
+		cursorTime = lastTime
+		cursorID = persons[len(persons)-1]
+		if err := tx.Commit(ctx); err != nil {
+			return processed, failed, fmt.Errorf("empi backfill: commit: %w", err)
+		}
+		processed += len(persons)
+	}
 }

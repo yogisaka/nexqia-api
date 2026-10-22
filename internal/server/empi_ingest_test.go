@@ -4,10 +4,12 @@ package server_test
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -478,5 +480,211 @@ func TestEmpiIngest_PersonNotFoundFails(t *testing.T) {
 	}
 	if !strings.HasPrefix(err.Error(), "empi ingest:") {
 		t.Errorf("expected error prefixed 'empi ingest:', got %q", err.Error())
+	}
+}
+
+// empiMergeTwoPersons sets up the shared merge state for the merge/un-merge
+// re-ingest tests (request/merge pattern from TestPersonMerge_FullFlow):
+// survivor = Beta (tanpa NIK, master sendiri), merged = Alpha (dengan NIK,
+// master sendiri); keduanya di-ingest dulu (link active), lalu di-merge via API
+// dengan field_choices full_name=merged (survivor mewarisi nama Alpha).
+func empiMergeTwoPersons(t *testing.T, ctx context.Context, pool *pgxpool.Pool, ownerLabel string) (router *gin.Engine, companyID, merchantID, token, survivorID, mergedID string) {
+	t.Helper()
+	router = mergeTestRouter(t, ctx, pool)
+	companyID, merchantID, _, token, _ = seedAccountOwner(t, ctx, pool, router, "empimerge."+ownerLabel, "0812346000"+ownerLabel)
+
+	mergedID, mergedMRN := mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge EMPI Alpha", "gender": "female", "birth_date": "1980-01-01",
+		"nik": "3201010101800091", "phone": "081111110091",
+	})
+	survivorID, _ = mergeCreatePerson(t, ctx, pool, router, token, companyID, merchantID, map[string]string{
+		"full_name": "Merge EMPI Beta", "gender": "female", "birth_date": "1980-01-01",
+		"phone": "082222220092",
+	})
+	empiIngest(t, ctx, pool, companyID, survivorID)
+	empiIngest(t, ctx, pool, companyID, mergedID)
+
+	preview := mergePreview(t, router, token, companyID, merchantID, survivorID, mergedID)
+	rec := mergeExec(t, router, token, companyID, merchantID, map[string]any{
+		"survivor_id": survivorID, "merged_id": mergedID, "reason": "duplikat",
+		"expected_row_versions": map[string]any{
+			"survivor": mergeSide(t, preview, "survivor")["row_version"],
+			"merged":   mergeSide(t, preview, "merged")["row_version"],
+		},
+		"field_choices": map[string]string{"phone": "merged", "full_name": "merged"},
+		"confirm_mrn":   mergedMRN,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("merge expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	return router, companyID, merchantID, token, survivorID, mergedID
+}
+
+func TestEmpiIngest_MergeDetachesLoser(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router, companyID, merchantID, token, survivorID, mergedID := empiMergeTwoPersons(t, ctx, pool, "011")
+
+	// Loser link detached, master loser (golden) dipertahankan.
+	var loserStatus, loserMaster string
+	if err := pool.QueryRow(ctx,
+		"SELECT status, master_person_id::text FROM empi.person_link WHERE person_id = $1", mergedID,
+	).Scan(&loserStatus, &loserMaster); err != nil {
+		t.Fatalf("read loser link: %v", err)
+	}
+	if loserStatus != "detached" {
+		t.Errorf("expected loser link detached, got %s", loserStatus)
+	}
+	var loserGolden string
+	if err := pool.QueryRow(ctx,
+		"SELECT full_name FROM empi.master_person WHERE id = $1", loserMaster,
+	).Scan(&loserGolden); err != nil {
+		t.Fatalf("read loser master: %v", err)
+	}
+	if loserGolden != "Merge EMPI Alpha" {
+		t.Errorf("expected loser master golden preserved, got %q", loserGolden)
+	}
+
+	// Survivor link active dengan snapshot ter-refresh (full_name mewarisi nama
+	// Alpha pilihan merge, persis core.person saat ini).
+	var personName, linkName, linkStatus string
+	if err := pool.QueryRow(ctx,
+		"SELECT p.full_name, l.full_name, l.status FROM core.person p JOIN empi.person_link l ON l.person_id = p.id WHERE p.id = $1",
+		survivorID).Scan(&personName, &linkName, &linkStatus); err != nil {
+		t.Fatalf("read survivor link: %v", err)
+	}
+	if linkStatus != "active" {
+		t.Errorf("expected survivor link active, got %s", linkStatus)
+	}
+	if linkName != personName {
+		t.Errorf("expected survivor link snapshot refreshed (%q), got %q", personName, linkName)
+	}
+	if personName != "Merge EMPI Alpha" {
+		t.Fatalf("precondition: survivor full_name = %q, want merged Alpha name", personName)
+	}
+
+	// merged record tetap 404 (merge tetap berhasil dengan hook EMPI).
+	if rec := accountRequest(router, http.MethodGet, "/api/v1/persons/"+mergedID, token, companyID, merchantID, nil); rec.Code != http.StatusNotFound {
+		t.Errorf("GET merged person expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestEmpiIngest_UnmergeReactivatesBoth(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router, companyID, merchantID, token, survivorID, mergedID := empiMergeTwoPersons(t, ctx, pool, "012")
+
+	// Ambil log id dari list merge-logs person survivor.
+	listRec := accountRequest(router, http.MethodGet, "/api/v1/persons/"+survivorID+"/merge-logs", token, companyID, merchantID, nil)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list merge-logs expected 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	logs := mergeRespList(t, listRec)
+	if len(logs) == 0 {
+		t.Fatalf("expected merge log rows, got none: %s", listRec.Body.String())
+	}
+	logID := logs[0].(map[string]any)["id"].(string)
+
+	if rec := mergeUnmerge(t, router, token, companyID, merchantID, logID, "salah gabung"); rec.Code != http.StatusOK {
+		t.Fatalf("unmerge expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	for _, pid := range []string{survivorID, mergedID} {
+		var status string
+		if err := pool.QueryRow(ctx,
+			"SELECT status FROM empi.person_link WHERE person_id = $1", pid,
+		).Scan(&status); err != nil {
+			t.Fatalf("read link %s: %v", pid, err)
+		}
+		if status != "active" {
+			t.Errorf("expected link %s active after unmerge, got %s", pid, status)
+		}
+	}
+}
+
+func TestEmpiBackfill_IdempotentConvergent(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	companyC := empiSeedCompany(t, ctx, pool, "eeeeeeee-9000-0000-0000-000000000001", "empi-bf-c")
+	companyD := empiSeedCompany(t, ctx, pool, "eeeeeeee-9000-0000-0000-000000000002", "empi-bf-d")
+
+	// Person di company D (hash h1) sudah di-ingest → master M_D ada.
+	d1 := empiInsertPerson(t, ctx, pool, companyD, "D Satu", empiHashH1, "1990-01-01")
+	empiIngest(t, ctx, pool, companyD, d1)
+	var masterD string
+	if err := pool.QueryRow(ctx, "SELECT master_person_id::text FROM empi.person_link WHERE person_id = $1", d1).Scan(&masterD); err != nil {
+		t.Fatalf("master D1: %v", err)
+	}
+
+	// 3 person di company C, INSERT langsung urut created_at eksplisit:
+	// p1 hash sama dengan D1 (auto-link ke M_D), p2/p3 tanpa hash (master sendiri).
+	p1 := empiInsertPerson(t, ctx, pool, companyC, "C Satu", empiHashH1, "1990-01-01")
+	p2 := empiInsertPerson(t, ctx, pool, companyC, "C Dua", "", "1991-02-02")
+	p3 := empiInsertPerson(t, ctx, pool, companyC, "C Tiga", "", "1992-03-03")
+	for i, pid := range []string{p1, p2, p3} {
+		if _, err := pool.Exec(ctx,
+			"UPDATE core.person SET created_at = $1 WHERE id = $2",
+			time.Date(2026, 1, 2, 10, i, 0, 0, time.UTC), pid); err != nil {
+			t.Fatalf("set created_at %s: %v", pid, err)
+		}
+	}
+
+	empiCounts := func() (masters, links, candidates int64) {
+		t.Helper()
+		masters = empiCount(t, ctx, pool, "SELECT count(*) FROM empi.master_person")
+		links = empiCount(t, ctx, pool, "SELECT count(*) FROM empi.person_link WHERE status='active'")
+		candidates = empiCount(t, ctx, pool, "SELECT count(*) FROM empi.candidate_pair")
+		return masters, links, candidates
+	}
+
+	processed, failed, err := server.BackfillEmpiCompany(ctx, pool, empiUUID(t, companyC), 2)
+	if err != nil {
+		t.Fatalf("backfill run 1: %v", err)
+	}
+	if processed != 3 || failed != 0 {
+		t.Errorf("run 1: expected processed=3 failed=0, got processed=%d failed=%d", processed, failed)
+	}
+	m1, l1, c1 := empiCounts()
+
+	processed2, failed2, err := server.BackfillEmpiCompany(ctx, pool, empiUUID(t, companyC), 2)
+	if err != nil {
+		t.Fatalf("backfill run 2: %v", err)
+	}
+	if processed2 != 3 || failed2 != 0 {
+		t.Errorf("run 2: expected processed=3 failed=0, got processed=%d failed=%d", processed2, failed2)
+	}
+	m2, l2, c2 := empiCounts()
+	if m1 != m2 || l1 != l2 || c1 != c2 {
+		t.Errorf("counts diverged between runs: run1=(%d,%d,%d) run2=(%d,%d,%d)", m1, l1, c1, m2, l2, c2)
+	}
+
+	// Auto-link deterministik: p1 (hash sama) ke master M_D milik D1.
+	var masterP1 string
+	if err := pool.QueryRow(ctx, "SELECT master_person_id::text FROM empi.person_link WHERE person_id = $1", p1).Scan(&masterP1); err != nil {
+		t.Fatalf("master P1: %v", err)
+	}
+	if masterP1 != masterD {
+		t.Errorf("expected P1 auto-linked to M_D (%s), got %s", masterD, masterP1)
+	}
+
+	// Golden first-non-empty sesuai urutan (created_at, id): M_D golden dari D1
+	// (created lebih awal), master P2/P3 golden dari person masing-masing.
+	var goldenD string
+	if err := pool.QueryRow(ctx, "SELECT full_name FROM empi.master_person WHERE id = $1", masterD).Scan(&goldenD); err != nil {
+		t.Fatalf("read golden M_D: %v", err)
+	}
+	if goldenD != "D Satu" {
+		t.Errorf("expected M_D golden 'D Satu' (first non-empty by created_at), got %q", goldenD)
+	}
+	for name, pid := range map[string]string{"P2": p2, "P3": p3} {
+		var m, golden string
+		if err := pool.QueryRow(ctx,
+			"SELECT l.master_person_id::text, m.full_name FROM empi.person_link l JOIN empi.master_person m ON m.id = l.master_person_id WHERE l.person_id = $1",
+			pid).Scan(&m, &golden); err != nil {
+			t.Fatalf("read golden %s: %v", name, err)
+		}
+		if m == masterD || golden != map[string]string{"P2": "C Dua", "P3": "C Tiga"}[name] {
+			t.Errorf("expected %s on own master with own golden, got master=%s golden=%q", name, m, golden)
+		}
 	}
 }
