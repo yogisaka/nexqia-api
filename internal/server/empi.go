@@ -5,8 +5,11 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -29,6 +32,9 @@ func RegisterEmpiRoutes(rg *gin.RouterGroup) {
 	rg.GET("/empi/master-persons/:id", AccessLog("empi", "master_detail", "id"), MasterDetailHandler)
 	rg.GET("/empi/candidate-pairs", AccessLog("empi", "candidate_pairs", ""), ListEmpiCandidatePairsHandler)
 	rg.POST("/empi/candidate-pairs/:id/dismiss", AccessLog("empi", "candidate_dismiss", "id"), DismissEmpiCandidatePairHandler)
+	rg.POST("/empi/candidate-pairs/:id/link", AccessLog("empi", "candidate_link", "id"), ConfirmEmpiCandidatePairHandler)
+	rg.GET("/empi/merge-logs", AccessLog("empi", "merge_logs", ""), ListEmpiMergeLogsHandler)
+	rg.POST("/empi/merge-logs/:id/unmerge", AccessLog("empi", "unmerge", "id"), UnmergeEmpiMasterHandler)
 }
 
 // empiPersonMrn membaca MRN satu person DI DALAM tx request SETELAH memindah
@@ -295,4 +301,362 @@ func DismissEmpiCandidatePairHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": row.ID, "status": row.Status}, "meta": gin.H{}})
+}
+
+// empiSnapshotLink is one entry of the merge snapshot "links" array.
+type empiSnapshotLink struct {
+	LinkID         pgtype.UUID `json:"link_id"`
+	MasterPersonID pgtype.UUID `json:"master_person_id"`
+}
+
+// empiSnapshotMaster holds the loser master golden at merge time.
+type empiSnapshotMaster struct {
+	ID                      pgtype.UUID `json:"id"`
+	FullName                string      `json:"full_name"`
+	BirthDate               pgtype.Date `json:"birth_date"`
+	Gender                  pgtype.Text `json:"gender"`
+	FullNameSourcePersonID  pgtype.UUID `json:"full_name_source_person_id"`
+	BirthDateSourcePersonID pgtype.UUID `json:"birth_date_source_person_id"`
+	GenderSourcePersonID    pgtype.UUID `json:"gender_source_person_id"`
+	ManualFields            []string    `json:"manual_fields"`
+}
+
+// empiMergeSnapshot is the jsonb snapshot stored on empi.merge_log (bentuk
+// LITERAL plan Task 4): golden + provenance master loser dan semua link
+// aktifnya SEBELUM dipindah ke winner.
+type empiMergeSnapshot struct {
+	LoserMaster empiSnapshotMaster `json:"loser_master"`
+	Links       []empiSnapshotLink `json:"links"`
+}
+
+// empiActiveLinkOr409 reads one person link inside the request tx and maps
+// "no rows" / detached to the contract 409. Returns ok=false when answered.
+func empiActiveLinkOr409(c *gin.Context, q *sqlcgen.Queries, companyID, personID pgtype.UUID) (sqlcgen.GetEmpiLinkByPersonRow, bool) {
+	link, err := q.GetEmpiLinkByPerson(c.Request.Context(), sqlcgen.GetEmpiLinkByPersonParams{
+		CompanyID: companyID, PersonID: personID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusConflict, gin.H{"error": "person link is not active"})
+		return link, false
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return link, false
+	}
+	status, err := q.GetEmpiLinkStatusById(c.Request.Context(), link.ID)
+	if err != nil {
+		respondInternalError(c, err)
+		return link, false
+	}
+	if status != "active" {
+		c.JSON(http.StatusConflict, gin.H{"error": "person link is not active"})
+		return link, false
+	}
+	return link, true
+}
+
+type empiCandidateConfirmRequest struct {
+	WinnerMasterPersonID string `json:"winner_master_person_id"`
+}
+
+// ConfirmEmpiCandidatePairHandler godoc
+// @Summary Confirm a candidate pair by linking (and optionally merging masters)
+// @Description When both persons already share one master the pair is just linked; otherwise the loser master is merged into the winner (links moved, golden recomputed) with a full snapshot merge log.
+// @Tags empi
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Candidate pair UUID"
+// @Param request body empiCandidateConfirmRequest true "Winner master person"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /empi/candidate-pairs/{id}/link [post]
+func ConfirmEmpiCandidatePairHandler(c *gin.Context) {
+	if !RequirePermission(c, PermEmpiMasterManage) {
+		return
+	}
+	pairID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req empiCandidateConfirmRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	winnerID, ok := parseUUID(req.WinnerMasterPersonID)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid winner_master_person_id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	ctx := c.Request.Context()
+
+	pair, err := q.GetEmpiCandidatePair(ctx, pairID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "candidate pair not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if pair.Status != "pending" {
+		c.JSON(http.StatusConflict, gin.H{"error": "candidate pair is not pending"})
+		return
+	}
+	linkA, ok := empiActiveLinkOr409(c, q, pair.PersonACompanyID, pair.PersonAID)
+	if !ok {
+		return
+	}
+	linkB, ok := empiActiveLinkOr409(c, q, pair.PersonBCompanyID, pair.PersonBID)
+	if !ok {
+		return
+	}
+
+	// Kedua person sudah satu master: cukup tandai pair linked.
+	if linkA.MasterPersonID == linkB.MasterPersonID {
+		row, err := q.LinkEmpiCandidatePair(ctx, sqlcgen.LinkEmpiCandidatePairParams{
+			ID: pairID, DecidedBy: AuthUserID(c),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusConflict, gin.H{"error": "candidate pair is not pending"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": row.ID, "status": row.Status}, "meta": gin.H{}})
+		return
+	}
+
+	// Winner harus master sisi a atau b.
+	var winner, loser pgtype.UUID
+	switch {
+	case winnerID == linkA.MasterPersonID:
+		winner, loser = linkA.MasterPersonID, linkB.MasterPersonID
+	case winnerID == linkB.MasterPersonID:
+		winner, loser = linkB.MasterPersonID, linkA.MasterPersonID
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "winner must be one of the pair masters"})
+		return
+	}
+
+	// Snapshot loser SEBELUM move: golden + provenance + semua link aktif.
+	snapRow, err := q.GetEmpiMasterSnapshot(ctx, loser)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	linkRefs, err := q.ListEmpiActiveLinkRefs(ctx, loser)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	snapshot := empiMergeSnapshot{
+		LoserMaster: empiSnapshotMaster{
+			ID:                      snapRow.ID,
+			FullName:                snapRow.FullName,
+			BirthDate:               snapRow.BirthDate,
+			Gender:                  snapRow.Gender,
+			FullNameSourcePersonID:  snapRow.FullNameSourcePersonID,
+			BirthDateSourcePersonID: snapRow.BirthDateSourcePersonID,
+			GenderSourcePersonID:    snapRow.GenderSourcePersonID,
+			ManualFields:            snapRow.ManualFields,
+		},
+		Links: make([]empiSnapshotLink, 0, len(linkRefs)),
+	}
+	for _, l := range linkRefs {
+		snapshot.Links = append(snapshot.Links, empiSnapshotLink{LinkID: l.ID, MasterPersonID: l.MasterPersonID})
+	}
+	snapJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+
+	// Merge: pindah link, tandai loser, tulis log, tutup pair, recompute golden.
+	if err := q.MoveEmpiLinksToMaster(ctx, sqlcgen.MoveEmpiLinksToMasterParams{MasterPersonID: winner, MasterPersonID_2: loser}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if err := q.MarkEmpiMasterMerged(ctx, sqlcgen.MarkEmpiMasterMergedParams{MergedIntoMasterPersonID: winner, ID: loser}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if _, err := q.InsertEmpiMergeLog(ctx, sqlcgen.InsertEmpiMergeLogParams{
+		WinnerMasterPersonID: winner, LoserMasterPersonID: loser,
+		Snapshot: snapJSON, Reason: optText("candidate:" + pairID.String()), MergedBy: AuthUserID(c),
+	}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if _, err := q.LinkEmpiCandidatePair(ctx, sqlcgen.LinkEmpiCandidatePairParams{
+		ID: pairID, DecidedBy: AuthUserID(c),
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusConflict, gin.H{"error": "candidate pair is not pending"})
+			return
+		}
+		respondInternalError(c, err)
+		return
+	}
+	if err := q.RecomputeEmpiMasterGolden(ctx, winner); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": pairID, "status": "linked"}, "meta": gin.H{}})
+}
+
+// empiMergeLogJSON renders one merge log row WITHOUT the snapshot payload
+// (metadata + status unmerged saja).
+func empiMergeLogJSON(l sqlcgen.ListEmpiMergeLogsRow) gin.H {
+	return gin.H{
+		"id":                      l.ID,
+		"winner_master_person_id": l.WinnerMasterPersonID,
+		"loser_master_person_id":  l.LoserMasterPersonID,
+		"reason":                  l.Reason,
+		"merged_by":               l.MergedBy,
+		"merged_at":               l.MergedAt,
+		"unmerged_by":             l.UnmergedBy,
+		"unmerged_at":             l.UnmergedAt,
+		"unmerged":                l.UnmergedAt.Valid,
+	}
+}
+
+// ListEmpiMergeLogsHandler godoc
+// @Summary List EMPI master merge logs
+// @Tags empi
+// @Produce json
+// @Security BearerAuth
+// @Param limit query int false "Page size (default 50, max 200)"
+// @Param offset query int false "Page offset"
+// @Success 200 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Router /empi/merge-logs [get]
+func ListEmpiMergeLogsHandler(c *gin.Context) {
+	if !RequirePermission(c, PermEmpiMasterManage) {
+		return
+	}
+	limit, offset := paginationParams(c)
+	q := sqlcgen.New(TxFromContext(c))
+	logs, err := q.ListEmpiMergeLogs(c.Request.Context(), sqlcgen.ListEmpiMergeLogsParams{Limit: limit, Offset: offset})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	rows := make([]gin.H, 0, len(logs))
+	for _, l := range logs {
+		rows = append(rows, empiMergeLogJSON(l))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": rows, "meta": gin.H{}})
+}
+
+type empiMasterUnmergeRequest struct {
+	Reason string `json:"reason"`
+}
+
+// UnmergeEmpiMasterHandler godoc
+// @Summary Undo an EMPI master merge
+// @Description Restores every link and the loser master's golden from the merge log snapshot, then recomputes the winner's golden from its remaining links.
+// @Tags empi
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Merge log UUID"
+// @Param request body empiMasterUnmergeRequest true "Unmerge reason"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /empi/merge-logs/{id}/unmerge [post]
+func UnmergeEmpiMasterHandler(c *gin.Context) {
+	if !RequirePermission(c, PermEmpiMasterManage) {
+		return
+	}
+	logID, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req empiMasterUnmergeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	ctx := c.Request.Context()
+
+	logRow, err := q.GetEmpiMergeLog(ctx, logID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "merge log not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if logRow.UnmergedAt.Valid {
+		c.JSON(http.StatusConflict, gin.H{"error": "merge log already unmerged"})
+		return
+	}
+	var snapshot empiMergeSnapshot
+	if err := json.Unmarshal(logRow.Snapshot, &snapshot); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+
+	// Kembalikan tiap link ke master loser, lalu pulihkan master loser.
+	loser := snapshot.LoserMaster.ID
+	for _, l := range snapshot.Links {
+		if err := q.RestoreEmpiLinkMaster(ctx, sqlcgen.RestoreEmpiLinkMasterParams{
+			MasterPersonID: loser, ID: l.LinkID,
+		}); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+	}
+	if err := q.MarkEmpiMasterUnmerged(ctx, loser); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if err := q.RestoreEmpiMasterGolden(ctx, sqlcgen.RestoreEmpiMasterGoldenParams{
+		ID:                      loser,
+		FullName:                snapshot.LoserMaster.FullName,
+		BirthDate:               snapshot.LoserMaster.BirthDate,
+		Gender:                  snapshot.LoserMaster.Gender,
+		FullNameSourcePersonID:  snapshot.LoserMaster.FullNameSourcePersonID,
+		BirthDateSourcePersonID: snapshot.LoserMaster.BirthDateSourcePersonID,
+		GenderSourcePersonID:    snapshot.LoserMaster.GenderSourcePersonID,
+		ManualFields:            snapshot.LoserMaster.ManualFields,
+	}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	// Golden winner dihitung ulang: set link winner berubah saat restore
+	// (spec §5.1).
+	if err := q.RecomputeEmpiMasterGolden(ctx, logRow.WinnerMasterPersonID); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if err := q.MarkEmpiMergeLogUnmerged(ctx, sqlcgen.MarkEmpiMergeLogUnmergedParams{
+		ID: logID, UnmergedBy: AuthUserID(c),
+	}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"id":          logID,
+		"unmerged_at": time.Now().UTC().Format(time.RFC3339),
+	}, "meta": gin.H{}})
 }

@@ -209,6 +209,65 @@ SET status = 'dismissed', note = COALESCE($2, note), decided_by = $3, decided_at
 WHERE id = $1 AND status = 'pending'
 RETURNING id, status;
 
+-- name: GetEmpiCandidatePair :one
+SELECT id, person_a_id, person_b_id, person_a_company_id, person_b_company_id, score, reason, status
+FROM empi.candidate_pair WHERE id = $1;
+
+-- name: GetEmpiMasterSnapshot :one
+SELECT id, full_name, birth_date, gender, full_name_source_person_id,
+       birth_date_source_person_id, gender_source_person_id, manual_fields
+FROM empi.master_person WHERE id = $1;
+
+-- name: MoveEmpiLinksToMaster :exec
+UPDATE empi.person_link SET master_person_id = $1
+WHERE master_person_id = $2 AND status = 'active';
+
+-- name: MarkEmpiMasterMerged :exec
+UPDATE empi.master_person SET merged_into_master_person_id = $1 WHERE id = $2;
+
+-- name: InsertEmpiMergeLog :one
+INSERT INTO empi.merge_log (winner_master_person_id, loser_master_person_id, snapshot, reason, merged_by)
+VALUES ($1, $2, $3, $4, $5) RETURNING id;
+
+-- name: LinkEmpiCandidatePair :one
+UPDATE empi.candidate_pair SET status = 'linked', decided_by = $2, decided_at = now()
+WHERE id = $1 AND status = 'pending' RETURNING id, status;
+
+-- name: ListEmpiMergeLogs :many
+SELECT id, winner_master_person_id, loser_master_person_id, reason, merged_by, merged_at, unmerged_by, unmerged_at
+FROM empi.merge_log ORDER BY merged_at DESC LIMIT $1 OFFSET $2;
+
+-- name: GetEmpiMergeLog :one
+SELECT id, winner_master_person_id, loser_master_person_id, snapshot, reason, merged_by, merged_at, unmerged_by, unmerged_at
+FROM empi.merge_log WHERE id = $1;
+
+-- name: RestoreEmpiLinkMaster :exec
+UPDATE empi.person_link SET master_person_id = $1 WHERE id = $2;
+
+-- name: MarkEmpiMasterUnmerged :exec
+UPDATE empi.master_person SET merged_into_master_person_id = NULL WHERE id = $1;
+
+-- name: RestoreEmpiMasterGolden :exec
+UPDATE empi.master_person SET
+    full_name = $2, birth_date = $3, gender = $4,
+    full_name_source_person_id = $5, birth_date_source_person_id = $6, gender_source_person_id = $7,
+    manual_fields = $8
+WHERE id = $1;
+
+-- name: MarkEmpiMergeLogUnmerged :exec
+UPDATE empi.merge_log SET unmerged_by = $2, unmerged_at = now() WHERE id = $1;
+
+-- name: ListEmpiActiveLinkRefs :many
+-- Referensi link aktif sebuah master untuk snapshot merge (dibaca SEBELUM
+-- MoveEmpiLinksToMaster; urutan l.id deterministik).
+SELECT id, master_person_id FROM empi.person_link
+WHERE master_person_id = $1 AND status = 'active' ORDER BY id;
+
+-- name: GetEmpiLinkStatusById :one
+-- Status satu link (detached guard handler confirm; GetEmpiLinkByPerson
+-- tidak mengembalikan status dan dipakai pemanggil lain).
+SELECT status FROM empi.person_link WHERE id = $1;
+
 -- name: ListPersonsForEmpiBackfill :many
 -- Kursor (created_at, id): urutan ini menentukan golden first-non-empty —
 -- WAJIB deterministik (spec §9). Dibaca di bawah GUC company batch.
