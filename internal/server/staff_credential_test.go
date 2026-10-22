@@ -138,6 +138,7 @@ type statusRow struct {
 	ValidUntil     *string `json:"valid_until"`
 	DaysRemaining  *int    `json:"days_remaining"`
 	Status         string  `json:"status"`
+	CredentialID   *string `json:"credential_id"`
 }
 
 // decodeCredentialStatus pulls data[] + meta.count out of a status response.
@@ -203,13 +204,22 @@ func TestStaffCredentialStatusIncludesPhysicianAndStaff(t *testing.T) {
 	if str.StaffKind != "physician" || str.Name != "dr. Andi Kredensial" {
 		t.Fatalf("physician str row fields wrong: %+v", str)
 	}
+	if str.CredentialID != nil {
+		t.Fatalf("physician str row must have null credential_id, got %s", *str.CredentialID)
+	}
 	sip := findStatusRow(t, rows, "sip", "SIP-ANDI-1")
 	if sip.Status != "valid" || sip.ValidUntil == nil || *sip.ValidUntil != "2030-06-30" {
 		t.Fatalf("physician sip row must be valid until 2030-06-30, got %+v", sip)
 	}
+	if sip.CredentialID != nil {
+		t.Fatalf("physician sip row must have null credential_id, got %s", *sip.CredentialID)
+	}
 	sipa := findStatusRow(t, rows, "sipa", "SIPA/STAFF/1")
 	if sipa.StaffKind != "staff" || sipa.Status != "valid" {
 		t.Fatalf("staff sipa row wrong: %+v", sipa)
+	}
+	if sipa.CredentialID == nil || *sipa.CredentialID != "41414141-4141-4141-8141-414141414141" {
+		t.Fatalf("staff sipa row must carry credential_id 41414141-…, got %+v", sipa.CredentialID)
 	}
 }
 
@@ -358,13 +368,22 @@ func TestStaffCredentialStatusBoundary(t *testing.T) {
 	if y.Status != "expired" || y.DaysRemaining == nil || *y.DaysRemaining != -1 {
 		t.Fatalf("yesterday must be expired days=-1, got %+v", y)
 	}
+	if y.CredentialID == nil || *y.CredentialID != "71717171-7171-4171-8171-717171717171" {
+		t.Fatalf("yesterday credential_id wrong: %+v", y.CredentialID)
+	}
 	t0 := findStatusRow(t, rows, "str", "STR-BND-cred.boundary.u2")
 	if t0.Status != "expiring" || t0.DaysRemaining == nil || *t0.DaysRemaining != 0 {
 		t.Fatalf("today must be expiring days=0, got %+v", t0)
 	}
+	if t0.CredentialID == nil || *t0.CredentialID != "72727272-7272-4272-8272-727272727272" {
+		t.Fatalf("today credential_id wrong: %+v", t0.CredentialID)
+	}
 	f := findStatusRow(t, rows, "str", "STR-BND-cred.boundary.u3")
 	if f.Status != "valid" || f.DaysRemaining == nil || *f.DaysRemaining != 31 {
 		t.Fatalf("today+31 must be valid days=31, got %+v", f)
+	}
+	if f.CredentialID == nil || *f.CredentialID != "73737373-7373-4373-8373-737373737373" {
+		t.Fatalf("today+31 credential_id wrong: %+v", f.CredentialID)
 	}
 	// Severity ordering: expired first, then expiring, then valid.
 	if rows[0].Status != "expired" || rows[1].Status != "expiring" || rows[2].Status != "valid" {

@@ -29,7 +29,7 @@ WHERE id = $1 AND deleted_at IS NULL;
 -- name: ListStaffCredentialStatus :many
 SELECT p.merchant_id, p.company_id, 'physician'::text AS staff_kind,
        au.id AS user_id, COALESCE(pe.full_name, au.username, '') AS staff_name,
-       'str'::text AS credential_kind, p.str_number AS license_number, NULL::date AS valid_until
+       'str'::text AS credential_kind, p.str_number AS license_number, NULL::date AS valid_until, NULL::uuid AS credential_id
 FROM core.physician p
 JOIN core.person pe ON pe.id = p.person_id
 LEFT JOIN core.app_user au ON au.id = (
@@ -42,7 +42,7 @@ WHERE p.merchant_id = $1 AND p.deleted_at IS NULL AND p.str_number IS NOT NULL
 UNION ALL
 SELECT p.merchant_id, p.company_id, 'physician'::text AS staff_kind,
        au.id AS user_id, COALESCE(pe.full_name, au.username, '') AS staff_name,
-       'sip'::text AS credential_kind, p.sip_number AS license_number, p.sip_valid_until AS valid_until
+       'sip'::text AS credential_kind, p.sip_number AS license_number, p.sip_valid_until AS valid_until, NULL::uuid AS credential_id
 FROM core.physician p
 JOIN core.person pe ON pe.id = p.person_id
 LEFT JOIN core.app_user au ON au.id = (
@@ -55,7 +55,7 @@ WHERE p.merchant_id = $1 AND p.deleted_at IS NULL AND p.sip_number IS NOT NULL
 UNION ALL
 SELECT sc.merchant_id, sc.company_id, 'staff'::text AS staff_kind,
        u.id AS user_id, COALESCE(pe2.full_name, u.username, '') AS staff_name,
-       sc.credential_kind, sc.license_number, sc.valid_until
+       sc.credential_kind, sc.license_number, sc.valid_until, sc.id AS credential_id
 FROM core.staff_credential sc
 JOIN core.app_user u ON u.id = sc.user_id AND u.deleted_at IS NULL
 LEFT JOIN core.person pe2 ON pe2.id = u.person_id

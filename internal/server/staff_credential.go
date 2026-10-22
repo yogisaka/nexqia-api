@@ -136,9 +136,14 @@ func ListStaffCredentialStatusHandler(c *gin.Context) {
 		if row.UserID.Valid {
 			userID = row.UserID.String()
 		}
+		var credentialID any
+		if row.CredentialID.Valid {
+			credentialID = row.CredentialID.String()
+		}
 		entries = append(entries, entry{
 			item: gin.H{
 				"staff_kind":      row.StaffKind,
+				"credential_id":   credentialID,
 				"user_id":         userID,
 				"name":            row.StaffName,
 				"credential_kind": row.CredentialKind,
