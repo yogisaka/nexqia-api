@@ -47,6 +47,10 @@ func main() {
 	slog.Info("email worker started", "driver", cfg.MailDriver)
 	go mail.RunWorker(ctx, pool, mail.NewSender(cfg), cfg)
 
+	// Periodic STR/SIP/SIPA expiry reminders (internal/server) — one scan a day.
+	slog.Info("credential check worker started", "interval_hours", cfg.CredentialCheckIntervalHours, "warn_days", cfg.CredentialWarnDays)
+	go server.RunCredentialCheckWorker(ctx, pool, cfg)
+
 	// Integration queue worker (internal/connect); adapters register in C2.
 	connectRegistry := connect.NewRegistry()
 	connectRegistry.Register(connect.ProviderSatusehat, connect.NewSatusehatAdapter())

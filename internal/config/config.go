@@ -159,6 +159,13 @@ type Config struct {
 	ConnectPollIntervalSeconds int
 	ConnectBatchSize           int
 	IntegrationCredentialKey   string
+
+	// CredentialCheckIntervalHours (env CREDENTIAL_CHECK_INTERVAL_HOURS) — how often
+	// the credential expiry worker scans STR/SIP/SIPA expiry dates. Default 24.
+	CredentialCheckIntervalHours int
+	// CredentialWarnDays (env CREDENTIAL_WARN_DAYS) — licenses expiring within
+	// this many days (merchant-local) join the reminder. Default 30.
+	CredentialWarnDays int
 }
 
 func Load() Config {
@@ -235,6 +242,9 @@ func Load() Config {
 		ConnectPollIntervalSeconds: getEnvInt("CONNECT_POLL_INTERVAL_SECONDS", 10),
 		ConnectBatchSize:           getEnvInt("CONNECT_BATCH_SIZE", 20),
 		IntegrationCredentialKey:   getEnv("INTEGRATION_CREDENTIAL_KEY", ""),
+
+		CredentialCheckIntervalHours: getEnvInt("CREDENTIAL_CHECK_INTERVAL_HOURS", 24),
+		CredentialWarnDays:           getEnvInt("CREDENTIAL_WARN_DAYS", 30),
 	}
 	// Fail fast at startup: an idle fence the API would have to half-enforce is
 	// worse than refusing to boot (spec 2026-09-29-merchant-security-settings §3).
@@ -293,6 +303,9 @@ func validateMail(cfg Config) error {
 		if f.value <= 0 {
 			return fmt.Errorf("%s must be > 0, got %d", f.name, f.value)
 		}
+	}
+	if cfg.CredentialCheckIntervalHours <= 0 || cfg.CredentialWarnDays <= 0 {
+		return fmt.Errorf("credential check config must be positive")
 	}
 	return nil
 }
