@@ -32,6 +32,7 @@ func RegisterQueueFlowRoutes(rg *gin.RouterGroup) {
 	rg.DELETE("/queue-flows/:id", DeleteQueueFlowHandler)
 	rg.PUT("/queue-flows/:id/stages", ReplaceQueueFlowStagesHandler)
 	rg.POST("/queue-flows/from-preset/:preset", CreateQueueFlowFromPresetHandler)
+	rg.GET("/queue-flows/presets", ListQueueFlowPresetsHandler)
 }
 
 // RequireAnyPermissionForMerchant grants access when the caller holds ANY of

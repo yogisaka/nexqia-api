@@ -164,6 +164,90 @@ func TestQueueFlow_Presets(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("unknown preset expected 400, got %d: %v", code, resp)
 	}
+
+	// Katalog preset: 200, 5 entri alfabetis, tanpa igd (ditunda Fase 2).
+	code, resp = qeRequest(t, env, http.MethodGet, "/api/v1/queue-flows/presets", nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET presets expected 200, got %d: %v", code, resp)
+	}
+	presets := resp["data"].([]any)
+	wantKeys := []string{"fast_track", "hemodialisa", "mcu", "outpatient_full", "simple"}
+	if len(presets) != len(wantKeys) {
+		t.Fatalf("expected %d presets, got %d: %v", len(wantKeys), len(presets), resp)
+	}
+	for i, w := range wantKeys {
+		p := presets[i].(map[string]any)
+		if p["key"] != w {
+			t.Fatalf("preset %d: expected key %s, got %v", i, w, p)
+		}
+		if p["key"] == "hemodialisa" && p["name"] != "Hemodialisa" {
+			t.Fatalf("hemodialisa preset name: expected Hemodialisa, got %v", p["name"])
+		}
+	}
+
+	// Preset hemodialisa: 7 stages, check-in wajib, dokter skippable, tanpa BPJS tasks.
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/from-preset/hemodialisa",
+		map[string]string{"merchant_id": env.merchantID})
+	if code != http.StatusCreated {
+		t.Fatalf("preset hemodialisa expected 201, got %d: %v", code, resp)
+	}
+	hdstages := resp["data"].(map[string]any)["stages"].([]any)
+	if len(hdstages) != 7 {
+		t.Fatalf("hemodialisa: expected 7 stages, got %d", len(hdstages))
+	}
+	if hdstages[1].(map[string]any)["requires_checkin"] != true {
+		t.Fatalf("hemodialisa stage 1 must require check-in: %v", hdstages[1])
+	}
+	if hdstages[3].(map[string]any)["skippable"] != true {
+		t.Fatalf("hemodialisa stage 3 must be skippable: %v", hdstages[3])
+	}
+	for i, raw := range hdstages {
+		s := raw.(map[string]any)
+		if s["bpjs_task_start"] != nil || s["bpjs_task_end"] != nil {
+			t.Fatalf("hemodialisa stage %d must have null bpjs tasks: %v", i, s)
+		}
+	}
+
+	// Preset mcu: 6 stages, stage 2 = support, stage 4 skippable.
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/from-preset/mcu",
+		map[string]string{"merchant_id": env.merchantID})
+	if code != http.StatusCreated {
+		t.Fatalf("preset mcu expected 201, got %d: %v", code, resp)
+	}
+	mcustages := resp["data"].(map[string]any)["stages"].([]any)
+	if len(mcustages) != 6 {
+		t.Fatalf("mcu: expected 6 stages, got %d", len(mcustages))
+	}
+	if mcustages[2].(map[string]any)["kind"] != "support" {
+		t.Fatalf("mcu stage 2 must be support: %v", mcustages[2])
+	}
+	if mcustages[4].(map[string]any)["skippable"] != true {
+		t.Fatalf("mcu stage 4 must be skippable: %v", mcustages[4])
+	}
+
+	// Preset fast_track: 3 stages, semua prefix FT.
+	code, resp = qeRequest(t, env, http.MethodPost, "/api/v1/queue-flows/from-preset/fast_track",
+		map[string]string{"merchant_id": env.merchantID})
+	if code != http.StatusCreated {
+		t.Fatalf("preset fast_track expected 201, got %d: %v", code, resp)
+	}
+	ftstages := resp["data"].(map[string]any)["stages"].([]any)
+	if len(ftstages) != 3 {
+		t.Fatalf("fast_track: expected 3 stages, got %d", len(ftstages))
+	}
+	for i, raw := range ftstages {
+		if got := raw.(map[string]any)["number_prefix"]; got != "FT" {
+			t.Fatalf("fast_track stage %d must have prefix FT, got %v", i, got)
+		}
+	}
+
+	// Tanpa izin operations.queue.configure → 403.
+	noPermToken := mergeUserToken(t, t.Context(), env.pool, env.companyID, env.merchantID, "qeng.preset.noperm", nil)
+	code, resp = qeRequestToken(t, env.router, http.MethodGet, "/api/v1/queue-flows/presets",
+		noPermToken, env.companyID, env.merchantID, nil)
+	if code != http.StatusForbidden {
+		t.Fatalf("GET presets without permission expected 403, got %d: %v", code, resp)
+	}
 }
 
 func TestQueueFlow_DeleteGuardsAndStageInUse(t *testing.T) {
