@@ -155,6 +155,9 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	RegisterCounterRoutes(locked)
 	RegisterQueueRoutes(locked)
 	RegisterAdmissionRoutes(locked)
+	// CPPT fase 1: clinical form templates + draft entry CRUD (spec
+	// 2026-10-21-cppt-rajal-fase1-design §9).
+	RegisterClinicalRoutes(locked)
 	RegisterDisplayRoutes(locked)
 	RegisterQueueFlowRoutes(locked)
 	RegisterVisitMediaRoutes(locked)

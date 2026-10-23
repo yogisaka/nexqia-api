@@ -12,11 +12,16 @@ import (
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 )
 
+// PermTerminologyLookup allows read-only concept lookup without the person
+// management grant (migration 000089; CPPT diagnosis pickers — spec
+// 2026-10-21-cppt-rajal-fase1-design §7). Admins keep access via
+// PermPersonManage.
+const PermTerminologyLookup = "terminology.lookup"
+
 // RegisterTerminologyRoutes wires the read-only concept search used by the
-// pendaftaran form's searchable comboboxes (wilayah, option, diagnosis).
-// Guarded by PermPersonManage: the only consumers are person/pendaftaran
-// screens, and the RBAC convention here has no separate read permission
-// (see person.go).
+// pendaftaran form's searchable comboboxes (wilayah, option, diagnosis) and,
+// since 000089, the CPPT diagnosis picker. Open to person admins OR holders
+// of terminology.lookup.
 func RegisterTerminologyRoutes(rg *gin.RouterGroup) {
 	rg.GET("/terminology/search", SearchTerminologyHandler)
 	rg.GET("/terminology/map", TerminologyMapHandler)
@@ -34,7 +39,12 @@ func RegisterTerminologyRoutes(rg *gin.RouterGroup) {
 // @Success 200 {object} apiResponse
 // @Router /terminology/search [get]
 func SearchTerminologyHandler(c *gin.Context) {
-	if !RequirePermission(c, PermPersonManage) {
+	merchantID, ok := parseUUID(c.GetHeader("X-Merchant-ID"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid X-Merchant-ID"})
+		return
+	}
+	if !RequireAnyPermissionForMerchant(c, merchantID, PermPersonManage, PermTerminologyLookup) {
 		return
 	}
 	system := c.Query("system")
@@ -84,7 +94,12 @@ func SearchTerminologyHandler(c *gin.Context) {
 // @Failure 404 {object} apiResponse
 // @Router /terminology/map [get]
 func TerminologyMapHandler(c *gin.Context) {
-	if !RequirePermission(c, PermPersonManage) {
+	merchantID, ok := parseUUID(c.GetHeader("X-Merchant-ID"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid X-Merchant-ID"})
+		return
+	}
+	if !RequireAnyPermissionForMerchant(c, merchantID, PermPersonManage, PermTerminologyLookup) {
 		return
 	}
 	system, code, target := c.Query("system"), c.Query("code"), c.Query("target")

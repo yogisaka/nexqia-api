@@ -1,0 +1,648 @@
+// internal/server/clinical_form.go
+// CPPT Fase 1 (spec 2026-10-21-cppt-rajal-fase1-design §5, §9): clinical form
+// template resolution and draft entry CRUD with soft validation. Sign/lock/
+// addendum/counter-sign live in clinical_form_sign.go (plan A Task 3).
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
+)
+
+// Clinical module permissions (migration 000089; pattern queue.go).
+const (
+	PermClinicalRecordView        = "clinical.record.view"
+	PermClinicalRecordWrite       = "clinical.record.write"
+	PermClinicalRecordCountersign = "clinical.record.countersign"
+	PermClinicalNutritionWrite    = "clinical.nutrition.write"
+)
+
+func RegisterClinicalRoutes(rg *gin.RouterGroup) {
+	rg.GET("/clinical/form-templates", ListClinicalFormTemplatesHandler)
+	rg.POST("/clinical/forms", CreateClinicalFormHandler)
+	rg.GET("/clinical/forms", AccessLog("clinical_form", "list", ""), ListClinicalFormsHandler)
+	rg.GET("/clinical/forms/:id", AccessLog("clinical_form", "view", "id"), GetClinicalFormHandler)
+	rg.PATCH("/clinical/forms/:id", UpdateClinicalFormHandler)
+	rg.DELETE("/clinical/forms/:id", DeleteClinicalFormHandler)
+}
+
+type clinicalSectionOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// clinicalSectionDef mirrors one entry of core.template_clinical_form.sections
+// (spec §5: {"sections":[{"key","label","kind","soft_required"?,"options"?}]}).
+type clinicalSectionDef struct {
+	Key          string                  `json:"key"`
+	Label        string                  `json:"label"`
+	Kind         string                  `json:"kind"`
+	SoftRequired bool                    `json:"soft_required"`
+	Options      []clinicalSectionOption `json:"options"`
+}
+
+type clinicalSectionsDef struct {
+	Sections []clinicalSectionDef `json:"sections"`
+}
+
+// clinicalSectionKinds are the kinds the server validates in v1 (spec §5);
+// any other kind in template data is rejected instead of silently ignored.
+var clinicalSectionKinds = map[string]bool{
+	"textarea": true, "text": true, "number": true, "select": true,
+	"vitals": true, "diagnosis": true, "date": true,
+}
+
+// resolveClinicalFormTemplate picks the active clinical_form template for
+// formType with scope priority merchant > company > platform (spec §9:178).
+func resolveClinicalFormTemplate(ctx context.Context, q *sqlcgen.Queries, companyID, merchantID pgtype.UUID, formType string) (sqlcgen.ListClinicalFormTemplatesRow, bool, error) {
+	rows, err := q.ListClinicalFormTemplates(ctx, sqlcgen.ListClinicalFormTemplatesParams{CompanyID: companyID, MerchantID: merchantID})
+	if err != nil {
+		return sqlcgen.ListClinicalFormTemplatesRow{}, false, err
+	}
+	scopeRank := map[string]int{"platform": 1, "company": 2, "merchant": 3}
+	var best sqlcgen.ListClinicalFormTemplatesRow
+	found := false
+	for _, r := range rows {
+		if r.FormType != formType {
+			continue
+		}
+		if !found || scopeRank[r.Scope] > scopeRank[best.Scope] {
+			best, found = r, true
+		}
+	}
+	return best, found, nil
+}
+
+// clinicalWritePerm maps a form category to its write permission (spec §9:179):
+// gizi forms — and the gizi-only assessment skrining — need
+// clinical.nutrition.write, everything else clinical.record.write.
+func clinicalWritePerm(formType, category string) string {
+	if category == "gizi" || formType == "ases_gizi_skrining" {
+		return PermClinicalNutritionWrite
+	}
+	return PermClinicalRecordWrite
+}
+
+func clinicalIsGiziForm(formType, category string) bool {
+	return category == "gizi" || formType == "ases_gizi_skrining"
+}
+
+// clinicalUserHasPerm reports whether the caller's active role holds code at
+// merchantID — used for read-path filtering where a 403 is not wanted.
+func clinicalUserHasPerm(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, code string) bool {
+	roleID, err := effectiveRoleID(c, q, AuthUserID(c), merchantID)
+	if err != nil || !roleID.Valid {
+		return false
+	}
+	has, err := q.UserHasPermission(c.Request.Context(), sqlcgen.UserHasPermissionParams{
+		UserID: AuthUserID(c), MerchantID: merchantID, Code: code, RoleID: roleID,
+	})
+	return err == nil && has
+}
+
+func clinicalInvalidSection(c *gin.Context, key string) {
+	c.JSON(http.StatusBadRequest, gin.H{"error": "invalid value for section '" + key + "'"})
+}
+
+// clinicalSectionEmpty reports a JSON value as "kosong" (null, empty string,
+// empty object/array) — empty sections never block saving (user decision 7).
+func clinicalSectionEmpty(raw json.RawMessage) bool {
+	s := string(raw)
+	return s == "" || s == "null" || s == `""` || s == "{}" || s == "[]"
+}
+
+// validateClinicalFormData enforces spec §5.2 against the pinned template
+// sections: exact key set, per-kind value types, physiological vitals range,
+// MST score consistency. Soft warnings (empty sections) are returned without
+// failing; validation failures write the 400 and return false.
+func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSectionsDef, raw json.RawMessage) ([]string, bool) {
+	warnings := []string{}
+	byKey := make(map[string]clinicalSectionDef, len(defs.Sections))
+	for _, d := range defs.Sections {
+		if !clinicalSectionKinds[d.Kind] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported section kind: " + d.Kind})
+			return nil, false
+		}
+		byKey[d.Key] = d
+	}
+	var payload struct {
+		Sections map[string]json.RawMessage `json:"sections"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid form_data"})
+			return nil, false
+		}
+	}
+	for key := range payload.Sections {
+		if _, ok := byKey[key]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown section key: " + key})
+			return nil, false
+		}
+	}
+	mst := map[string]int{}
+	for _, d := range defs.Sections {
+		rawVal, present := payload.Sections[d.Key]
+		if !present || clinicalSectionEmpty(rawVal) {
+			warnings = append(warnings, "section '"+d.Key+"' kosong")
+			continue
+		}
+		switch d.Kind {
+		case "textarea", "text", "select":
+			var s string
+			if err := json.Unmarshal(rawVal, &s); err != nil || s == "" {
+				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+			// MST question answers carry their score in the select value.
+			if n, err := strconv.Atoi(s); err == nil {
+				mst[d.Key] = n
+			}
+		case "number":
+			var n json.Number
+			if err := json.Unmarshal(rawVal, &n); err != nil {
+				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+			if d.Key == "skor_mst" {
+				if v, err := n.Float64(); err == nil {
+					mst["skor_mst"] = int(v)
+				}
+			}
+		case "date":
+			var s string
+			if err := json.Unmarshal(rawVal, &s); err != nil {
+				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+			if _, err := time.Parse("2006-01-02", s); err != nil {
+				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+		case "vitals":
+			var vitals map[string]float64
+			if err := json.Unmarshal(rawVal, &vitals); err != nil {
+				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+			for _, v := range vitals {
+				if v <= 0 || v >= 1000 {
+					clinicalInvalidSection(c, d.Key)
+					return nil, false
+				}
+			}
+		case "diagnosis":
+			var dx struct {
+				Narrative *string           `json:"narrative"`
+				Diagnoses []json.RawMessage `json:"diagnoses"`
+			}
+			if err := json.Unmarshal(rawVal, &dx); err != nil || dx.Narrative == nil || dx.Diagnoses == nil {
+				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+		}
+	}
+	// MST consistency (spec §5.1/§5.2): skor_mst must equal the sum of the
+	// three question scores and risiko_gizi must follow skor >= 2.
+	if formType == "ases_gizi_skrining" {
+		if skor, ok := mst["skor_mst"]; ok {
+			var risiko string
+			if r, okR := payload.Sections["risiko_gizi"]; okR && !clinicalSectionEmpty(r) {
+				_ = json.Unmarshal(r, &risiko)
+			}
+			sum := mst["mst_penurunan_bb"] + mst["mst_nafsu_makan"] + mst["mst_sakit_akut"]
+			want := "tidak_berisiko"
+			if skor >= 2 {
+				want = "berisiko"
+			}
+			if len(mst) < 4 || sum != skor || risiko != want {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "skor MST tidak konsisten"})
+				return nil, false
+			}
+		}
+	}
+	return warnings, true
+}
+
+// clinicalFormJSON maps a sqlcgen row to the snake_case contract shape (spec
+// §9; the sqlcgen struct has no json tags — pattern admissionJSON).
+func clinicalFormJSON(e sqlcgen.ClinicalFormFormInstance) gin.H {
+	return gin.H{
+		"id":                uuidJSON(e.ID),
+		"company_id":        uuidJSON(e.CompanyID),
+		"merchant_id":       uuidJSON(e.MerchantID),
+		"admission_id":      uuidJSON(e.AdmissionID),
+		"form_type":         e.FormType,
+		"template_id":       uuidJSON(e.TemplateID),
+		"template_version":  e.TemplateVersion,
+		"form_data":         json.RawMessage(e.FormData),
+		"status":            e.Status,
+		"filled_by":         uuidJSON(e.FilledBy),
+		"filled_at":         tsJSON(e.FilledAt),
+		"signed_by":         uuidJSON(e.SignedBy),
+		"signed_at":         tsJSON(e.SignedAt),
+		"signature_hash":    textJSON(e.SignatureHash),
+		"counter_signed_by": uuidJSON(e.CounterSignedBy),
+		"counter_signed_at": tsJSON(e.CounterSignedAt),
+		"addendum_to_id":    uuidJSON(e.AddendumToID),
+		"addendum_reason":   textJSON(e.AddendumReason),
+		"created_at":        tsJSON(e.CreatedAt),
+		"updated_at":        tsJSON(e.UpdatedAt),
+		"deleted_at":        tsJSON(e.DeletedAt),
+		"deleted_by":        uuidJSON(e.DeletedBy),
+		"row_version":       e.RowVersion,
+	}
+}
+
+// ListClinicalFormTemplatesHandler godoc
+// @Summary List active clinical form templates (best scope per form_type)
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Success 200 {object} apiResponse
+// @Router /clinical/form-templates [get]
+func ListClinicalFormTemplatesHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequireAnyPermissionForMerchant(c, merchantID, PermClinicalRecordView, PermClinicalNutritionWrite) {
+		return
+	}
+	rows, err := sqlcgen.New(TxFromContext(c)).ListClinicalFormTemplates(c.Request.Context(),
+		sqlcgen.ListClinicalFormTemplatesParams{CompanyID: AuthCompanyID(c), MerchantID: merchantID})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	scopeRank := map[string]int{"platform": 1, "company": 2, "merchant": 3}
+	best := map[string]sqlcgen.ListClinicalFormTemplatesRow{}
+	for _, r := range rows {
+		if cur, seen := best[r.FormType]; !seen || scopeRank[r.Scope] > scopeRank[cur.Scope] {
+			best[r.FormType] = r
+		}
+	}
+	data := make([]gin.H, 0, len(best))
+	for _, r := range best {
+		data = append(data, gin.H{
+			"id": uuidJSON(r.ID), "code": r.Code, "form_type": r.FormType,
+			"category": r.Category, "name": r.Name, "scope": r.Scope,
+			"version": r.Version,
+			// sections as a JSON object, not a string.
+			"sections": json.RawMessage(r.Sections),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+type createClinicalFormRequest struct {
+	AdmissionID string          `json:"admission_id" binding:"required"`
+	FormType    string          `json:"form_type" binding:"required"`
+	FormData    json.RawMessage `json:"form_data"`
+}
+
+// CreateClinicalFormHandler godoc
+// @Summary Create a draft clinical form entry (CPPT fase 1 = rawat jalan only)
+// @Tags clinical
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param request body createClinicalFormRequest true "Form entry data"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /clinical/forms [post]
+func CreateClinicalFormHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	var req createClinicalFormRequest
+	if !bindJSONOrFields(c, &req) {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	ctx := c.Request.Context()
+	tpl, found, err := resolveClinicalFormTemplate(ctx, q, AuthCompanyID(c), merchantID, req.FormType)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "template form tidak ditemukan"})
+		return
+	}
+	if !RequirePermissionForMerchant(c, clinicalWritePerm(req.FormType, tpl.Category), merchantID) {
+		return
+	}
+	admissionID, okID := parseUUID(req.AdmissionID)
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid admission_id"})
+		return
+	}
+	admission, err := q.GetAdmissionByID(ctx, admissionID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && admission.MerchantID != merchantID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "admission tidak ditemukan"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if admission.Status == "cancelled" || admission.AdmissionType != "outpatient" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cppt fase 1 hanya rawat jalan"})
+		return
+	}
+	var defs clinicalSectionsDef
+	if err := json.Unmarshal(tpl.Sections, &defs); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	warnings, okV := validateClinicalFormData(c, req.FormType, defs, req.FormData)
+	if !okV {
+		return
+	}
+	formData := req.FormData
+	if len(formData) == 0 {
+		formData = json.RawMessage(`{"sections":{}}`)
+	}
+	entry, err := q.CreateClinicalFormInstance(ctx, sqlcgen.CreateClinicalFormInstanceParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID, AdmissionID: admissionID,
+		FormType: req.FormType, TemplateID: tpl.TemplateID, TemplateVersion: tpl.Version,
+		FormData: formData, FilledBy: AuthUserID(c),
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"entry": clinicalFormJSON(entry), "warnings": warnings}, "meta": gin.H{}})
+}
+
+// ListClinicalFormsHandler godoc
+// @Summary List clinical form entries of one admission (desc filled_at)
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param admission_id query string true "Admission UUID"
+// @Success 200 {object} apiResponse
+// @Router /clinical/forms [get]
+func ListClinicalFormsHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalRecordView, merchantID) {
+		return
+	}
+	admissionID, okID := parseUUID(c.Query("admission_id"))
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "admission_id query param is required"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	ctx := c.Request.Context()
+	if _, err := q.GetAdmissionByID(ctx, admissionID); errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "admission tidak ditemukan"})
+		return
+	} else if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	seeGizi := clinicalUserHasPerm(c, q, merchantID, PermClinicalNutritionWrite)
+	templates, err := q.ListClinicalFormTemplates(ctx, sqlcgen.ListClinicalFormTemplatesParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	category := map[string]string{}
+	for _, r := range templates {
+		if _, seen := category[r.FormType]; !seen {
+			category[r.FormType] = r.Category
+		}
+	}
+	rows, err := q.ListClinicalFormInstancesByAdmission(ctx, sqlcgen.ListClinicalFormInstancesByAdmissionParams{
+		AdmissionID: admissionID, Column2: false,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	// Gizi forms need clinical.nutrition.write to be visible (spec §9:180);
+	// RLS already scopes everything to the merchant.
+	items := []gin.H{}
+	for _, r := range rows {
+		if !seeGizi && clinicalIsGiziForm(r.FormType, category[r.FormType]) {
+			continue
+		}
+		items = append(items, clinicalFormJSON(r))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{}})
+}
+
+// GetClinicalFormHandler godoc
+// @Summary Get a clinical form entry by id (with addendum chain ids)
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param id path string true "Form entry UUID"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /clinical/forms/{id} [get]
+func GetClinicalFormHandler(c *gin.Context) {
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if !RequirePermission(c, PermClinicalRecordView) {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	entry, err := q.GetClinicalFormInstance(c.Request.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "entri tidak ditemukan"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	addendums, err := q.ListClinicalFormAddendums(c.Request.Context(), id)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	ids := make([]string, 0, len(addendums))
+	for _, a := range addendums {
+		ids = append(ids, a.ID.String())
+	}
+	data := clinicalFormJSON(entry)
+	data["addendums"] = ids
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+type updateClinicalFormRequest struct {
+	FormData json.RawMessage `json:"form_data" binding:"required"`
+}
+
+// UpdateClinicalFormHandler godoc
+// @Summary Update form_data of a draft entry (author only; signed = locked)
+// @Tags clinical
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param id path string true "Form entry UUID"
+// @Param request body updateClinicalFormRequest true "New form data"
+// @Success 200 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /clinical/forms/{id} [patch]
+func UpdateClinicalFormHandler(c *gin.Context) {
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	ctx := c.Request.Context()
+	// FOR UPDATE so a concurrent sign cannot slip between the checks and write.
+	entry, err := q.GetClinicalFormInstanceForUpdate(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "entri tidak ditemukan"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	tpl, found, err := resolveClinicalFormTemplate(ctx, q, entry.CompanyID, merchantID, entry.FormType)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !found {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "template form tidak ditemukan"})
+		return
+	}
+	if !RequirePermissionForMerchant(c, clinicalWritePerm(entry.FormType, tpl.Category), merchantID) {
+		return
+	}
+	if entry.FilledBy != AuthUserID(c) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "hanya penulis entri"})
+		return
+	}
+	if entry.Status != "draft" {
+		c.JSON(http.StatusConflict, gin.H{"error": "entri sudah ditandatangani dan terkunci"})
+		return
+	}
+	var req updateClinicalFormRequest
+	if !bindJSONOrFields(c, &req) {
+		return
+	}
+	var defs clinicalSectionsDef
+	if err := json.Unmarshal(tpl.Sections, &defs); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	warnings, okV := validateClinicalFormData(c, entry.FormType, defs, req.FormData)
+	if !okV {
+		return
+	}
+	updated, err := q.UpdateClinicalFormInstanceDraft(ctx, sqlcgen.UpdateClinicalFormInstanceDraftParams{
+		ID: id, FormData: req.FormData,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusConflict, gin.H{"error": "entri sudah ditandatangani dan terkunci"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"entry": clinicalFormJSON(updated), "warnings": warnings}, "meta": gin.H{}})
+}
+
+// DeleteClinicalFormHandler godoc
+// @Summary Soft-delete a draft clinical form entry (author only)
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param id path string true "Form entry UUID"
+// @Success 200 {object} apiResponse
+// @Failure 403 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /clinical/forms/{id} [delete]
+func DeleteClinicalFormHandler(c *gin.Context) {
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	ctx := c.Request.Context()
+	entry, err := q.GetClinicalFormInstanceForUpdate(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "entri tidak ditemukan"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	tpl, found, err := resolveClinicalFormTemplate(ctx, q, entry.CompanyID, merchantID, entry.FormType)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !found {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "template form tidak ditemukan"})
+		return
+	}
+	if !RequirePermissionForMerchant(c, clinicalWritePerm(entry.FormType, tpl.Category), merchantID) {
+		return
+	}
+	if entry.FilledBy != AuthUserID(c) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "hanya penulis entri"})
+		return
+	}
+	if entry.Status != "draft" {
+		c.JSON(http.StatusConflict, gin.H{"error": "entri sudah ditandatangani dan terkunci"})
+		return
+	}
+	if _, err := q.SoftDeleteClinicalFormInstance(ctx, sqlcgen.SoftDeleteClinicalFormInstanceParams{
+		ID: id, DeletedBy: AuthUserID(c),
+	}); errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusConflict, gin.H{"error": "entri sudah ditandatangani dan terkunci"})
+		return
+	} else if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": id.String(), "deleted": true}, "meta": gin.H{}})
+}
