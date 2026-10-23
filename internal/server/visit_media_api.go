@@ -60,7 +60,7 @@ func ReissueVisitTokenHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	vm := issueVisitMediaToken(c, q, admission.CompanyID, admission.MerchantID, admission.ID, admission.DepartmentID, admission.PersonID)
+	vm := issueVisitMediaToken(c, q, admission.CompanyID, admission.MerchantID, admission.ID, admission.DepartmentID, admission.PersonID, admission.FallRisk)
 	if vm == nil {
 		return
 	}
@@ -71,7 +71,7 @@ func ReissueVisitTokenHandler(c *gin.Context) {
 // (media resolve + expiry in the merchant zone + QR). It writes the token row
 // in the request tx; on failure it responds via respondInternalError (tx
 // rollback) and returns nil.
-func issueVisitMediaToken(c *gin.Context, q *sqlcgen.Queries, companyID, merchantID, admissionID, departmentID, personID pgtype.UUID) gin.H {
+func issueVisitMediaToken(c *gin.Context, q *sqlcgen.Queries, companyID, merchantID, admissionID, departmentID, personID pgtype.UUID, fallRisk bool) gin.H {
 	ctx := c.Request.Context()
 	loc, err := merchantLocation(ctx, q, merchantID)
 	if err != nil {
@@ -108,7 +108,7 @@ func issueVisitMediaToken(c *gin.Context, q *sqlcgen.Queries, companyID, merchan
 	if qrErr == nil {
 		nullableQR = qr
 	}
-	return gin.H{"media": media, "token": raw, "qr_png": nullableQR, "allergy_alert": allergy > 0}
+	return gin.H{"media": media, "token": raw, "qr_png": nullableQR, "allergy_alert": allergy > 0, "fall_risk": fallRisk}
 }
 
 // RegisterVisitMediaRoutes registers the visit media config endpoints
