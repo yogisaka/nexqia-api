@@ -131,3 +131,54 @@ SET ordering_physician_id = $2, diet_type_id = $3, texture = $4, route = $5,
     updated_by = $10, row_version = row_version + 1
 WHERE id = $1 AND row_version = $11
 RETURNING *;
+
+-- Katalog diet (Task 1 plan B, spec §9): per-merchant diet catalog.
+-- name: ListActiveDietTypes :many
+SELECT id, code, name, default_calorie, is_active
+FROM core.diet_type
+WHERE merchant_id = $1 AND is_active
+ORDER BY code;
+
+-- name: CreateDietType :one
+INSERT INTO core.diet_type
+    (company_id, merchant_id, code, name, default_calorie, created_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING *;
+
+-- name: GetDietType :one
+SELECT id, company_id, merchant_id, code, name, default_calorie, is_active,
+       row_version
+FROM core.diet_type
+WHERE id = $1;
+
+-- Order list/view with diet join (GET responses carry diet_type_code/name).
+-- name: GetNutritionOrderWithDiet :one
+SELECT o.id, o.company_id, o.merchant_id, o.admission_id,
+       o.ordering_physician_id, o.ordered_by, o.diet_type_id, o.texture,
+       o.route, o.calorie_target, o.restriction_note, o.status, o.started_at,
+       o.ended_at, o.created_at, o.created_by, o.updated_at, o.updated_by,
+       o.row_version, d.code AS diet_type_code, d.name AS diet_type_name
+FROM clinical.nutrition_order o
+JOIN core.diet_type d ON d.id = o.diet_type_id
+WHERE o.id = $1;
+
+-- name: ListNutritionOrdersByAdmissionWithDiet :many
+SELECT o.id, o.company_id, o.merchant_id, o.admission_id,
+       o.ordering_physician_id, o.ordered_by, o.diet_type_id, o.texture,
+       o.route, o.calorie_target, o.restriction_note, o.status, o.started_at,
+       o.ended_at, o.created_at, o.created_by, o.updated_at, o.updated_by,
+       o.row_version, d.code AS diet_type_code, d.name AS diet_type_name
+FROM clinical.nutrition_order o
+JOIN core.diet_type d ON d.id = o.diet_type_id
+WHERE o.admission_id = $1
+ORDER BY o.started_at DESC, o.id;
+
+-- FOR UPDATE lock so a concurrent PATCH cannot slip between the checks and write.
+-- name: GetNutritionOrderForUpdate :one
+SELECT id, company_id, merchant_id, admission_id, ordering_physician_id,
+       ordered_by, diet_type_id, texture, route, calorie_target,
+       restriction_note, status, started_at, ended_at, created_at, created_by,
+       updated_at, updated_by, row_version
+FROM clinical.nutrition_order
+WHERE id = $1
+FOR UPDATE;
