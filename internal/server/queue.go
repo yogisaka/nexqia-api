@@ -36,6 +36,7 @@ func RegisterQueueRoutes(rg *gin.RouterGroup) {
 	rg.POST("/queue/:id/skip", SkipQueueHandler)
 	rg.POST("/queue/:id/recall", RecallQueueHandler)
 	rg.POST("/queue/checkin", CheckInQueueHandler)
+	rg.POST("/queue/scan", AccessLog("visit_token", "scan", ""), ScanQueueHandler)
 }
 
 // ListQueueHandler godoc
@@ -452,31 +453,42 @@ func CheckInQueueHandler(c *gin.Context) {
 	if !RequirePermissionForMerchant(c, PermVisitManage, journey.MerchantID) {
 		return
 	}
+	payload, ok := checkInJourney(c, q, journey, counterID)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": payload, "meta": gin.H{}})
+}
+
+// checkInJourney menjalankan inti check-in (counter gate + tiket + journey in_progress).
+// Mengembalikan payload respons {queue, journey} dan ok=false bila sudah merespons error.
+func checkInJourney(c *gin.Context, q *sqlcgen.Queries, journey sqlcgen.OperationsQueueJourney, counterID pgtype.UUID) (gin.H, bool) {
+	ctx := c.Request.Context()
 	counter, err := q.GetCounterByID(ctx, counterID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "counter not found"})
-		return
+		return nil, false
 	}
 	if err != nil {
 		respondInternalError(c, err)
-		return
+		return nil, false
 	}
 	if journey.Status != "awaiting_checkin" || !counter.StageID.Valid ||
 		!journey.CurrentStageID.Valid || counter.StageID != journey.CurrentStageID ||
 		counter.MerchantID != journey.MerchantID {
 		c.JSON(http.StatusConflict, gin.H{"error": "nothing to check in"})
-		return
+		return nil, false
 	}
 	stage, err := q.GetQueueStageByID(ctx, journey.CurrentStageID)
 	if err != nil {
 		respondInternalError(c, err)
-		return
+		return nil, false
 	}
 	ticket, err := issueTicket(ctx, q, &journey, stage, pgtype.UUID{})
 	if err != nil {
 		c.Error(err)
 		respondInternalError(c, err)
-		return
+		return nil, false
 	}
 	updated, err := q.UpdateQueueJourneyStage(ctx, sqlcgen.UpdateQueueJourneyStageParams{
 		ID: journey.ID, CurrentStageID: stage.ID, Status: "in_progress", UpdatedBy: AuthUserID(c),
@@ -484,9 +496,9 @@ func CheckInQueueHandler(c *gin.Context) {
 	if err != nil {
 		c.Error(err)
 		respondInternalError(c, err)
-		return
+		return nil, false
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"queue": ticket, "journey": updated}, "meta": gin.H{}})
+	return gin.H{"queue": ticket, "journey": updated}, true
 }
 
 // ListQueueBoardHandler godoc
