@@ -220,3 +220,96 @@ func TestQueueScanPermissionDenied(t *testing.T) {
 		t.Fatalf("scan without permission = %d %v, want 403", code, resp)
 	}
 }
+
+// qsAdmitFull registers an outpatient and returns (admission id, raw token,
+// resolved media) straight from the POST /admissions response.
+func (e *qsEnv) qsAdmitFull(t *testing.T, personID, flowID, deptID string) (string, string, string) {
+	t.Helper()
+	code, resp := qeRequest(t, e.qeEnv, http.MethodPost, "/api/v1/admissions",
+		map[string]string{"person_id": personID, "department_id": deptID, "flow_id": flowID})
+	if code != http.StatusCreated {
+		t.Fatalf("POST /admissions expected 201, got %d: %v", code, resp)
+	}
+	data := resp["data"].(map[string]any)
+	admission := data["admission"].(map[string]any)
+	vm := data["visit_media"].(map[string]any)
+	return admission["id"].(string), vm["token"].(string), vm["media"].(string)
+}
+
+// qsCompleteSetup builds a two-stage flow with no check-in gate and admits a
+// person. Stage 1 is walked to done, leaving the journey in_progress with a
+// waiting stage-2 ticket. Returns (admission id, raw token, media, stage-1
+// done response).
+func (e *qsEnv) qsCompleteSetup(t *testing.T, label, fullName string) (admissionID, token, media string, stage1Resp map[string]any) {
+	t.Helper()
+	flowID := e.seedFlow(t, "Alur Selesai "+label, []string{"umum", "bpjs", "asuransi"}, nil, true, []qeStage{
+		{seq: 1, name: "Pendaftaran", kind: "admission", perm: "operations.counter.manage"},
+		{seq: 2, name: "Dokter", kind: "physician", perm: server.PermVisitManage},
+	})
+	deptID := e.seedDepartment(t, "QC"+label)
+	personID := e.seedPerson(t, fullName)
+	admissionID, token, media = e.qsAdmitFull(t, personID, flowID, deptID)
+	stage1Resp = e.qeDone(t, e.qeFirstWaitingTicket(t, admissionID))
+	if status, _ := e.qeJourney(t, admissionID); status != "in_progress" {
+		t.Fatalf("journey expected in_progress, got %s", status)
+	}
+	return admissionID, token, media, stage1Resp
+}
+
+// TestVisitTokenClosedOnJourneyCompletion — finishing the last stage marks the
+// journey completed and closes the admission's active visit token
+// (close_reason='journey_completed'); the final PATCH response carries
+// visit_closed:true + media, an advance while the journey is still
+// in_progress does not (spec §4.5).
+func TestVisitTokenClosedOnJourneyCompletion(t *testing.T) {
+	env := qsNewEnv(t, "tokenclose")
+	admissionID, _, media, stage1Resp := env.qsCompleteSetup(t, "TC", "Pasien Tutup Token")
+
+	// Advance while the journey is still in_progress: stage-1 done response
+	// must NOT carry visit_closed.
+	if data := stage1Resp["data"].(map[string]any); data["visit_closed"] != nil {
+		t.Errorf("in-progress PATCH visit_closed = %v, want absent", data["visit_closed"])
+	}
+
+	// Last stage done → journey completed + token closed.
+	resp := env.qeDone(t, env.qeFirstWaitingTicket(t, admissionID))
+	if status, _ := env.qeJourney(t, admissionID); status != "completed" {
+		t.Fatalf("journey expected completed, got %s", status)
+	}
+	data := resp["data"].(map[string]any)
+	if data["visit_closed"] != true {
+		t.Errorf("final PATCH visit_closed = %v, want true", data["visit_closed"])
+	}
+	if data["media"] != media {
+		t.Errorf("final PATCH media = %v, want %q", data["media"], media)
+	}
+
+	// Token row is closed with the journey_completed reason.
+	var n int
+	if err := env.pool.QueryRow(env.ctx, `
+		SELECT count(*) FROM operations.visit_token
+		WHERE admission_id = $1 AND closed_at IS NOT NULL AND close_reason = 'journey_completed'`,
+		admissionID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("closed token rows = %d (err %v), want 1 with close_reason journey_completed", n, err)
+	}
+}
+
+// TestQueueScanAfterCompletion — a closed token scans to 409 no longer active
+// (spec §4.5).
+func TestQueueScanAfterCompletion(t *testing.T) {
+	env := qsNewEnv(t, "scanafter")
+	staff := env.qsStaff(t, "qs.after.staff", server.PermVisitManage)
+	admissionID, token, counterID, _ := env.qsCheckinSetup(t, "A", "Pasien Selesai Scan")
+
+	// Close the token the way journey completion does, then scan.
+	if _, err := env.pool.Exec(env.ctx,
+		"UPDATE operations.visit_token SET closed_at = now(), close_reason = 'journey_completed' WHERE admission_id = $1 AND closed_at IS NULL",
+		admissionID); err != nil {
+		t.Fatalf("close token: %v", err)
+	}
+
+	code, resp := env.qsScan(t, staff, token, counterID)
+	if code != http.StatusConflict || resp["error"] != "visit token is no longer active" {
+		t.Fatalf("scan closed token = %d %v, want 409 visit token is no longer active", code, resp)
+	}
+}

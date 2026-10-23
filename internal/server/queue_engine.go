@@ -300,6 +300,10 @@ type stageAdvance struct {
 	Ticket  *sqlcgen.OperationsQueue
 	Next    *sqlcgen.OperationsQueue
 	Journey *sqlcgen.OperationsQueueJourney
+	// VisitClosed/VisitMedia are set only when the admission's active visit
+	// token was closed because the journey completed (spec §4.5).
+	VisitClosed bool
+	VisitMedia  string
 }
 
 // legacyNextQueueType is the old hardcoded pipeline order, used exactly once
@@ -399,6 +403,23 @@ func advanceStageTicket(ctx context.Context, q *sqlcgen.Queries, ticket sqlcgen.
 			return res, err
 		}
 		res.Journey = &updated
+		// Journey completed → close the admission's active visit token
+		// (spec §4.5). Admissions created before the token feature have no
+		// token: ErrNoRows just skips the close.
+		vt, err := q.GetActiveVisitTokenByAdmission(ctx, journey.AdmissionID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return res, err
+		}
+		if err == nil {
+			if _, err := q.CloseActiveVisitTokensByAdmission(ctx, sqlcgen.CloseActiveVisitTokensByAdmissionParams{
+				AdmissionID: journey.AdmissionID, ClosedBy: userID,
+				CloseReason: pgtype.Text{String: "journey_completed", Valid: true},
+			}); err != nil {
+				return res, err
+			}
+			res.VisitClosed = true
+			res.VisitMedia = vt.Media
+		}
 		return res, nil
 	}
 	if err != nil {

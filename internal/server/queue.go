@@ -238,9 +238,12 @@ func UpdateQueueStatusHandler(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"queue": res.Ticket, "next_stage_queue": res.Next, "journey": res.Journey,
-	}, "meta": gin.H{}})
+	data := gin.H{"queue": res.Ticket, "next_stage_queue": res.Next, "journey": res.Journey}
+	if res.VisitClosed {
+		data["visit_closed"] = true
+		data["media"] = res.VisitMedia
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }
 
 // SkipQueueHandler marks a skippable stage's ticket as skipped (spec §4) and
@@ -315,9 +318,12 @@ func SkipQueueHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"queue": res.Ticket, "next_stage_queue": res.Next, "journey": res.Journey,
-	}, "meta": gin.H{}})
+	data := gin.H{"queue": res.Ticket, "next_stage_queue": res.Next, "journey": res.Journey}
+	if res.VisitClosed {
+		data["visit_closed"] = true
+		data["media"] = res.VisitMedia
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }
 
 // RecallQueueHandler re-announces the ticket as called (spec §4): the queue
