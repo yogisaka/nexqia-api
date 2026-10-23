@@ -34,6 +34,8 @@ func RegisterClinicalRoutes(rg *gin.RouterGroup) {
 	rg.GET("/clinical/forms/:id", AccessLog("clinical_form", "view", "id"), GetClinicalFormHandler)
 	rg.PATCH("/clinical/forms/:id", UpdateClinicalFormHandler)
 	rg.DELETE("/clinical/forms/:id", DeleteClinicalFormHandler)
+	// Sign/counter-sign/addendum (plan A Task 3, spec §9:184-186).
+	RegisterClinicalSignRoutes(rg)
 }
 
 type clinicalSectionOption struct {

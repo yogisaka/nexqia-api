@@ -30,7 +30,8 @@ LIMIT 100000;
 SELECT c.id, c.code, c.display
 FROM terminology.concept c
 JOIN terminology.code_system cs ON cs.id = c.code_system_id
-WHERE cs.name = sqlc.arg('system') AND cs.is_active AND c.code = sqlc.arg('code') AND c.is_active;
+WHERE cs.name = sqlc.arg('system') AND cs.is_active AND c.code = sqlc.arg('code')
+  AND c.is_active AND c.is_selectable;
 
 -- name: ListMapCandidates :many
 -- Conversion candidates source → target system across every active map set

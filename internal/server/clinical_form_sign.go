@@ -64,12 +64,10 @@ type signPasswordRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-// persistSignDiagnoses writes clinical.diagnosis rows at sign time for entries
-// whose assessment section carries diagnoses (spec §6.1, soap_dokter only).
-// Plan A Task 4 replaces this stub with the dual-code resolver.
-func persistSignDiagnoses(c *gin.Context, q *sqlcgen.Queries, entry sqlcgen.ClinicalFormFormInstance, signerID pgtype.UUID, formData map[string]any) error {
-	return nil
-}
+// persistSignDiagnoses lives in clinical_diagnosis.go (plan A Task 4): it
+// writes clinical.diagnosis rows for entries whose assessment section carries
+// diagnoses (spec §6.1, soap_dokter only). Client-side diagnosis errors come
+// back as errInvalidDiagnosis → 400; anything else is internal.
 
 // SignClinicalFormHandler godoc
 // @Summary Sign (TTE) a draft clinical form entry; locks it
@@ -159,10 +157,15 @@ func SignClinicalFormHandler(c *gin.Context) {
 		return
 	}
 	// Diagnosis write (soap_dokter only, addendum included; resume never
-	// writes diagnosis — spec §6.1). Task 4 replaces the stub; any error here
-	// is after the first write → respondInternalError rolls the sign back.
+	// writes diagnosis — spec §6.1). Invalid payload/unresolvable concept →
+	// 400 invalid diagnosis entry; RunRequestTx rolls the sign write back so
+	// the entry stays draft (spec §6.1). Other errors are internal.
 	if entry.FormType == "soap_dokter" {
 		if err := persistSignDiagnoses(c, q, entry, AuthUserID(c), formData); err != nil {
+			if errors.Is(err, errInvalidDiagnosis) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid diagnosis entry"})
+				return
+			}
 			respondInternalError(c, err)
 			return
 		}
