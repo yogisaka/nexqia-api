@@ -48,9 +48,9 @@ func TestRoleTemplate_SeedComplete(t *testing.T) {
 	pool := newTestPostgresPool(t, ctx)
 
 	want := map[string]struct{ roles, perms int }{
-		"klinik_pratama": {5, 60},
-		"klinik_utama":   {7, 69},
-		"rumah_sakit":    {8, 71},
+		"klinik_pratama": {6, 68},
+		"klinik_utama":   {8, 80},
+		"rumah_sakit":    {9, 82},
 	}
 	for code, w := range want {
 		var version, roles, perms int
@@ -64,8 +64,8 @@ func TestRoleTemplate_SeedComplete(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: query template: %v", code, err)
 		}
-		if version != 16 || roles != w.roles || perms != w.perms {
-			t.Fatalf("%s: expected version 16, %d roles, %d perms; got %d, %d, %d", code, w.roles, w.perms, version, roles, perms)
+		if version != 17 || roles != w.roles || perms != w.perms {
+			t.Fatalf("%s: expected version 17, %d roles, %d perms; got %d, %d, %d", code, w.roles, w.perms, version, roles, perms)
 		}
 	}
 
@@ -379,8 +379,8 @@ func TestRoleTemplate_ApplyCreatesRoles(t *testing.T) {
 	pratama := listRoleTemplatesAPI(t, router, token, companyID, merchantID)["klinik_pratama"]
 
 	resp := decodeApply(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, map[string]any{"role_ids": templateRoleIDs(pratama)}))
-	if len(resp.Data.Created) != 5 || len(resp.Data.Skipped) != 0 {
-		t.Fatalf("expected 5 created / 0 skipped, got %+v", resp.Data)
+	if len(resp.Data.Created) != 6 || len(resp.Data.Skipped) != 0 {
+		t.Fatalf("expected 6 created / 0 skipped, got %+v", resp.Data)
 	}
 
 	var roles, systemRoles int
@@ -416,7 +416,7 @@ func TestRoleTemplate_ApplyCreatesRoles(t *testing.T) {
 		t.Fatalf("read template_application: %v", err)
 	}
 	sort.Strings(created)
-	if version != 16 || len(created) != 5 || appliedBy != userID || platformAdmin != nil {
+	if version != 17 || len(created) != 6 || appliedBy != userID || platformAdmin != nil {
 		t.Fatalf("template_application: version %d, created %v, applied_by %s, platform_admin %v", version, created, appliedBy, platformAdmin)
 	}
 }
@@ -438,8 +438,8 @@ func TestRoleTemplate_SkipsExactAndDeleted(t *testing.T) {
 	for _, s := range resp.Data.Skipped {
 		reasons[s.Name] = s.Reason
 	}
-	if len(resp.Data.Created) != 3 || len(reasons) != 2 || reasons["Kasir"] != "exists" || reasons["Perawat"] != "deleted_exists" {
-		t.Fatalf("expected 3 created, Kasir exists + Perawat deleted_exists skipped; got %+v", resp.Data)
+	if len(resp.Data.Created) != 4 || len(reasons) != 2 || reasons["Kasir"] != "exists" || reasons["Perawat"] != "deleted_exists" {
+		t.Fatalf("expected 4 created, Kasir exists + Perawat deleted_exists skipped; got %+v", resp.Data)
 	}
 	var kasirRoles int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM core.role WHERE company_id = $1 AND lower(trim(name)) = 'kasir'", companyID).Scan(&kasirRoles); err != nil {
@@ -464,8 +464,8 @@ func TestRoleTemplate_ApplyTwiceSkipsAll(t *testing.T) {
 
 	decodeApply(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, body))
 	second := decodeApply(t, applyRoleTemplateAPI(t, router, token, companyID, merchantID, pratama.ID, body))
-	if len(second.Data.Created) != 0 || len(second.Data.Skipped) != 5 {
-		t.Fatalf("second apply: expected 0 created / 5 skipped, got %+v", second.Data)
+	if len(second.Data.Created) != 0 || len(second.Data.Skipped) != 6 {
+		t.Fatalf("second apply: expected 0 created / 6 skipped, got %+v", second.Data)
 	}
 	for _, s := range second.Data.Skipped {
 		if s.Reason != "exists" {
@@ -561,8 +561,8 @@ func TestRoleTemplate_RuntimeReadsAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRoleTemplateRoles as app_runtime: %v", err)
 	}
-	if len(rows) != 60+69+71 {
-		t.Fatalf("expected 200 template role/permission rows as app_runtime, got %d", len(rows))
+	if len(rows) != 68+80+82 {
+		t.Fatalf("expected 230 template role/permission rows as app_runtime, got %d", len(rows))
 	}
 	tpl, err := q.GetRoleTemplate(ctx, rows[0].TemplateID)
 	if err != nil {
