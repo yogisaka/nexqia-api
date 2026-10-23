@@ -36,6 +36,12 @@ func RegisterClinicalRoutes(rg *gin.RouterGroup) {
 	rg.DELETE("/clinical/forms/:id", DeleteClinicalFormHandler)
 	// Sign/counter-sign/addendum (plan A Task 3, spec §9:184-186).
 	RegisterClinicalSignRoutes(rg)
+	// Diet catalog + nutrition orders (plan B Task 1).
+	RegisterClinicalNutritionRoutes(rg)
+	// Composed timeline per admission (plan B Task 2). Registered here because
+	// server.go is outside the task's Files list; gin allows the static child
+	// /admissions/:id/clinical-timeline next to /admissions/:id.
+	rg.GET("/admissions/:id/clinical-timeline", AccessLog("clinical_form", "view", "id"), GetClinicalTimelineHandler)
 }
 
 type clinicalSectionOption struct {
