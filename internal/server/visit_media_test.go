@@ -336,7 +336,7 @@ func TestReissueVisitToken(t *testing.T) {
 	f := vmNewFixture(t, "reissue")
 	dept := f.vmSeedDepartment("VMD1")
 	person := f.vmSeedPerson("Pasien Reissue")
-	admissionID, vm1 := f.vmAdmit(dept, person, false)
+	admissionID, vm1 := f.vmAdmit(dept, person, true)
 
 	var resp struct {
 		Data struct {
@@ -350,6 +350,9 @@ func TestReissueVisitToken(t *testing.T) {
 	vm2 := resp.Data.VisitMedia
 	if vm2.Token == "" || vm2.Token == vm1.Token {
 		t.Fatalf("reissued token %q must be non-empty and differ from %q", vm2.Token, vm1.Token)
+	}
+	if !vm2.FallRisk {
+		t.Errorf("reissued visit_media fall_risk = false, want true (persisted admission value)")
 	}
 	var closed bool
 	var reason string
