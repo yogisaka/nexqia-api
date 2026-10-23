@@ -13027,6 +13027,51 @@ const docTemplate = `{
                 }
             }
         },
+        "/persons/resolve-card": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Follows merged_into_person_id to the surviving record (max 10\nhops; longer chains or cycles are treated as unrecognized) — spec §4.4.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person"
+                ],
+                "summary": "Resolve a scanned patient card code to the person record",
+                "parameters": [
+                    {
+                        "description": "Card code",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.resolveCardRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/persons/search": {
             "get": {
                 "security": [
@@ -13261,6 +13306,46 @@ const docTemplate = `{
                         "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/persons/{id}/card": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Re-issuing always replaces the card token hash — the old card\nsilently stops resolving (spec 2026-10-20-qr-visit-media-design.md §4.2).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "person"
+                ],
+                "summary": "Issue (or re-issue) the patient card of a person",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
                         }
                     }
                 }
@@ -16933,6 +17018,63 @@ const docTemplate = `{
                     },
                     "409": {
                         "description": "nothing to check in",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/queue/scan": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Resolves the NQV1- visit token (404 unknown, 409 closed/expired),\nchecks merchant permission, then runs the same check-in core as\nPOST /queue/checkin and returns {queue, journey, patient}.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "queue"
+                ],
+                "summary": "Check a patient in by scanning their visit QR token",
+                "parameters": [
+                    {
+                        "description": "Visit token + counter",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.scanQueueRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid token / invalid counter_id",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "visit token not found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "visit token is no longer active / nothing to check in",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -23274,6 +23416,14 @@ const docTemplate = `{
                 }
             }
         },
+        "server.resolveCardRequest": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                }
+            }
+        },
         "server.resolveLeaveAffectedRequest": {
             "type": "object",
             "required": [
@@ -23370,6 +23520,17 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/server.roleWidgetOverrideInput"
                     }
+                }
+            }
+        },
+        "server.scanQueueRequest": {
+            "type": "object",
+            "properties": {
+                "counter_id": {
+                    "type": "string"
+                },
+                "token": {
+                    "type": "string"
                 }
             }
         },

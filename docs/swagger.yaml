@@ -2028,6 +2028,11 @@ definitions:
     required:
     - stages
     type: object
+  server.resolveCardRequest:
+    properties:
+      code:
+        type: string
+    type: object
   server.resolveLeaveAffectedRequest:
     properties:
       action:
@@ -2094,6 +2099,13 @@ definitions:
     - permission_ids
     - row_version
     - widgets
+    type: object
+  server.scanQueueRequest:
+    properties:
+      counter_id:
+        type: string
+      token:
+        type: string
     type: object
   server.securitySettingsRequest:
     properties:
@@ -11057,6 +11069,33 @@ paths:
       summary: Record an allergy for a person
       tags:
       - patient-allergy
+  /persons/{id}/card:
+    post:
+      description: |-
+        Re-issuing always replaces the card token hash — the old card
+        silently stops resolving (spec 2026-10-20-qr-visit-media-design.md §4.2).
+      parameters:
+      - description: Person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Issue (or re-issue) the patient card of a person
+      tags:
+      - person
   /persons/{id}/consents:
     get:
       parameters:
@@ -11715,6 +11754,36 @@ paths:
       security:
       - BearerAuth: []
       summary: Preview a person merge
+      tags:
+      - person
+  /persons/resolve-card:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Follows merged_into_person_id to the surviving record (max 10
+        hops; longer chains or cycles are treated as unrecognized) — spec §4.4.
+      parameters:
+      - description: Card code
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.resolveCardRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Resolve a scanned patient card code to the person record
       tags:
       - person
   /persons/search:
@@ -13822,6 +13891,45 @@ paths:
       security:
       - BearerAuth: []
       summary: Check a patient in at a stage (issues the stage ticket)
+      tags:
+      - queue
+  /queue/scan:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Resolves the NQV1- visit token (404 unknown, 409 closed/expired),
+        checks merchant permission, then runs the same check-in core as
+        POST /queue/checkin and returns {queue, journey, patient}.
+      parameters:
+      - description: Visit token + counter
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.scanQueueRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: invalid token / invalid counter_id
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: visit token not found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: visit token is no longer active / nothing to check in
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Check a patient in by scanning their visit QR token
       tags:
       - queue
   /rate-components:
