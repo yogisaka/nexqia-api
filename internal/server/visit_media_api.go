@@ -225,7 +225,7 @@ func PutVisitMediaHandler(c *gin.Context) {
 // @Security BearerAuth
 // @Param X-Merchant-ID header string true "Active merchant UUID"
 // @Param department_id path string true "Department UUID"
-// @Success 204 string "No Content"
+// @Success 204 "No Content"
 // @Failure 404 {object} apiErrorResponse
 // @Router /visit-media/{department_id} [delete]
 func DeleteVisitMediaOverrideHandler(c *gin.Context) {

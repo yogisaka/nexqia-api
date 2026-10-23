@@ -305,6 +305,8 @@ definitions:
         type: string
       diagnosis_text:
         type: string
+      fall_risk:
+        type: boolean
       flow_id:
         type: string
       guarantor_name:
@@ -1042,6 +1044,21 @@ definitions:
     - location_id
     - name
     type: object
+  server.empiCandidateConfirmRequest:
+    properties:
+      winner_master_person_id:
+        type: string
+    type: object
+  server.empiCandidateDismissRequest:
+    properties:
+      note:
+        type: string
+    type: object
+  server.empiMasterUnmergeRequest:
+    properties:
+      reason:
+        type: string
+    type: object
   server.fridgeRequest:
     properties:
       is_active:
@@ -1767,6 +1784,13 @@ definitions:
         items:
           $ref: '#/definitions/server.serviceRuleInput'
         type: array
+    type: object
+  server.putVisitMediaRequest:
+    properties:
+      department_id:
+        type: string
+      media:
+        type: string
     type: object
   server.recallLotRequest:
     properties:
@@ -3317,6 +3341,35 @@ paths:
       summary: Enqueue one outpatient admission for SATUSEHAT Encounter sync
       tags:
       - integration
+  /admissions/{id}/visit-token:
+    post:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Reissue the visit identity token of an admission
+      tags:
+      - admission
   /admissions/payer-summary:
     get:
       parameters:
@@ -6029,6 +6082,260 @@ paths:
         emergency_kit)
       tags:
       - inventory
+  /empi/candidate-pairs:
+    get:
+      description: Scored cross-company pairs awaiting a merge/dismiss decision, highest
+        score first.
+      parameters:
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List pending EMPI candidate pairs across companies
+      tags:
+      - empi
+  /empi/candidate-pairs/{id}/dismiss:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Candidate pair UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Optional note
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/server.empiCandidateDismissRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Dismiss a pending EMPI candidate pair
+      tags:
+      - empi
+  /empi/candidate-pairs/{id}/link:
+    post:
+      consumes:
+      - application/json
+      description: When both persons already share one master the pair is just linked;
+        otherwise the loser master is merged into the winner (links moved, golden
+        recomputed) with a full snapshot merge log.
+      parameters:
+      - description: Candidate pair UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Winner master person
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.empiCandidateConfirmRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Confirm a candidate pair by linking (and optionally merging masters)
+      tags:
+      - empi
+  /empi/master-persons/{id}:
+    get:
+      parameters:
+      - description: Master person UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: EMPI master person detail with links and pending candidate count
+      tags:
+      - empi
+  /empi/merge-logs:
+    get:
+      parameters:
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List EMPI master merge logs
+      tags:
+      - empi
+  /empi/merge-logs/{id}/unmerge:
+    post:
+      consumes:
+      - application/json
+      description: Restores every link and the loser master's golden from the merge
+        log snapshot, then recomputes the winner's golden from its remaining links.
+      parameters:
+      - description: Merge log UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Unmerge reason
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.empiMasterUnmergeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Undo an EMPI master merge
+      tags:
+      - empi
+  /empi/resolve:
+    get:
+      description: Returns the master identity and every active link (all companies)
+        with per-company medical record numbers.
+      parameters:
+      - description: Person UUID (must belong to the caller's company)
+        in: query
+        name: person_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Resolve a person to its EMPI master with all cross-company links
+      tags:
+      - empi
   /fee-batches/{id}:
     delete:
       parameters:
@@ -9765,6 +10072,35 @@ paths:
       summary: List the suppliers visible to a merchant (company + its own)
       tags:
       - inventory
+  /merchants/{id}/visit-media:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Visit media default and per-department overrides
+      tags:
+      - queue
   /merchants/{id}/vvm-logs:
     get:
       parameters:
@@ -15446,4 +15782,57 @@ paths:
       summary: Build version
       tags:
       - system
+  /visit-media:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Media config
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.putVisitMediaRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: Upsert the visit media default (department_id null) or an override
+      tags:
+      - queue
+  /visit-media/{department_id}:
+    delete:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Department UUID
+        in: path
+        name: department_id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a per-department visit media override
+      tags:
+      - queue
 swagger: "2.0"
