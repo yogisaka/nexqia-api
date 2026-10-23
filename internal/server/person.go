@@ -36,6 +36,11 @@ func RegisterPersonRoutes(rg *gin.RouterGroup, cfg config.Config) {
 	registerPersonMergeRoutes(rg, cfg)
 	// Static /persons/duplicates* routes must also come before /persons/:id.
 	registerPersonDuplicateRoutes(rg)
+	// Static /persons/resolve-card must come before /persons/:id (same
+	// static-before-param rule as merge/duplicates above); /persons/:id/card
+	// is the param route.
+	rg.POST("/persons/resolve-card", ResolveCardHandler)
+	rg.POST("/persons/:id/card", IssuePersonCardHandler)
 	rg.GET("/persons/:id", AccessLog("person", "view", "id"), GetPersonHandler(cfg))
 	rg.PATCH("/persons/:id", UpdatePersonHandler(cfg))
 	rg.DELETE("/persons/:id", DeletePersonHandler)
@@ -730,4 +735,126 @@ func DeletePersonHandler(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// IssuePersonCardHandler godoc
+// @Summary Issue (or re-issue) the patient card of a person
+// @Description Re-issuing always replaces the card token hash — the old card
+// @Description silently stops resolving (spec 2026-10-20-qr-visit-media-design.md §4.2).
+// @Tags person
+// @Produce json
+// @Security BearerAuth
+// @Param id path string true "Person UUID"
+// @Success 201 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /persons/{id}/card [post]
+func IssuePersonCardHandler(c *gin.Context) {
+	if !RequirePermission(c, PermPersonManage) {
+		return
+	}
+	id, ok := parseUUID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	person, err := q.GetPersonByID(c.Request.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && person.CompanyID != AuthCompanyID(c)) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	raw, hash, err := randomTokenCode("NQP1-")
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	// Overwrite the hash: the previous card token becomes unresolvable (§4.2).
+	if err := q.SetPersonCard(c.Request.Context(), sqlcgen.SetPersonCardParams{
+		ID: id, CardTokenHash: optText(hash), CardIssuedBy: AuthUserID(c),
+	}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	qr, qrErr := QRPNGDataURI(raw)
+	var nullableQR any
+	if qrErr == nil {
+		nullableQR = qr
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"card": gin.H{"token": raw, "qr_png": nullableQR}}, "meta": gin.H{}})
+}
+
+type resolveCardRequest struct {
+	Code string `json:"code"`
+}
+
+// ResolveCardHandler godoc
+// @Summary Resolve a scanned patient card code to the person record
+// @Description Follows merged_into_person_id to the surviving record (max 10
+// @Description hops; longer chains or cycles are treated as unrecognized) — spec §4.4.
+// @Tags person
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body resolveCardRequest true "Card code"
+// @Success 200 {object} apiResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /persons/resolve-card [post]
+func ResolveCardHandler(c *gin.Context) {
+	if !RequirePermission(c, PermPersonManage) {
+		return
+	}
+	var req resolveCardRequest
+	if err := c.ShouldBindJSON(&req); err != nil || !isValidTokenFormat(req.Code, "NQP1-") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid token"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	row, err := q.GetPersonByCardToken(c.Request.Context(), optText(hashTokenCode(req.Code)))
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && row.CompanyID != AuthCompanyID(c)) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "card not recognized"})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	// Follow the merge chain from the card holder to the survivor. The holder
+	// itself may be soft-deleted (merged away, invisible to GetPersonByID), so
+	// the walk starts from the card-token row's merge pointer; the hop cap also
+	// breaks cycles (spec §4.4).
+	id := row.ID
+	merged := row.MergedIntoPersonID
+	fullName, birthDate, mrn, gender := row.FullName, row.BirthDate, row.MedicalRecordNo, row.Gender
+	for hops := 0; merged.Valid; hops++ {
+		if hops >= 10 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "card not recognized"})
+			return
+		}
+		next, err := q.GetPersonByID(c.Request.Context(), merged)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "card not recognized"})
+			return
+		}
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		id, merged = next.ID, next.MergedIntoPersonID
+		fullName, birthDate, mrn, gender = next.FullName, next.BirthDate, next.MedicalRecordNo, next.Gender
+	}
+	birthDateStr := ""
+	if birthDate.Valid {
+		birthDateStr = birthDate.Time.Format("2006-01-02")
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"person_id":         id.String(),
+		"full_name":         fullName,
+		"birth_date":        birthDateStr,
+		"medical_record_no": mrn.String,
+		"gender":            gender.String,
+	}, "meta": gin.H{}})
 }
