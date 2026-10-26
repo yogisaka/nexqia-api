@@ -70,6 +70,7 @@ func TestClinicalFormSignLocksEntry(t *testing.T) {
 	pool := newTestPostgresPool(t, ctx)
 	router := newTestRouter(t, ctx, pool)
 	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "sign")
+	cdSeedICD11(t, ctx, pool)
 	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "sign")
 	id := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, soapFormData)
 
@@ -118,6 +119,7 @@ func TestClinicalFormSignatureDeterministic(t *testing.T) {
 	pool := newTestPostgresPool(t, ctx)
 	router := newTestRouter(t, ctx, pool)
 	companyID, merchantID, userID, token := cfSeedEnv(t, ctx, pool, router, "detsig")
+	cdSeedICD11(t, ctx, pool)
 	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "detsig")
 
 	idA := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, soapFormData)
@@ -206,6 +208,7 @@ func TestClinicalFormAddendum(t *testing.T) {
 	pool := newTestPostgresPool(t, ctx)
 	router := newTestRouter(t, ctx, pool)
 	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "addendum")
+	cdSeedICD11(t, ctx, pool)
 	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "addendum")
 
 	// Target draft → 409.
