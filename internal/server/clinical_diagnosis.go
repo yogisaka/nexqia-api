@@ -145,6 +145,12 @@ func persistSignDiagnoses(c *gin.Context, q *sqlcgen.Queries, entry sqlcgen.Clin
 		if err != nil {
 			return err
 		}
+		// Merchant standard ICD-10 + non-ICD-10 concept without a submitted
+		// mapping → client error (review A2): the primary snapshot must be a
+		// real ICD-10 code, not a stand-in (spec §7.3).
+		if std == defaultDiagnosisCodeSystem && in.Concept.System != defaultDiagnosisCodeSystem && in.Icd10 == nil {
+			return fmt.Errorf("%w: icd10 mapping required for %s/%s", errInvalidDiagnosis, in.Concept.System, in.Concept.Code)
+		}
 		p := sqlcgen.CreateVisitDiagnosisParams{
 			CompanyID:      entry.CompanyID,
 			MerchantID:     entry.MerchantID,

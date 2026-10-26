@@ -263,6 +263,58 @@ func TestNutritionOrderStatusTransition(t *testing.T) {
 	}
 }
 
+// TestNutritionOrderTerminalRevision — PATCH tanpa field status pada order
+// completed → 409 "order diet sudah selesai dan tidak bisa direvisi"
+// (review B1); revisi field biasa pada order active tetap 200 dan ended_at
+// tidak di-set. Juga: list admission merchant lain → 404 (review B2).
+func TestNutritionOrderTerminalRevision(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := newTestRouter(t, ctx, pool)
+	companyID, merchantID, _, token := noSeedEnv(t, ctx, pool, router, "term")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "term")
+	dietID := noSeedDiet(t, ctx, pool, companyID, merchantID, "NO-TERM-DIET", true)
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-orders", token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "diet_type_id": dietID, "route": "oral",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d: %s", rec.Code, rec.Body.String())
+	}
+	id := resp["data"].(map[string]any)["id"].(string)
+
+	// Field-only revision on the active order → 200, ended_at stays empty.
+	rec, resp = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/nutrition-orders/"+id, token, companyID, merchantID, map[string]any{
+		"restriction_note": "revisi biasa", "row_version": 1,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("active revision = %d: %s", rec.Code, rec.Body.String())
+	}
+	got := resp["data"].(map[string]any)
+	if got["ended_at"] != nil {
+		t.Fatalf("ended_at = %v, want nil on field-only revision", got["ended_at"])
+	}
+
+	// Cross-merchant admission list → 404 (review B2).
+	companyB, merchantB, _, tokenB := noSeedEnv(t, ctx, pool, router, "termb")
+	if rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/nutrition-orders?admission_id="+admissionID, tokenB, companyB, merchantB, nil); rec.Code != http.StatusNotFound || resp["error"] != "admission tidak ditemukan" {
+		t.Fatalf("cross-merchant list = %d %v", rec.Code, resp)
+	}
+
+	// Complete the order, then a field-only PATCH (no status) → 409 terminal.
+	rec, resp = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/nutrition-orders/"+id, token, companyID, merchantID, map[string]any{
+		"status": "completed", "row_version": 2,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec, resp = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/nutrition-orders/"+id, token, companyID, merchantID, map[string]any{
+		"restriction_note": "coba revisi setelah selesai", "row_version": 3,
+	})
+	if rec.Code != http.StatusConflict || resp["error"] != "order diet sudah selesai dan tidak bisa direvisi" {
+		t.Fatalf("terminal revision = %d %v", rec.Code, resp)
+	}
+}
+
 // TestNutritionOrderPermissionDenied — a user without clinical.nutrition.write
 // gets 403 on the write endpoints; view-only stays possible (clinical.record.view).
 func TestNutritionOrderPermissionDenied(t *testing.T) {

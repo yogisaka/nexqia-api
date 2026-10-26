@@ -42,6 +42,8 @@ func RegisterClinicalRoutes(rg *gin.RouterGroup) {
 	// server.go is outside the task's Files list; gin allows the static child
 	// /admissions/:id/clinical-timeline next to /admissions/:id.
 	rg.GET("/admissions/:id/clinical-timeline", AccessLog("clinical_form", "view", "id"), GetClinicalTimelineHandler)
+	// Daily completeness board (plan B Task 3, spec §11) — pure read.
+	rg.GET("/clinical/completeness", AccessLog("clinical_form", "view", ""), GetClinicalCompletenessHandler)
 }
 
 type clinicalSectionOption struct {
@@ -203,7 +205,15 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 				clinicalInvalidSection(c, d.Key)
 				return nil, false
 			}
-			for _, v := range vitals {
+			for k, v := range vitals {
+				if k == "pain_score" {
+					// NRS 0–10 inclusive (0 = no pain; review A4).
+					if v < 0 || v > 10 {
+						clinicalInvalidSection(c, d.Key)
+						return nil, false
+					}
+					continue
+				}
 				if v <= 0 || v >= 1000 {
 					clinicalInvalidSection(c, d.Key)
 					return nil, false
@@ -214,7 +224,9 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 				Narrative *string           `json:"narrative"`
 				Diagnoses []json.RawMessage `json:"diagnoses"`
 			}
-			if err := json.Unmarshal(rawVal, &dx); err != nil || dx.Narrative == nil || dx.Diagnoses == nil {
+			if err := json.Unmarshal(rawVal, &dx); err != nil || dx.Narrative == nil {
+				// narrative wajib; diagnoses hilang = kosong (soft_required,
+				// warning FE — review A3).
 				clinicalInvalidSection(c, d.Key)
 				return nil, false
 			}

@@ -163,6 +163,48 @@ func TestClinicalDiagnosisInvalidShape(t *testing.T) {
 	}
 }
 
+// TestClinicalDiagnosisICD10StandardRequiresMapping — merchant standard
+// ICD-10 (default, no diagnosis_config) + concept ICD-11 tanpa icd10 →
+// 400 "invalid diagnosis entry" (review A2); dengan mapping icd10 → sign
+// 200 dan primary = kode ICD-10 (spec §7.3).
+func TestClinicalDiagnosisICD10StandardRequiresMapping(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := newTestRouter(t, ctx, pool)
+	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "std10")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "std10")
+	// Concept exists, but the merchant standard stays the default ICD-10.
+	cdSeedICD11(t, ctx, pool)
+
+	const noMap = `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}}]}}}`
+	const withMap = `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"}}]}}}`
+
+	// Without icd10 mapping → 400, entry stays draft.
+	id := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, noMap)
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+id+"/sign", token, companyID, merchantID,
+		map[string]any{"password": ownerPassword})
+	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid diagnosis entry" {
+		t.Fatalf("no mapping = %d %v", rec.Code, resp)
+	}
+	if row := cfGetEntryRow(t, ctx, pool, id); row.Status != "draft" {
+		t.Fatalf("entry status = %s, want draft (rollback)", row.Status)
+	}
+
+	// With manual icd10 mapping → 200, primary = the ICD-10 code.
+	id2 := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, withMap)
+	if rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+id2+"/sign", token, companyID, merchantID,
+		map[string]any{"password": ownerPassword}); rec.Code != http.StatusOK {
+		t.Fatalf("with mapping = %d: %s", rec.Code, rec.Body.String())
+	}
+	rows := cdDiagnoses(t, ctx, pool, admissionID)
+	if len(rows) != 1 {
+		t.Fatalf("diagnosis rows = %d, want 1", len(rows))
+	}
+	if rows[0].PrimarySystem != "ICD-10" || rows[0].PrimaryCode != "J06.9" {
+		t.Fatalf("primary = %s/%s, want ICD-10/J06.9", rows[0].PrimarySystem, rows[0].PrimaryCode)
+	}
+}
+
 // TestClinicalFormSignAtomic — unresolvable concept.code → 400 invalid
 // diagnosis entry and the whole sign transaction rolls back: entry TETAP
 // draft (status write undone by RunRequestTx), TIDAK ada baris diagnosis.

@@ -304,7 +304,9 @@ func ListNutritionOrdersHandler(c *gin.Context) {
 	}
 	q := sqlcgen.New(TxFromContext(c))
 	ctx := c.Request.Context()
-	if _, err := q.GetAdmissionByID(ctx, admissionID); errors.Is(err, pgx.ErrNoRows) {
+	// Cross-merchant admission → 404, same pattern as timeline/completeness.
+	admission, err := q.GetAdmissionByID(ctx, admissionID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && admission.MerchantID != merchantID) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "admission tidak ditemukan"})
 		return
 	} else if err != nil {
@@ -383,11 +385,21 @@ func UpdateNutritionOrderHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	// Status transition: only active -> completed|cancelled (spec §9);
-	// completed/cancelled are terminal, so any status field on them → 409.
+	// Terminal orders (completed/cancelled) are immutable: ANY PATCH on them
+	// → 409, with or without a status field (spec §9; review A/B1). The
+	// contract message "status order tidak bisa diubah" stays for explicit
+	// status attempts; field-only revisions get the terminal message.
 	status := o.Status
+	if o.Status != "active" {
+		if req.Status != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "status order tidak bisa diubah"})
+		} else {
+			c.JSON(http.StatusConflict, gin.H{"error": "order diet sudah selesai dan tidak bisa direvisi"})
+		}
+		return
+	}
 	if req.Status != nil {
-		if o.Status != "active" || (*req.Status != "completed" && *req.Status != "cancelled") {
+		if *req.Status != "completed" && *req.Status != "cancelled" {
 			c.JSON(http.StatusConflict, gin.H{"error": "status order tidak bisa diubah"})
 			return
 		}

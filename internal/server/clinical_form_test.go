@@ -328,6 +328,22 @@ func TestClinicalFormValidation(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'tanda_vital'" {
 		t.Fatalf("vitals range = %d %v", rec.Code, resp)
 	}
+	// pain_score 0 valid (NRS 0–10 inklusif, review A4).
+	rec, _ = post("ases_awal_perawat", sections(`"tanda_vital":{"sistolic":120,"pain_score":0}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("pain_score 0 = %d: %s", rec.Code, rec.Body.String())
+	}
+	// pain_score 11 ditolak.
+	rec, resp = post("ases_awal_perawat", sections(`"tanda_vital":{"sistolic":120,"pain_score":11}`))
+	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'tanda_vital'" {
+		t.Fatalf("pain_score 11 = %d %v", rec.Code, resp)
+	}
+	// assessment narrative-only (tanpa diagnoses) → draft tersimpan
+	// (soft_required, review A3).
+	rec, _ = post("soap_dokter", sections(`"assessment":{"narrative":"Hanya naratif klinis."}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("narrative-only assessment = %d: %s", rec.Code, rec.Body.String())
+	}
 	// MST: skor_mst ≠ jumlah jawaban (1+1+0 = 2, skor ditulis 1).
 	rec, resp = post("ases_gizi_skrining", sections(
 		`"mst_penurunan_bb":"1"`, `"mst_nafsu_makan":"1"`, `"mst_sakit_akut":"0"`,
