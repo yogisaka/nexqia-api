@@ -29,12 +29,26 @@ SELECT i.*, per.full_name AS reported_by_name
 FROM quality.incident i
 JOIN core.app_user au ON au.id = i.reported_by
 LEFT JOIN core.person per ON per.id = au.person_id
-WHERE i.merchant_id = $4
-  AND ($1::text = '' OR i.status = $1)
-  AND ($2::text = '' OR i.incident_type = $2)
-  AND ($3::text = '' OR i.grading = $3)
+WHERE i.merchant_id = sqlc.arg(merchant_id)
+  AND (sqlc.narg(status)::text IS NULL OR i.status = sqlc.narg(status))
+  AND (sqlc.narg(incident_type)::text IS NULL OR i.incident_type = sqlc.narg(incident_type))
+  AND (sqlc.narg(grading)::text IS NULL OR i.grading = sqlc.narg(grading))
+  AND (sqlc.narg(occurred_from)::timestamptz IS NULL OR i.occurred_at >= sqlc.narg(occurred_from))
+  AND (sqlc.narg(occurred_to)::timestamptz IS NULL OR i.occurred_at < sqlc.narg(occurred_to))
 ORDER BY i.occurred_at DESC, i.id DESC
-LIMIT 200;
+LIMIT sqlc.arg(row_limit)::integer OFFSET sqlc.arg(row_offset)::integer;
+
+-- name: CountIncidents :one
+SELECT COUNT(*)::bigint
+FROM quality.incident i
+JOIN core.app_user au ON au.id = i.reported_by
+LEFT JOIN core.person per ON per.id = au.person_id
+WHERE i.merchant_id = sqlc.arg(merchant_id)
+  AND (sqlc.narg(status)::text IS NULL OR i.status = sqlc.narg(status))
+  AND (sqlc.narg(incident_type)::text IS NULL OR i.incident_type = sqlc.narg(incident_type))
+  AND (sqlc.narg(grading)::text IS NULL OR i.grading = sqlc.narg(grading))
+  AND (sqlc.narg(occurred_from)::timestamptz IS NULL OR i.occurred_at >= sqlc.narg(occurred_from))
+  AND (sqlc.narg(occurred_to)::timestamptz IS NULL OR i.occurred_at < sqlc.narg(occurred_to));
 
 -- name: ListIncidentEntries :many
 SELECT e.*, per.full_name AS created_by_name

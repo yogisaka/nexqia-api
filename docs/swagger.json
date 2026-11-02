@@ -7000,6 +7000,30 @@
                         "description": "Grading code",
                         "name": "grading",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Batasi occurred_at mulai tanggal ini (YYYY-MM-DD, zona merchant, inklusif)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Batasi occurred_at sampai akhir tanggal ini (YYYY-MM-DD, zona merchant, inklusif)",
+                        "name": "date_to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Jumlah baris per halaman (default 20, maks 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Baris yang dilewati (default 0)",
+                        "name": "offset",
+                        "in": "query"
                     }
                 ],
                 "responses": {

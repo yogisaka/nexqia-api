@@ -324,6 +324,10 @@ type createIncidentRequest struct {
 // @Param status query string false "dilaporkan|feedback|closed"
 // @Param incident_type query string false "Incident type code"
 // @Param grading query string false "Grading code"
+// @Param date_from query string false "Batasi occurred_at mulai tanggal ini (YYYY-MM-DD, zona merchant, inklusif)"
+// @Param date_to query string false "Batasi occurred_at sampai akhir tanggal ini (YYYY-MM-DD, zona merchant, inklusif)"
+// @Param limit query int false "Jumlah baris per halaman (default 20, maks 200)"
+// @Param offset query int false "Baris yang dilewati (default 0)"
 // @Success 200 {object} apiResponse
 // @Router /incidents [get]
 func ListIncidentsHandler(c *gin.Context) {
@@ -333,15 +337,74 @@ func ListIncidentsHandler(c *gin.Context) {
 	merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
 	q := sqlcgen.New(TxFromContext(c))
 	ctx := c.Request.Context()
+
+	var fromDay, toDay *time.Time
+	if v := c.Query("date_from"); v != "" {
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "format tanggal harus YYYY-MM-DD"})
+			return
+		}
+		fromDay = &t
+	}
+	if v := c.Query("date_to"); v != "" {
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "format tanggal harus YYYY-MM-DD"})
+			return
+		}
+		toDay = &t
+	}
+	if fromDay != nil && toDay != nil && fromDay.After(*toDay) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "rentang tanggal tidak valid"})
+		return
+	}
+
+	limit, offset := paginationParamsDefault(c, 20)
+
+	loc, err := merchantLocation(ctx, q, merchantID)
+	if err != nil {
+		loc, _ = time.LoadLocation(defaultMerchantTimezone)
+	}
+	optText := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
+	var occurredFrom, occurredTo pgtype.Timestamptz
+	if fromDay != nil {
+		y, m, d := fromDay.Date()
+		occurredFrom = pgtype.Timestamptz{Time: time.Date(y, m, d, 0, 0, 0, 0, loc), Valid: true}
+	}
+	if toDay != nil {
+		y, m, d := toDay.Date()
+		occurredTo = pgtype.Timestamptz{Time: time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, 1), Valid: true}
+	}
+
 	cat, err := loadIncidentCatalogs(ctx, q, merchantID)
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
+	filter := sqlcgen.CountIncidentsParams{
+		MerchantID:   merchantID,
+		Status:       optText(c.Query("status")),
+		IncidentType: optText(c.Query("incident_type")),
+		Grading:      optText(c.Query("grading")),
+		OccurredFrom: occurredFrom,
+		OccurredTo:   occurredTo,
+	}
 	rows, err := q.ListIncidents(ctx, sqlcgen.ListIncidentsParams{
-		Column1: c.Query("status"), Column2: c.Query("incident_type"), Column3: c.Query("grading"),
-		MerchantID: merchantID,
+		MerchantID:   filter.MerchantID,
+		Status:       filter.Status,
+		IncidentType: filter.IncidentType,
+		Grading:      filter.Grading,
+		OccurredFrom: filter.OccurredFrom,
+		OccurredTo:   filter.OccurredTo,
+		RowLimit:     limit,
+		RowOffset:    offset,
 	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	total, err := q.CountIncidents(ctx, filter)
 	if err != nil {
 		respondInternalError(c, err)
 		return
@@ -358,7 +421,7 @@ func ListIncidentsHandler(c *gin.Context) {
 		redactReporter(payload, r.Anonymous, hasManage)
 		items[i] = payload
 	}
-	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{}})
+	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{"limit": limit, "offset": offset, "total": total}})
 }
 
 // GetIncidentHandler godoc

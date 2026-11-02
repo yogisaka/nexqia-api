@@ -7489,6 +7489,24 @@ paths:
         in: query
         name: grading
         type: string
+      - description: Batasi occurred_at mulai tanggal ini (YYYY-MM-DD, zona merchant,
+          inklusif)
+        in: query
+        name: date_from
+        type: string
+      - description: Batasi occurred_at sampai akhir tanggal ini (YYYY-MM-DD, zona
+          merchant, inklusif)
+        in: query
+        name: date_to
+        type: string
+      - description: Jumlah baris per halaman (default 20, maks 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Baris yang dilewati (default 0)
+        in: query
+        name: offset
+        type: integer
       produces:
       - application/json
       responses:
