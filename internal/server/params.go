@@ -2,6 +2,7 @@
 package server
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 
@@ -25,7 +26,10 @@ func paginationParamsDefault(c *gin.Context, defaultLimit int32) (limit, offset 
 	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 && v <= 200 {
 		limit = int32(v)
 	}
-	if v, err := strconv.Atoi(c.Query("offset")); err == nil && v >= 0 {
+	// Guard overflow int32: offset > MaxInt32 (mis. 2147483648) lolos v >= 0
+	// lalu ter-truncate negatif → OFFSET negatif ditolak Postgres. Perlakukan
+	// sebagai invalid → fallback default 0, konsisten gaya validasi di atas.
+	if v, err := strconv.Atoi(c.Query("offset")); err == nil && v >= 0 && v <= math.MaxInt32 {
 		offset = int32(v)
 	}
 	return limit, offset

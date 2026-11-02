@@ -72,6 +72,7 @@ func TestPaginationParams(t *testing.T) {
 		{"limit too high falls back to default", "?limit=500", 50, 0},
 		{"negative offset falls back to default", "?offset=-5", 50, 0},
 		{"non-numeric falls back to default", "?limit=abc&offset=xyz", 50, 0},
+		{"offset overflow int32 falls back to default", "?offset=2147483648", 50, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
