@@ -29,6 +29,36 @@ func TestParseUUID(t *testing.T) {
 	}
 }
 
+func TestPaginationParamsDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name       string
+		query      string
+		wantLimit  int32
+		wantOffset int32
+	}{
+		{"default", "", 20, 0},
+		{"limit valid", "?limit=200", 200, 0},
+		{"limit di atas cap", "?limit=201", 20, 0},
+		{"limit nol", "?limit=0", 20, 0},
+		{"limit non-numerik", "?limit=abc", 20, 0},
+		{"offset valid", "?offset=25", 20, 25},
+		{"offset negatif", "?offset=-1", 20, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/x"+tc.query, nil)
+
+			limit, offset := paginationParamsDefault(c, 20)
+			if limit != tc.wantLimit || offset != tc.wantOffset {
+				t.Errorf("paginationParamsDefault(%q, 20): expected (%d,%d), got (%d,%d)", tc.query, tc.wantLimit, tc.wantOffset, limit, offset)
+			}
+		})
+	}
+}
+
 func TestPaginationParams(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cases := []struct {

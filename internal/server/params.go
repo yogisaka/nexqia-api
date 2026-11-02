@@ -18,9 +18,10 @@ func parseUUID(s string) (id pgtype.UUID, ok bool) {
 	return id, id.Valid
 }
 
-// paginationParams reads ?limit=&offset= query params with sane defaults/caps.
-func paginationParams(c *gin.Context) (limit, offset int32) {
-	limit, offset = 50, 0
+// paginationParamsDefault reads ?limit=&offset= like paginationParams but
+// with a caller-supplied default limit (accepted range stays 1–200).
+func paginationParamsDefault(c *gin.Context, defaultLimit int32) (limit, offset int32) {
+	limit, offset = defaultLimit, 0
 	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 && v <= 200 {
 		limit = int32(v)
 	}
@@ -28,6 +29,11 @@ func paginationParams(c *gin.Context) (limit, offset int32) {
 		offset = int32(v)
 	}
 	return limit, offset
+}
+
+// paginationParams reads ?limit=&offset= query params with sane defaults/caps.
+func paginationParams(c *gin.Context) (limit, offset int32) {
+	return paginationParamsDefault(c, 50)
 }
 
 // requireMerchantHeader parses X-Merchant-ID and writes a 400 response if
