@@ -16157,6 +16157,22 @@ paths:
         in: query
         name: offset
         type: integer
+      - description: Search username/email/full_name
+        in: query
+        name: q
+        type: string
+      - description: Role UUID
+        in: query
+        name: role_id
+        type: string
+      - description: Merchant UUID
+        in: query
+        name: merchant_id
+        type: string
+      - description: aktif | nonaktif
+        in: query
+        name: status
+        type: string
       produces:
       - application/json
       responses:

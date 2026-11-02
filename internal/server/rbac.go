@@ -291,6 +291,10 @@ func CreateAppUserWithPersonHandler(cfg config.Config, hasher *auth.PasswordHash
 // @Security BearerAuth
 // @Param limit query int false "Page size"
 // @Param offset query int false "Page offset"
+// @Param q query string false "Search username/email/full_name"
+// @Param role_id query string false "Role UUID"
+// @Param merchant_id query string false "Merchant UUID"
+// @Param status query string false "aktif | nonaktif"
 // @Success 200 {object} apiResponse
 // @Router /users [get]
 func ListAppUsersHandler(c *gin.Context) {
@@ -298,18 +302,82 @@ func ListAppUsersHandler(c *gin.Context) {
 		return
 	}
 	limit, offset := paginationParams(c)
-	q := sqlcgen.New(TxFromContext(c))
-	users, err := q.ListAppUsersByCompany(c.Request.Context(), sqlcgen.ListAppUsersByCompanyParams{
-		CompanyID: AuthCompanyID(c), Limit: limit, Offset: offset,
+	q := optText(c.Query("q"))
+	var roleID, merchantID pgtype.UUID
+	if v := c.Query("role_id"); v != "" {
+		id, ok := parseUUID(v)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role_id"})
+			return
+		}
+		roleID = id
+	}
+	if v := c.Query("merchant_id"); v != "" {
+		id, ok := parseUUID(v)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid merchant_id"})
+			return
+		}
+		merchantID = id
+	}
+	var isActive pgtype.Bool
+	switch c.Query("status") {
+	case "":
+		// no filter
+	case "aktif":
+		isActive = pgtype.Bool{Bool: true, Valid: true}
+	case "nonaktif":
+		isActive = pgtype.Bool{Valid: true}
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+		return
+	}
+	db := sqlcgen.New(TxFromContext(c))
+	filter := sqlcgen.CountAppUsersDirectoryParams{
+		CompanyID:  AuthCompanyID(c),
+		Q:          q,
+		RoleID:     roleID,
+		MerchantID: merchantID,
+		IsActive:   isActive,
+	}
+	rows, err := db.ListAppUsersDirectory(c.Request.Context(), sqlcgen.ListAppUsersDirectoryParams{
+		CompanyID:  filter.CompanyID,
+		Q:          filter.Q,
+		RoleID:     filter.RoleID,
+		MerchantID: filter.MerchantID,
+		IsActive:   filter.IsActive,
+		RowLimit:   limit,
+		RowOffset:  offset,
 	})
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
-	for i := range users {
-		users[i].PasswordHash = ""
+	total, err := db.CountAppUsersDirectory(c.Request.Context(), filter)
+	if err != nil {
+		respondInternalError(c, err)
+		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": users, "meta": gin.H{"limit": limit, "offset": offset}})
+	items := make([]gin.H, len(rows))
+	for i, r := range rows {
+		items[i] = userDirectoryJSON(r)
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{"limit": limit, "offset": offset, "total": total}})
+}
+
+// userDirectoryJSON maps a directory row to the enriched snake_case payload.
+func userDirectoryJSON(r sqlcgen.ListAppUsersDirectoryRow) gin.H {
+	return gin.H{
+		"id":         uuidJSON(r.ID),
+		"username":   r.Username,
+		"email":      textJSON(r.Email),
+		"phone":      textJSON(r.Phone),
+		"is_active":  r.IsActive,
+		"person_id":  uuidJSON(r.PersonID),
+		"full_name":  textJSON(r.FullName),
+		"created_at": tsJSON(r.CreatedAt),
+		"roles":      r.Roles,
+	}
 }
 
 // GetAppUserHandler godoc

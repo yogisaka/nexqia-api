@@ -186,6 +186,49 @@ JOIN core.permission p ON p.id = rp.permission_id
 WHERE rp.role_id = @role_id
 ORDER BY p.code;
 
+-- name: ListAppUsersDirectory :many
+SELECT u.id, u.username, u.email, u.phone, u.is_active, u.person_id,
+       p.full_name, u.created_at, agg.roles
+FROM core.app_user u
+LEFT JOIN core.person p ON p.id = u.person_id
+LEFT JOIN LATERAL (
+    SELECT COALESCE(array_agg(DISTINCT r.name ORDER BY r.name), '{}'::text[]) AS roles
+    FROM core.user_merchant_role umr
+    JOIN core.role r ON r.id = umr.role_id
+    WHERE umr.user_id = u.id
+) agg ON true
+WHERE u.company_id = sqlc.arg(company_id)
+  AND u.deleted_at IS NULL
+  AND (sqlc.narg(q)::text IS NULL
+       OR u.username ILIKE '%' || sqlc.narg(q) || '%'
+       OR u.email ILIKE '%' || sqlc.narg(q) || '%'
+       OR p.full_name ILIKE '%' || sqlc.narg(q) || '%')
+  AND ((sqlc.narg(role_id)::uuid IS NULL AND sqlc.narg(merchant_id)::uuid IS NULL)
+       OR EXISTS (SELECT 1 FROM core.user_merchant_role umf
+                  WHERE umf.user_id = u.id
+                    AND (sqlc.narg(role_id)::uuid IS NULL OR umf.role_id = sqlc.narg(role_id))
+                    AND (sqlc.narg(merchant_id)::uuid IS NULL OR umf.merchant_id = sqlc.narg(merchant_id))))
+  AND (sqlc.narg(is_active)::boolean IS NULL OR u.is_active = sqlc.narg(is_active))
+ORDER BY u.username
+LIMIT sqlc.arg(row_limit)::integer OFFSET sqlc.arg(row_offset)::integer;
+
+-- name: CountAppUsersDirectory :one
+SELECT COUNT(*)::bigint
+FROM core.app_user u
+LEFT JOIN core.person p ON p.id = u.person_id
+WHERE u.company_id = sqlc.arg(company_id)
+  AND u.deleted_at IS NULL
+  AND (sqlc.narg(q)::text IS NULL
+       OR u.username ILIKE '%' || sqlc.narg(q) || '%'
+       OR u.email ILIKE '%' || sqlc.narg(q) || '%'
+       OR p.full_name ILIKE '%' || sqlc.narg(q) || '%')
+  AND ((sqlc.narg(role_id)::uuid IS NULL AND sqlc.narg(merchant_id)::uuid IS NULL)
+       OR EXISTS (SELECT 1 FROM core.user_merchant_role umf
+                  WHERE umf.user_id = u.id
+                    AND (sqlc.narg(role_id)::uuid IS NULL OR umf.role_id = sqlc.narg(role_id))
+                    AND (sqlc.narg(merchant_id)::uuid IS NULL OR umf.merchant_id = sqlc.narg(merchant_id))))
+  AND (sqlc.narg(is_active)::boolean IS NULL OR u.is_active = sqlc.narg(is_active));
+
 -- name: UpdateOwnAppUserContact :one
 -- Self-service profile edit (spec 2026-09-25-account-menu §3). NULL clears a value.
 UPDATE core.app_user
