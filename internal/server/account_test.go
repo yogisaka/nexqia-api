@@ -78,15 +78,16 @@ func accountRequest(router *gin.Engine, method, path, token, companyID, merchant
 
 type accountMeResponse struct {
 	Data struct {
-		UserID         string  `json:"user_id"`
-		Username       string  `json:"username"`
-		Email          *string `json:"email"`
-		Phone          *string `json:"phone"`
-		PersonID       *string `json:"person_id"`
-		FullName       *string `json:"full_name"`
-		PhotoURL       *string `json:"photo_url"`
-		HasPin         bool    `json:"has_pin"`
-		PinLockEnabled bool    `json:"pin_lock_enabled"`
+		UserID             string  `json:"user_id"`
+		Username           string  `json:"username"`
+		Email              *string `json:"email"`
+		Phone              *string `json:"phone"`
+		PersonID           *string `json:"person_id"`
+		FullName           *string `json:"full_name"`
+		PhotoURL           *string `json:"photo_url"`
+		HasPin             bool    `json:"has_pin"`
+		PinLockEnabled     bool    `json:"pin_lock_enabled"`
+		PinLockIdleMinutes *int    `json:"pin_lock_idle_minutes"`
 	} `json:"data"`
 }
 
@@ -164,6 +165,9 @@ func TestAccount_GetMe_Shape(t *testing.T) {
 	}
 	if !resp.Data.PinLockEnabled {
 		t.Errorf("pin_lock_enabled = false, want true (new merchants get PIN lock by default)")
+	}
+	if resp.Data.PinLockIdleMinutes == nil || *resp.Data.PinLockIdleMinutes <= 0 {
+		t.Errorf("pin_lock_idle_minutes = %v, want > 0 (seed merchant default flag tanpa idle → fallback cfg)", resp.Data.PinLockIdleMinutes)
 	}
 }
 

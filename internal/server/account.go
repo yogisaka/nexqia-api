@@ -25,8 +25,8 @@ import (
 
 // RegisterAccountRoutes wires the self-service account endpoints (spec §3).
 func RegisterAccountRoutes(rg *gin.RouterGroup, hasher *auth.PasswordHasher, limiter *ratelimit.Limiter, cfg config.Config) {
-	rg.GET("/auth/me", GetMeHandler)
-	rg.PATCH("/auth/me", UpdateMeHandler)
+	rg.GET("/auth/me", GetMeHandler(cfg))
+	rg.PATCH("/auth/me", UpdateMeHandler(cfg))
 	rg.POST("/auth/password", ChangePasswordHandler(hasher, limiter, cfg))
 }
 
@@ -35,7 +35,7 @@ func RegisterAccountRoutes(rg *gin.RouterGroup, hasher *auth.PasswordHasher, lim
 // the current merchant's auth.pin_lock flag, read the same way
 // AppLockMiddleware reads it so the value matches what enforcement uses.
 // pgtype.Text/pgtype.UUID marshal as JSON string-or-null on their own.
-func meData(c *gin.Context, q *sqlcgen.Queries, user sqlcgen.CoreAppUser) gin.H {
+func meData(c *gin.Context, q *sqlcgen.Queries, user sqlcgen.CoreAppUser, cfg config.Config) gin.H {
 	data := gin.H{
 		"user_id":   user.ID.String(),
 		"username":  user.Username,
@@ -53,7 +53,13 @@ func meData(c *gin.Context, q *sqlcgen.Queries, user sqlcgen.CoreAppUser) gin.H 
 		}
 	}
 	merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
-	data["pin_lock_enabled"] = getPinLockFlag(c, q, merchantID).Enabled
+	flag := getPinLockFlag(c, q, merchantID)
+	data["pin_lock_enabled"] = flag.Enabled
+	if flag.Enabled {
+		data["pin_lock_idle_minutes"] = pinLockIdleMinutes(cfg, flag)
+	} else {
+		data["pin_lock_idle_minutes"] = nil
+	}
 	return data
 }
 
@@ -67,18 +73,20 @@ func meData(c *gin.Context, q *sqlcgen.Queries, user sqlcgen.CoreAppUser) gin.H 
 // @Param X-Merchant-ID header string true "Active merchant UUID"
 // @Success 200 {object} apiResponse
 // @Router /auth/me [get]
-func GetMeHandler(c *gin.Context) {
-	q := sqlcgen.New(TxFromContext(c))
-	user, err := q.GetAppUserByID(c.Request.Context(), AuthUserID(c))
-	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
-		return
+func GetMeHandler(cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		q := sqlcgen.New(TxFromContext(c))
+		user, err := q.GetAppUserByID(c.Request.Context(), AuthUserID(c))
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": meData(c, q, user, cfg), "meta": gin.H{}})
 	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": meData(c, q, user), "meta": gin.H{}})
 }
 
 type updateMeRequest struct {
@@ -106,88 +114,90 @@ type updateMeRequest struct {
 // @Failure 403 {object} apiErrorResponse
 // @Failure 409 {object} apiErrorResponse
 // @Router /auth/me [patch]
-func UpdateMeHandler(c *gin.Context) {
-	if rejectDuringImpersonation(c) {
-		return
-	}
-	var req updateMeRequest
-	if !bindJSONOrFields(c, &req) {
-		return
-	}
-	q := sqlcgen.New(TxFromContext(c))
-	user, err := q.GetAppUserByID(c.Request.Context(), AuthUserID(c))
-	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
-		return
-	}
-	var newFullName string
-	if req.FullName != nil {
-		newFullName = strings.TrimSpace(*req.FullName)
-		if newFullName == "" {
-			fieldErr(c, "full_name cannot be empty", "full_name", "Wajib diisi")
+func UpdateMeHandler(cfg config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if rejectDuringImpersonation(c) {
 			return
 		}
-		if !user.PersonID.Valid {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "account has no person record"})
+		var req updateMeRequest
+		if !bindJSONOrFields(c, &req) {
 			return
 		}
-	}
-	// Absent field = unchanged → pass the stored value back: UpdateOwnAppUserContact
-	// has no COALESCE, a NULL param would clear the column.
-	params := sqlcgen.UpdateOwnAppUserContactParams{Email: user.Email, Phone: user.Phone, ID: user.ID}
-	if req.Email != nil {
-		trimmed := strings.TrimSpace(*req.Email)
-		if trimmed != "" {
-			addr, err := mail.ParseAddress(trimmed)
-			// addr.Address == trimmed also rejects "Name <a@b.c>" display-name forms.
-			if err != nil || addr.Address != trimmed {
-				fieldErr(c, "invalid email format", "email", "Email tidak valid")
+		q := sqlcgen.New(TxFromContext(c))
+		user, err := q.GetAppUserByID(c.Request.Context(), AuthUserID(c))
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
+			return
+		}
+		var newFullName string
+		if req.FullName != nil {
+			newFullName = strings.TrimSpace(*req.FullName)
+			if newFullName == "" {
+				fieldErr(c, "full_name cannot be empty", "full_name", "Wajib diisi")
+				return
+			}
+			if !user.PersonID.Valid {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "account has no person record"})
 				return
 			}
 		}
-		params.Email = pgtype.Text{String: trimmed, Valid: trimmed != ""}
-	}
-	if req.Phone != nil {
-		trimmed := strings.TrimSpace(*req.Phone)
-		// Empty after trimming = clear the phone (unchanged behavior); a
-		// non-empty value must be a valid Indonesian mobile number
-		// (spec 2026-10-07-form-validation-stage2 §4.3).
-		if trimmed != "" && !validPhoneID(trimmed) {
-			fieldErr(c, "validation_failed", "phone", "Nomor HP tidak valid (contoh 081234567890)")
-			return
+		// Absent field = unchanged → pass the stored value back: UpdateOwnAppUserContact
+		// has no COALESCE, a NULL param would clear the column.
+		params := sqlcgen.UpdateOwnAppUserContactParams{Email: user.Email, Phone: user.Phone, ID: user.ID}
+		if req.Email != nil {
+			trimmed := strings.TrimSpace(*req.Email)
+			if trimmed != "" {
+				addr, err := mail.ParseAddress(trimmed)
+				// addr.Address == trimmed also rejects "Name <a@b.c>" display-name forms.
+				if err != nil || addr.Address != trimmed {
+					fieldErr(c, "invalid email format", "email", "Email tidak valid")
+					return
+				}
+			}
+			params.Email = pgtype.Text{String: trimmed, Valid: trimmed != ""}
 		}
-		params.Phone = pgtype.Text{String: trimmed, Valid: trimmed != ""}
-	}
-	if _, err := q.UpdateOwnAppUserContact(c.Request.Context(), params); err != nil {
-		// Abort, not plain c.JSON: the failed UPDATE leaves the request tx in
-		// Postgres' aborted state, so TenantMiddleware's commit would fail and
-		// append a second JSON body after this response.
-		if isUniqueViolation(err) {
-			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "email or phone already used"})
-			return
+		if req.Phone != nil {
+			trimmed := strings.TrimSpace(*req.Phone)
+			// Empty after trimming = clear the phone (unchanged behavior); a
+			// non-empty value must be a valid Indonesian mobile number
+			// (spec 2026-10-07-form-validation-stage2 §4.3).
+			if trimmed != "" && !validPhoneID(trimmed) {
+				fieldErr(c, "validation_failed", "phone", "Nomor HP tidak valid (contoh 081234567890)")
+				return
+			}
+			params.Phone = pgtype.Text{String: trimmed, Valid: trimmed != ""}
 		}
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
-		return
-	}
-	if req.FullName != nil {
-		if err := q.UpdatePersonFullName(c.Request.Context(), sqlcgen.UpdatePersonFullNameParams{
-			ID: user.PersonID, FullName: newFullName, UpdatedBy: user.ID,
-		}); err != nil {
+		if _, err := q.UpdateOwnAppUserContact(c.Request.Context(), params); err != nil {
+			// Abort, not plain c.JSON: the failed UPDATE leaves the request tx in
+			// Postgres' aborted state, so TenantMiddleware's commit would fail and
+			// append a second JSON body after this response.
+			if isUniqueViolation(err) {
+				c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "email or phone already used"})
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
 			return
 		}
+		if req.FullName != nil {
+			if err := q.UpdatePersonFullName(c.Request.Context(), sqlcgen.UpdatePersonFullNameParams{
+				ID: user.PersonID, FullName: newFullName, UpdatedBy: user.ID,
+			}); err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
+				return
+			}
+		}
+		// Response = GET shape — reload after the writes.
+		user, err = q.GetAppUserByID(c.Request.Context(), user.ID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": meData(c, q, user, cfg), "meta": gin.H{}})
 	}
-	// Response = GET shape — reload after the writes.
-	user, err = q.GetAppUserByID(c.Request.Context(), user.ID)
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to update profile"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": meData(c, q, user), "meta": gin.H{}})
 }
 
 type changePasswordRequest struct {
