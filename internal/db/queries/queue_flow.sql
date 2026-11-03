@@ -149,6 +149,7 @@ LEFT JOIN operations.schedule_session ss ON ss.schedule_id = s.id AND ss.session
 LEFT JOIN core.location loc ON loc.id = COALESCE(ss.room_id, s.room_id)
 WHERE s.merchant_id = $1 AND s.day_of_week = $2
   AND s.is_active AND s.deleted_at IS NULL
+  AND ph.deleted_at IS NULL
   AND s.effective_from <= $4 AND (s.effective_to IS NULL OR s.effective_to >= $4)
   AND (CARDINALITY($5::uuid[]) = 0 OR s.department_id = ANY($5))
 ORDER BY d.name, s.start_time, per.full_name;

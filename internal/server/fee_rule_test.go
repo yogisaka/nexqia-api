@@ -23,6 +23,29 @@ func frNewEnv(t *testing.T, label string) *qeEnv {
 	return payNewEnv(t, "fr."+label)
 }
 
+// frSeedDoctorClaim inserts a user bound to personID with an assigned role
+// (requires_physician_data=true) at merchantID, so the person passes the
+// physician list role guard (plan 2026-11-03-user-mgmt-ux-alerts Task 2).
+func frSeedDoctorClaim(t *testing.T, ctx context.Context, pool *pgxpool.Pool, companyID, merchantID, personID, label string) {
+	t.Helper()
+	var userID, roleID string
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO core.app_user (company_id, person_id, username, password_hash, is_active) VALUES ($1, $2, $3, '$2a$10$abcdefghijklmnopqrstuv', true) RETURNING id::text",
+		companyID, personID, "fr.claim."+label).Scan(&userID); err != nil {
+		t.Fatalf("seed claim user: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO core.role (company_id, name, requires_physician_data) VALUES ($1, $2, true) RETURNING id::text",
+		companyID, "FR Claim "+label).Scan(&roleID); err != nil {
+		t.Fatalf("seed claim role: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO core.user_merchant_role (user_id, merchant_id, role_id) VALUES ($1, $2, $3)",
+		userID, merchantID, roleID); err != nil {
+		t.Fatalf("seed claim assignment: %v", err)
+	}
+}
+
 // frCreatePhysician creates a physician via the API (plus its person) with
 // optional employment fields; returns the physician id and the data object.
 func frCreatePhysician(t *testing.T, env *qeEnv, label string, fields map[string]any) (string, map[string]any) {
@@ -39,6 +62,9 @@ func frCreatePhysician(t *testing.T, env *qeEnv, label string, fields map[string
 	if id == "" {
 		t.Fatalf("physician id missing: %v", data)
 	}
+	// Keep the fixture visible in the physician list despite the role guard:
+	// the seeded person needs an active user with a doctor role here.
+	frSeedDoctorClaim(t, context.Background(), env.pool, env.companyID, env.merchantID, personID, label)
 	return id, data
 }
 

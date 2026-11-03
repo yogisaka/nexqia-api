@@ -56,6 +56,7 @@ JOIN core.physician ph ON ph.id = s.physician_id
 JOIN core.person per ON per.id = ph.person_id
 JOIN core.department d ON d.id = s.department_id
 WHERE s.merchant_id = $1 AND s.deleted_at IS NULL
+  AND ph.deleted_at IS NULL
 ORDER BY s.start_time;
 
 -- name: GetPhysicianSipValidUntil :one

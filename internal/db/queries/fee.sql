@@ -22,6 +22,16 @@ FROM core.physician p
 JOIN core.person pe ON pe.id = p.person_id
 LEFT JOIN terminology.concept c ON c.id = p.specialty_concept_id
 WHERE p.merchant_id = $1 AND p.deleted_at IS NULL AND p.profession = $2
+  AND EXISTS (
+      SELECT 1
+      FROM core.app_user u
+      JOIN core.user_merchant_role umr ON umr.user_id = u.id
+      JOIN core.role r ON r.id = umr.role_id
+      WHERE u.person_id = p.person_id
+        AND u.deleted_at IS NULL
+        AND umr.merchant_id = p.merchant_id
+        AND r.requires_physician_data
+        AND r.deleted_at IS NULL)
 ORDER BY pe.full_name
 LIMIT $3 OFFSET $4;
 
