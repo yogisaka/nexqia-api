@@ -34,3 +34,21 @@ RETURNING *;
 UPDATE core.physician
 SET deleted_at = now(), deleted_by = $2
 WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: SoftDeletePhysicianIfUnclaimed :execrows
+-- Soft-delete physician (person, merchant) bila TIDAK ada user aktif lain
+-- (atau user sama dengan assignment role dokter lain) yang masih
+-- mengklaim data physician ini. 0 baris = sah (tidak ada / masih diklaim).
+UPDATE core.physician p
+SET deleted_at = now(), deleted_by = $3
+WHERE p.person_id = $1 AND p.merchant_id = $2 AND p.deleted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM core.app_user u
+      JOIN core.user_merchant_role umr ON umr.user_id = u.id
+      JOIN core.role r ON r.id = umr.role_id
+      WHERE u.person_id = $1
+        AND u.deleted_at IS NULL
+        AND umr.merchant_id = $2
+        AND r.requires_physician_data
+        AND r.deleted_at IS NULL);

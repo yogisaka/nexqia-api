@@ -1193,9 +1193,24 @@ func RemoveUserMerchantRoleHandler(c *gin.Context) {
 	if !RequirePermission(c, PermRoleManage) {
 		return
 	}
+	role, err := q.GetRoleByID(c.Request.Context(), assignment.RoleID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		respondInternalError(c, err)
+		return
+	}
 	if err := q.RemoveUserMerchantRole(c.Request.Context(), id); err != nil {
 		respondInternalError(c, err)
 		return
+	}
+	if role.RequiresPhysicianData && targetUser.PersonID.Valid {
+		if _, err := q.SoftDeletePhysicianIfUnclaimed(c.Request.Context(), sqlcgen.SoftDeletePhysicianIfUnclaimedParams{
+			PersonID:   targetUser.PersonID,
+			MerchantID: assignment.MerchantID,
+			DeletedBy:  AuthUserID(c),
+		}); err != nil {
+			respondInternalError(c, err) // auto-rollback: DELETE assignment ikut dibatalkan
+			return
+		}
 	}
 	c.Status(http.StatusNoContent)
 }
