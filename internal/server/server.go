@@ -158,6 +158,8 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// CPPT fase 1: clinical form templates + draft entry CRUD (spec
 	// 2026-10-21-cppt-rajal-fase1-design §9).
 	RegisterClinicalRoutes(locked)
+	// Template konten pribadi "Jadikan template" (fase 2a plan Task 3, spec §7).
+	RegisterClinicalContentTemplateRoutes(locked)
 	RegisterDisplayRoutes(locked)
 	RegisterQueueFlowRoutes(locked)
 	RegisterVisitMediaRoutes(locked)

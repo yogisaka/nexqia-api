@@ -182,3 +182,29 @@ SELECT id, company_id, merchant_id, admission_id, ordering_physician_id,
 FROM clinical.nutrition_order
 WHERE id = $1
 FOR UPDATE;
+
+-- Template konten pribadi ("Jadikan template"; plan 2026-11-04-cppt-2a Task 3,
+-- spec 2026-11-04-cppt-2a-soap-editor-design §7, migration 000091).
+-- name: CreateContentTemplate :one
+INSERT INTO clinical_form.content_template
+    (company_id, merchant_id, owner_user_id, form_type, name, form_data)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, company_id, merchant_id, owner_user_id, form_type, name,
+          form_data, created_at;
+
+-- name: ListContentTemplatesByOwner :many
+SELECT id, form_type, name, form_data, created_at
+FROM clinical_form.content_template
+WHERE owner_user_id = $1 AND form_type = $2
+ORDER BY name;
+
+-- name: GetContentTemplate :one
+SELECT id, company_id, merchant_id, owner_user_id, form_type, name,
+       form_data, created_at
+FROM clinical_form.content_template
+WHERE id = $1;
+
+-- name: DeleteContentTemplate :one
+DELETE FROM clinical_form.content_template
+WHERE id = $1
+RETURNING id;
