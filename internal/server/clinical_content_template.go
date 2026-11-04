@@ -121,6 +121,9 @@ func ListContentTemplatesHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// KEPUTUSAN (review 2026-11-04-cppt-2a): list sengaja ikut write perm —
+	// panel template hanya dirender bagi pemegang clinical.record.write, jadi
+	// view perm tidak menambah permukaan apa pun.
 	if !RequirePermissionForMerchant(c, PermClinicalRecordWrite, merchantID) {
 		return
 	}
