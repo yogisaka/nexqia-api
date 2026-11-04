@@ -84,6 +84,7 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	// See 2026-09-23-saas-registration-owner-bootstrap-design.md §3.
 	companyOnlyAuthed := v1.Group("", CompanyOnlyMiddleware(pool), AuthMiddleware(cfg.JWTSecret), RateLimitAPIMiddleware(limiter, cfg))
 	RegisterCompanyLevelRoutes(companyOnlyAuthed, cfg)
+	RegisterOnboardingSelfRoutes(companyOnlyAuthed)
 
 	tenant := v1.Group("", TenantMiddleware(pool))
 	protected := tenant.Group("", AuthMiddleware(cfg.JWTSecret), RateLimitAPIMiddleware(limiter, cfg))
