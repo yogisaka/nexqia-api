@@ -178,12 +178,231 @@ func TestClinicalCompleteness(t *testing.T) {
 		t.Fatalf("(e) rows after yesterday insert = %v, want only %s", data, admissionID)
 	}
 
+	// --- Fase 2a (plan 2026-11-04-clinical-board-fase2a Task 1): visit
+	// metadata, filters, pagination, cancelled exclusion, queue priority.
+	// Expectations are derived from the contract/spec §API-1, not from the
+	// handler output. Extra fixtures are direct inserts so queue tickets stay
+	// under control (the API auto-issues a pendaftaran ticket).
+
+	// Second person + second department + extra today admissions.
+	var person2ID string
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO core.person (company_id, full_name, gender) VALUES ($1, 'Pasien Klinik Lain', 'female') RETURNING id::text",
+		companyID).Scan(&person2ID); err != nil {
+		t.Fatalf("seed person2: %v", err)
+	}
+	var dept2ID string
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO core.department (company_id, merchant_id, code, name) VALUES ($1, $2, 'CC2-D2', 'CC2-D2') RETURNING id::text",
+		companyID, merchantID).Scan(&dept2ID); err != nil {
+		t.Fatalf("seed department2: %v", err)
+	}
+	seedToday := func(personID, deptID, status string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO operations.admission (company_id, merchant_id, visit_no, person_id, admission_type, department_id, status, admission_at)
+			 VALUES ($1, $2, $3, $4, 'outpatient', $5::uuid, $6, $7) RETURNING id::text`,
+			companyID, merchantID, fmt.Sprintf("CC2-%d", cfNext()), personID, deptID, status,
+			time.Date(y, m, d, 12, 0, 0, 0, loc)).Scan(&id); err != nil {
+			t.Fatalf("seed today admission (%s): %v", status, err)
+		}
+		return id
+	}
+	admB := seedToday(person2ID, dept2ID, "registered") // different person + department, no queue ticket
+	admP := seedToday(personID, departmentID, "registered")
+	admC := seedToday(person2ID, departmentID, "cancelled") // must be excluded (f)
+
+	// Physician on the main admission for the metadata columns.
+	var docPersonID string
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO core.person (company_id, full_name, gender) VALUES ($1, 'dr. Klinik Utama', 'male') RETURNING id::text",
+		companyID).Scan(&docPersonID); err != nil {
+		t.Fatalf("seed doctor person: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO core.physician (company_id, merchant_id, person_id, str_number) VALUES ($1, $2, $3, 'STR-CC2')",
+		companyID, merchantID, docPersonID); err != nil {
+		t.Fatalf("seed physician: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE operations.admission SET physician_id = (SELECT id FROM core.physician WHERE person_id = $1 AND merchant_id = $2) WHERE id = $3::uuid",
+		docPersonID, merchantID, admissionID); err != nil {
+		t.Fatalf("attach physician: %v", err)
+	}
+
+	findRow := func(rows []any, id string) map[string]any {
+		for _, r := range rows {
+			if rm := r.(map[string]any); rm["admission_id"] == id {
+				return rm
+			}
+		}
+		t.Fatalf("row %s missing in %d rows", id, len(rows))
+		return nil
+	}
+	// Fase-2a subtests run under a SEPARATE permission-holder token: the
+	// per-user API rate-limit bucket (burst 20, refill 100/min) would 429
+	// the owner token after the fase-1 section already spent it.
+	viewer := cfSeedUserWithPerms(t, ctx, pool, router, companyID, merchantID, "cf.cc.viewer", server.PermClinicalRecordView)
+	getViewer := func(query string) []any {
+		rec, resp := cfDo(t, router, http.MethodGet, path+query, viewer, companyID, merchantID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", query, rec.Code, rec.Body.String())
+		}
+		return resp["data"].([]any)
+	}
+	// getViewerWithMeta fetches data + meta in ONE request (keep request
+	// count low).
+	getViewerWithMeta := func(query string) ([]any, map[string]any) {
+		rec, resp := cfDo(t, router, http.MethodGet, path+query, viewer, companyID, merchantID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", query, rec.Code, rec.Body.String())
+		}
+		return resp["data"].([]any), resp["meta"].(map[string]any)
+	}
+
+	// (a2) New fields present in admission_id mode: physician via
+	// GetPhysicianByID → person.full_name, payer via GetPayerByID ("APSP-cf-cc"
+	// is the payer code/name cfSeedAdmission seeds), MRN/birth_date null.
+	rowA := getViewer("?admission_id=" + admissionID)[0].(map[string]any)
+	if rowA["physician_name"] != "dr. Klinik Utama" || rowA["payer_name"] != "APSP-cf-cc" {
+		t.Fatalf("(a2) physician/payer = %v / %v", rowA["physician_name"], rowA["payer_name"])
+	}
+	if rowA["birth_date"] != nil || rowA["gender"] != "male" {
+		t.Fatalf("(a2) person fields = %v", rowA)
+	}
+	if mrn, _ := rowA["mrn"].(string); mrn == "" {
+		t.Fatalf("(a2) mrn missing: %v", rowA)
+	}
+	if rowA["admission_status"] != "registered" || rowA["admission_at"] == nil || rowA["person_id"] == nil ||
+		rowA["department_id"] == nil || rowA["visit_no"] == "" {
+		t.Fatalf("(a2) visit fields = %v", rowA)
+	}
+	if rowA["queue_number"] == nil {
+		t.Fatalf("(a2) queue_number = nil, want the pendaftaran ticket number")
+	}
+	// Date mode returns the SAME row shape with metadata from the joins.
+	data = getViewer("?date=" + dateStr)
+	rowM := findRow(data, admissionID)
+	if rowM["physician_name"] != "dr. Klinik Utama" || rowM["payer_name"] != "APSP-cf-cc" || rowM["gender"] != "male" {
+		t.Fatalf("(a2) date-mode row = %v", rowM)
+	}
+
+	// (a3) admission_id mode IGNORES pagination (spec §API-1): offset=1 must
+	// still return the row, with the contract meta {"limit":1,"offset":0,"total":1}.
+	one, metaOne := getViewerWithMeta("?admission_id=" + admissionID + "&offset=1")
+	if len(one) != 1 || one[0].(map[string]any)["admission_id"] != admissionID {
+		t.Fatalf("(a3) rows with offset=1 = %v, want the admission row", one)
+	}
+	if metaOne["limit"] != float64(1) || metaOne["offset"] != float64(0) || metaOne["total"] != float64(1) {
+		t.Fatalf("(a3) meta = %v, want limit 1 offset 0 total 1", metaOne)
+	}
+
+	// (b) q matches person name and MRN (contains, case-insensitive).
+	data = getViewer("?date=" + dateStr + "&q=Klinik%20Lain")
+	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admB {
+		t.Fatalf("(b) q by name = %v, want only %s", data, admB)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE core.person SET medical_record_no = 'RM-CC2-99' WHERE id = $1::uuid", person2ID); err != nil {
+		t.Fatalf("set mrn: %v", err)
+	}
+	data = getViewer("?date=" + dateStr + "&q=cc2-99")
+	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admB {
+		t.Fatalf("(b) q by mrn = %v, want only %s", data, admB)
+	}
+
+	// (c) department_id filters; malformed values → contract errors.
+	data = getViewer("?date=" + dateStr + "&department_id=" + dept2ID)
+	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admB {
+		t.Fatalf("(c) department filter = %v, want only %s", data, admB)
+	}
+	if rec, resp = cfDo(t, router, http.MethodGet, path+"?date="+dateStr+"&department_id=nope", viewer, companyID, merchantID, nil); rec.Code != http.StatusBadRequest || resp["error"] != "invalid department_id" {
+		t.Fatalf("(c) bad department_id = %d %v, want 400 invalid department_id", rec.Code, resp)
+	}
+	if rec, resp = cfDo(t, router, http.MethodGet, path+"?date="+dateStr+"&status=selesai", viewer, companyID, merchantID, nil); rec.Code != http.StatusBadRequest || resp["error"] != "invalid status" {
+		t.Fatalf("(c) bad status = %d %v, want 400 invalid status", rec.Code, resp)
+	}
+
+	// (d) status semantics: admP gets a signed nurse entry without
+	// counter-sign → countersign pending → overall belum_lengkap, and the
+	// pending row MUST stay inside belum_lengkap (pending ⊂ belum_lengkap).
+	nurseData2 := `{"sections":{"keluhan":"Demam dua hari."}}`
+	if rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+		"admission_id": admP, "form_type": "ases_awal_perawat", "form_data": cfRawJSON(t, nurseData2),
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("(d) create admP nurse = %d: %s", rec.Code, rec.Body.String())
+	}
+	nurse2ID := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+	if rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+nurse2ID+"/sign", token, companyID, merchantID,
+		map[string]any{"password": ownerPassword}); rec.Code != http.StatusOK {
+		t.Fatalf("(d) sign admP nurse = %d: %s", rec.Code, rec.Body.String())
+	}
+	data = getViewer("?date=" + dateStr + "&status=lengkap")
+	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admissionID {
+		t.Fatalf("(d) status=lengkap = %v, want only %s", data, admissionID)
+	}
+	data = getViewer("?date=" + dateStr + "&status=pending")
+	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admP {
+		t.Fatalf("(d) status=pending = %v, want only %s", data, admP)
+	}
+	data = getViewer("?date=" + dateStr + "&status=belum_lengkap")
+	if len(data) != 2 || findRow(data, admP)["overall"] != "belum_lengkap" {
+		t.Fatalf("(d) status=belum_lengkap = %v, want %s + %s (pending row included)", data, admissionID, admP)
+	}
+
+	// (e) limit/offset slice the filtered rows; meta.total = rows after
+	// filter, before pagination = 3 (main + admB + admP; cancelled excluded,
+	// which also covers (f)).
+	page, meta := getViewerWithMeta("?date=" + dateStr + "&limit=2&offset=1")
+	if meta["total"] != float64(3) || meta["limit"] != float64(2) || meta["offset"] != float64(1) {
+		t.Fatalf("(e) meta = %v, want total 3 limit 2 offset 1", meta)
+	}
+	if len(page) != 2 {
+		t.Fatalf("(e) page rows = %d, want 2", len(page))
+	}
+	for _, r := range page {
+		if r.(map[string]any)["admission_id"] == admC {
+			t.Fatalf("(f) cancelled admission %s must not appear", admC)
+		}
+	}
+
+	// (g) queue: loket alone wins over pendaftaran; poli beats loket;
+	// cancelled/skipped tickets are ignored; no tickets → null. Each stage
+	// reuses ONE fetch to stay inside the rate-limit bucket.
+	queueBase := time.Date(y, m, d, 13, 0, 0, 0, loc)
+	seedTicket := func(qtype, number, status string, at time.Time) {
+		t.Helper()
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO operations.queue (company_id, merchant_id, queue_type, department_id, person_id, admission_id, queue_number, status, created_at)
+			 VALUES ($1, $2, $3, $4::uuid, $5, $6::uuid, $7, $8, $9)`,
+			companyID, merchantID, qtype, departmentID, personID, admissionID, number, status, at); err != nil {
+			t.Fatalf("seed %s ticket %s: %v", qtype, status, err)
+		}
+	}
+	seedTicket("loket", "L-77", "waiting", queueBase)
+	if rn := findRow(getViewer("?date="+dateStr), admissionID)["queue_number"]; rn != "L-77" {
+		t.Fatalf("(g) loket only = %v, want L-77", rn)
+	}
+	seedTicket("poli", "P-9", "waiting", queueBase.Add(time.Minute))
+	if rn := findRow(getViewer("?date="+dateStr), admissionID)["queue_number"]; rn != "P-9" {
+		t.Fatalf("(g) poli+loket = %v, want P-9 (poli wins)", rn)
+	}
+	seedTicket("loket", "L-88", "cancelled", queueBase.Add(2*time.Minute))
+	seedTicket("poli", "P-10", "skipped", queueBase.Add(3*time.Minute))
+	data = getViewer("?date=" + dateStr)
+	if rn := findRow(data, admissionID)["queue_number"]; rn != "P-9" {
+		t.Fatalf("(g) cancelled/skipped ignored = %v, want P-9", rn)
+	}
+	if rn := findRow(data, admB)["queue_number"]; rn != nil {
+		t.Fatalf("(g) no tickets = %v, want nil", rn)
+	}
+
 	// Permission: a user without clinical.record.view → 403; a holder → 200.
 	noPerm := cfSeedUserWithPerms(t, ctx, pool, router, companyID, merchantID, "cf.cc.noview")
 	if rec, _ = cfDo(t, router, http.MethodGet, path+"?admission_id="+admissionID, noPerm, companyID, merchantID, nil); rec.Code != http.StatusForbidden {
 		t.Fatalf("(perm) no-view = %d, want 403", rec.Code)
 	}
-	viewer := cfSeedUserWithPerms(t, ctx, pool, router, companyID, merchantID, "cf.cc.viewer", server.PermClinicalRecordView)
 	if rec, _ = cfDo(t, router, http.MethodGet, path+"?admission_id="+admissionID, viewer, companyID, merchantID, nil); rec.Code != http.StatusOK {
 		t.Fatalf("(perm) viewer = %d: %s", rec.Code, rec.Body.String())
 	}
