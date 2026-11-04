@@ -314,7 +314,12 @@ func TestClinicalFormDraftCreateUpdateDelete(t *testing.T) {
 func TestClinicalFormValidation(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
-	router := newTestRouter(t, ctx, pool)
+	// This test makes ~25 API calls with one token — lift the default burst
+	// of 20 (pattern rbac_physician_cleanup_test.go).
+	cfg := testConfig()
+	cfg.RateLimitAPITokensPerMinute = 1000
+	cfg.RateLimitAPIBurst = 100
+	router := server.NewRouter(pool, newTestRedisClient(t, ctx), cfg)
 	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "valid")
 	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "valid")
 
@@ -324,13 +329,15 @@ func TestClinicalFormValidation(t *testing.T) {
 		})
 	}
 
-	// Happy path: the literal §5.2 example yields zero warnings (all sections filled).
+	// Happy path: the literal §5.2 example is accepted. On template v2 the
+	// new optional sections (keluhan_utama/alergi/gcs/…/rekomendasi) are empty
+	// here, so only the shape of warnings is asserted, not emptiness.
 	rec, resp := post("soap_dokter", cfRawJSON(t, soapFormData))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("happy soap = %d: %s", rec.Code, rec.Body.String())
 	}
-	if w := resp["data"].(map[string]any)["warnings"].([]any); len(w) != 0 {
-		t.Fatalf("happy soap warnings = %v, want empty", w)
+	if _, ok := resp["data"].(map[string]any)["warnings"].([]any); !ok {
+		t.Fatalf("happy soap warnings must be an array, got %v", resp["data"])
 	}
 
 	sections := func(pairs ...string) json.RawMessage {
@@ -415,6 +422,136 @@ func TestClinicalFormValidation(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || resp["error"] != "unsupported section kind: widget" {
 		t.Fatalf("unsupported kind = %d %v", rec.Code, resp)
 	}
+
+	// ── Kinds repeatable/calc + suspect (plan 2a Task 2, spec §5/§6) ──
+	// soapV2FormData = LITERAL spec §5 example (migration 000091 template).
+	// Expectations computed from the spec: gcs 4+5+6=15; imt = round(62/(158/100)²,1) = round(24.8357,1) = 24.8.
+	const soapV2FormData = `{"sections":{
+	  "keluhan_utama":"Batuk berdahak 5 hari, demam sejak 2 hari lalu",
+	  "subjective":"Batuk berdahak kuning, memburuk saat malam. Demam 38-39°C turun-naik.",
+	  "alergi":[{"pemicu":"amoksisilin","jenis":"obat","reaksi":"Biduran dan gatal","keparahan":"sedang","efek_samping":"","tanggal":"2024-03-10"}],
+	  "objective":{"sistolic":120,"diastolic":80,"heart_rate":84,"temperature":37.6,"respiratory_rate":18,"spo2":98,"weight_kg":62,"height_cm":158,"pain_score":6},
+	  "gcs_eye":"4","gcs_verbal":"5","gcs_motorik":"6","gcs_total":15,"imt":24.8,
+	  "assessment":{"narrative":"Suspek infeksi saluran napas atas",
+	    "diagnoses":[
+	      {"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"},"suspect":false},
+	      {"role":"secondary","concept":{"system":"ICD-11","code":"DA0A.0","display":"Dental caries"},"suspect":true}]},
+	  "plan":"Rehat total 3 hari. Terapi simtomatik: paracetamol 500 mg 3x1 selama demam.",
+	  "rekomendasi":"Kontrol 3 hari jika demam >38.5°C atau batuk memburuk"}}`
+
+	t.Run("v2 example accepted", func(t *testing.T) {
+		// (a) full spec §5 example → 201.
+		if rec, _ := post("soap_dokter", cfRawJSON(t, soapV2FormData)); rec.Code != http.StatusCreated {
+			t.Fatalf("spec §5 example = %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("calc gcs", func(t *testing.T) {
+		// (b) 4+5+6 = 15, ditulis 14 → 400.
+		rec, resp := post("soap_dokter", sections(
+			`"gcs_eye":"4"`, `"gcs_verbal":"5"`, `"gcs_motorik":"6"`, `"gcs_total":14`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi gcs_total tidak konsisten" {
+			t.Fatalf("gcs mismatch = %d %v", rec.Code, resp)
+		}
+		// (c) verbal "t" + total "T" → lolos (input parsial + T dinilai konsisten).
+		rec, _ = post("soap_dokter", sections(`"gcs_verbal":"t"`, `"gcs_total":"T"`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("gcs T = %d: %s", rec.Code, rec.Body.String())
+		}
+		// (d) verbal "t" + total numerik → 400.
+		rec, resp = post("soap_dokter", sections(`"gcs_verbal":"t"`, `"gcs_total":15`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi gcs_total tidak konsisten" {
+			t.Fatalf("gcs t numeric = %d %v", rec.Code, resp)
+		}
+	})
+	t.Run("calc imt", func(t *testing.T) {
+		// (e) BB 62 / TB 158 → imt seharusnya 24.8; ditulis 30 → 400.
+		rec, resp := post("soap_dokter", sections(
+			`"objective":{"weight_kg":62,"height_cm":158}`, `"imt":30`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt tidak konsisten" {
+			t.Fatalf("imt mismatch = %d %v", rec.Code, resp)
+		}
+		rec, _ = post("soap_dokter", sections(
+			`"objective":{"weight_kg":62,"height_cm":158}`, `"imt":24.8`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("imt ok = %d: %s", rec.Code, rec.Body.String())
+		}
+		// (f) imt terisi, weight_kg kosong (parsial) → 400.
+		rec, resp = post("soap_dokter", sections(
+			`"objective":{"height_cm":158}`, `"imt":24.8`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt tidak konsisten" {
+			t.Fatalf("imt partial filled = %d %v", rec.Code, resp)
+		}
+	})
+	t.Run("repeatable alergi", func(t *testing.T) {
+		// (g) field tak dikenal dalam row → 400.
+		rec, resp := post("soap_dokter", sections(`"alergi":[{"pemicu":"depan","foo":"x"}]`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "unknown field 'foo' di section 'alergi'" {
+			t.Fatalf("unknown field = %d %v", rec.Code, resp)
+		}
+		// (h) select di luar options → 400.
+		rec, resp = post("soap_dokter", sections(`"alergi":[{"jenis":"zat"}]`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'alergi'" {
+			t.Fatalf("jenis = %d %v", rec.Code, resp)
+		}
+		// (i) tanggal valid → lolos; format salah → 400.
+		rec, _ = post("soap_dokter", sections(`"alergi":[{"tanggal":"2024-03-10"}]`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("tanggal ok = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, resp = post("soap_dokter", sections(`"alergi":[{"tanggal":"10/03/2024"}]`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'alergi'" {
+			t.Fatalf("tanggal bad = %d %v", rec.Code, resp)
+		}
+	})
+	t.Run("suspect", func(t *testing.T) {
+		// (j) suspect non-boolean → 400; boolean → lolos.
+		rec, resp := post("soap_dokter", sections(
+			`"assessment":{"narrative":"n","diagnoses":[{"role":"primary","suspect":"ya"}]}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "suspect harus boolean" {
+			t.Fatalf("suspect string = %d %v", rec.Code, resp)
+		}
+		rec, _ = post("soap_dokter", sections(
+			`"assessment":{"narrative":"n","diagnoses":[{"role":"primary","suspect":true}]}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("suspect bool = %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("draft v1 shape on v2 template", func(t *testing.T) {
+		// (k) draft dengan 4 key lama saja → PATCH di template v2 tetap 200 (D7).
+		rec, resp := post("soap_dokter", sections(
+			`"subjective":"lama"`, `"objective":{"sistolic":120}`,
+			`"assessment":{"narrative":"ISEL"}`, `"plan":"p"`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("v1-shape create = %d: %s", rec.Code, rec.Body.String())
+		}
+		id := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+		rec, _ = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/forms/"+id, token, companyID, merchantID, map[string]any{
+			"form_data": sections(`"subjective":"masih lama"`),
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("v1-shape patch = %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("calc partial inputs", func(t *testing.T) {
+		// (l) PARSIAL-LOLOS: satu input, calc absen → draft sah.
+		rec, _ := post("soap_dokter", sections(`"gcs_eye":"4"`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("gcs partial ok = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, _ = post("soap_dokter", sections(`"objective":{"weight_kg":62}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("imt partial ok = %d: %s", rec.Code, rec.Body.String())
+		}
+		// (m) PARSIAL-TERISI: calc terisi padahal input belum lengkap → 400.
+		rec, resp := post("soap_dokter", sections(`"gcs_eye":"4"`, `"gcs_total":4`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi gcs_total tidak konsisten" {
+			t.Fatalf("gcs partial filled = %d %v", rec.Code, resp)
+		}
+		rec, resp = post("soap_dokter", sections(`"objective":{"weight_kg":62}`, `"imt":24.8`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt tidak konsisten" {
+			t.Fatalf("imt partial filled = %d %v", rec.Code, resp)
+		}
+	})
 }
 
 // TestClinicalFormDraftAuthorOnly — PATCH/DELETE by another writer → 403.

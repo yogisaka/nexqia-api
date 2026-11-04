@@ -8,8 +8,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -54,14 +56,33 @@ type clinicalSectionOption struct {
 	Label string `json:"label"`
 }
 
+// clinicalRepeatableFieldDef is one column of a repeatable section (spec
+// 2026-11-04-cppt-2a-soap-editor-design §4: alergi rows).
+type clinicalRepeatableFieldDef struct {
+	Key     string                  `json:"key"`
+	Label   string                  `json:"label"`
+	Type    string                  `json:"type"`
+	Options []clinicalSectionOption `json:"options"`
+}
+
+// clinicalCalcDef is the declarative recompute metadata of a calc section
+// (spec §1 A2, pattern MST): formula "gcs" reads select section keys,
+// "imt" reads "<section>.<field>" paths (objective.weight_kg/height_cm).
+type clinicalCalcDef struct {
+	Formula string   `json:"formula"`
+	Inputs  []string `json:"inputs"`
+}
+
 // clinicalSectionDef mirrors one entry of core.template_clinical_form.sections
 // (spec §5: {"sections":[{"key","label","kind","soft_required"?,"options"?}]}).
 type clinicalSectionDef struct {
-	Key          string                  `json:"key"`
-	Label        string                  `json:"label"`
-	Kind         string                  `json:"kind"`
-	SoftRequired bool                    `json:"soft_required"`
-	Options      []clinicalSectionOption `json:"options"`
+	Key          string                       `json:"key"`
+	Label        string                       `json:"label"`
+	Kind         string                       `json:"kind"`
+	SoftRequired bool                         `json:"soft_required"`
+	Options      []clinicalSectionOption      `json:"options"`
+	Fields       []clinicalRepeatableFieldDef `json:"fields"`
+	Calc         *clinicalCalcDef             `json:"calc"`
 }
 
 type clinicalSectionsDef struct {
@@ -73,6 +94,7 @@ type clinicalSectionsDef struct {
 var clinicalSectionKinds = map[string]bool{
 	"textarea": true, "text": true, "number": true, "select": true,
 	"vitals": true, "diagnosis": true, "date": true,
+	"repeatable": true, "calc": true,
 }
 
 // resolveClinicalFormTemplate picks the active clinical_form template for
@@ -144,6 +166,12 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 	for _, d := range defs.Sections {
 		if !clinicalSectionKinds[d.Kind] {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported section kind: " + d.Kind})
+			return nil, false
+		}
+		// A calc section without recompute metadata is a malformed template —
+		// reject the shape instead of silently skipping validation (spec §6.3).
+		if d.Kind == "calc" && (d.Calc == nil || d.Calc.Formula == "" || len(d.Calc.Inputs) == 0) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported section kind: calc"})
 			return nil, false
 		}
 		byKey[d.Key] = d
@@ -222,6 +250,29 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 					return nil, false
 				}
 			}
+		case "repeatable":
+			var rows []map[string]json.RawMessage
+			if err := json.Unmarshal(rawVal, &rows); err != nil {
+				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+			fieldDefs := make(map[string]clinicalRepeatableFieldDef, len(d.Fields))
+			for _, f := range d.Fields {
+				fieldDefs[f.Key] = f
+			}
+			for _, row := range rows {
+				for fk, fv := range row {
+					fd, known := fieldDefs[fk]
+					if !known {
+						c.JSON(http.StatusBadRequest, gin.H{"error": "unknown field '" + fk + "' di section '" + d.Key + "'"})
+						return nil, false
+					}
+					if !clinicalRepeatableFieldOk(fv, fd) {
+						clinicalInvalidSection(c, d.Key)
+						return nil, false
+					}
+				}
+			}
 		case "diagnosis":
 			var dx struct {
 				Narrative *string           `json:"narrative"`
@@ -232,6 +283,22 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 				// warning FE — review A3).
 				clinicalInvalidSection(c, d.Key)
 				return nil, false
+			}
+			// Suspect flag per row (spec 2a §6.4/A1): key present must be a
+			// boolean (null tolerated via *bool); clinical.diagnosis untouched.
+			for _, dRaw := range dx.Diagnoses {
+				var row map[string]json.RawMessage
+				if err := json.Unmarshal(dRaw, &row); err != nil {
+					clinicalInvalidSection(c, d.Key)
+					return nil, false
+				}
+				if rawSus, ok := row["suspect"]; ok {
+					var b *bool
+					if err := json.Unmarshal(rawSus, &b); err != nil {
+						c.JSON(http.StatusBadRequest, gin.H{"error": "suspect harus boolean"})
+						return nil, false
+					}
+				}
 			}
 		}
 	}
@@ -254,7 +321,177 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 			}
 		}
 	}
+	// Calc consistency (spec 2a §6.3, pattern MST recompute): a calc value may
+	// only be filled when its inputs allow the recomputation. All inputs empty
+	// → calc must be empty/absent (filled = soft warning, not an error);
+	// partial inputs → calc filled = 400, calc empty = pass (FE inline warning).
+	for _, d := range defs.Sections {
+		if d.Kind != "calc" {
+			continue
+		}
+		rawVal, present := payload.Sections[d.Key]
+		calcFilled := present && !clinicalSectionEmpty(rawVal)
+		complete, anyFilled, texts, nums := clinicalCalcInputs(payload.Sections, d.Calc.Inputs)
+		if !complete {
+			if !calcFilled {
+				continue
+			}
+			// GCS "t": any filled input "t" pins the total to "T" even before
+			// the remaining inputs are known (spec 2a Task 2 test c).
+			if d.Calc.Formula == "gcs" && clinicalCalcIsT(rawVal, texts) {
+				continue
+			}
+			if anyFilled {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "kalkulasi " + d.Key + " tidak konsisten"})
+				return nil, false
+			}
+			warnings = append(warnings, "kalkulasi '"+d.Key+"' terisi tanpa input lengkap")
+			continue
+		}
+		if !calcFilled {
+			continue
+		}
+		inconsistent := false
+		switch d.Calc.Formula {
+		case "gcs":
+			t := false
+			sum := 0
+			for _, s := range texts {
+				if s == "t" {
+					t = true
+					continue
+				}
+				n, err := strconv.Atoi(s)
+				if err != nil {
+					inconsistent = true
+					break
+				}
+				sum += n
+			}
+			if t {
+				inconsistent = !clinicalCalcIsT(rawVal, texts)
+			} else {
+				v, ok := clinicalCalcNumber(rawVal)
+				inconsistent = !ok || int(v) != sum
+			}
+		case "imt":
+			expected := math.Round(nums["objective.weight_kg"]/math.Pow(nums["objective.height_cm"]/100, 2)*10) / 10
+			v, ok := clinicalCalcNumber(rawVal)
+			inconsistent = !ok || math.Abs(v-expected) > 0.1+1e-9
+		default:
+			// Unknown formula = malformed template shape.
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported section kind: calc"})
+			return nil, false
+		}
+		if inconsistent {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "kalkulasi " + d.Key + " tidak konsisten"})
+			return nil, false
+		}
+	}
 	return warnings, true
+}
+
+// clinicalCalcInputs reads the current values of a calc definition's inputs
+// (spec 2a §6.3): bare section keys resolve to select strings ("gcs" E/V/M),
+// "<section>.<field>" paths resolve to numbers of that section object
+// ("imt" ← objective.weight_kg / objective.height_cm). complete = every input
+// filled; anyFilled = at least one filled (partial inputs).
+func clinicalCalcInputs(sections map[string]json.RawMessage, inputs []string) (complete, anyFilled bool, texts []string, nums map[string]float64) {
+	complete, anyFilled = true, false
+	texts = []string{}
+	nums = map[string]float64{}
+	for _, in := range inputs {
+		sec, field, isPath := strings.Cut(in, ".")
+		filled := false
+		if isPath {
+			var m map[string]json.Number
+			if r, ok := sections[sec]; ok && !clinicalSectionEmpty(r) {
+				_ = json.Unmarshal(r, &m)
+			}
+			if n, ok := m[field]; ok {
+				if v, err := n.Float64(); err == nil {
+					nums[in] = v
+					filled = true
+				}
+			}
+		} else {
+			var s string
+			if r, ok := sections[in]; ok && !clinicalSectionEmpty(r) {
+				if err := json.Unmarshal(r, &s); err == nil && s != "" {
+					texts = append(texts, s)
+					filled = true
+				}
+			}
+		}
+		if filled {
+			anyFilled = true
+		} else {
+			complete = false
+		}
+	}
+	return complete, anyFilled, texts, nums
+}
+
+// clinicalCalcIsT reports a gcs calc value consistent with a "t" input: at
+// least one filled input is "t" and the calc value is exactly the string "T".
+func clinicalCalcIsT(raw json.RawMessage, texts []string) bool {
+	hasT := false
+	for _, s := range texts {
+		if s == "t" {
+			hasT = true
+		}
+	}
+	if !hasT {
+		return false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return false
+	}
+	return s == "T"
+}
+
+// clinicalCalcNumber reads a calc section value as a number (JSON number or
+// numeric string); the "T" string form is handled by the gcs branch.
+func clinicalCalcNumber(raw json.RawMessage) (float64, bool) {
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		if v, err := n.Float64(); err == nil {
+			return v, true
+		}
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if v, err := strconv.ParseFloat(s, 64); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+// clinicalRepeatableFieldOk validates one repeatable row value against its
+// field def (spec 2a §6.2): text = string, select = string in options,
+// date = YYYY-MM-DD.
+func clinicalRepeatableFieldOk(raw json.RawMessage, fd clinicalRepeatableFieldDef) bool {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return false
+	}
+	switch fd.Type {
+	case "text":
+		return true
+	case "select":
+		for _, o := range fd.Options {
+			if o.Value == s {
+				return true
+			}
+		}
+		return false
+	case "date":
+		_, err := time.Parse("2006-01-02", s)
+		return err == nil
+	}
+	return false
 }
 
 // clinicalFormJSON maps a sqlcgen row to the snake_case contract shape (spec
