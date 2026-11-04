@@ -160,6 +160,8 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	RegisterClinicalRoutes(locked)
 	// Template konten pribadi "Jadikan template" (fase 2a plan Task 3, spec §7).
 	RegisterClinicalContentTemplateRoutes(locked)
+	// Person-forms "Salin dari catatan lalu" + drawer Ringkasan Pasien (fase 2a plan Task 4, spec §7).
+	RegisterClinicalSummaryRoutes(locked)
 	RegisterDisplayRoutes(locked)
 	RegisterQueueFlowRoutes(locked)
 	RegisterVisitMediaRoutes(locked)
