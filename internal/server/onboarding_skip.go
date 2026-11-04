@@ -48,7 +48,10 @@ func OnboardingSkipGetHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	payload := onboardingSkipPermissionPayload(c, ctx, q, userID, companyID, skippedAt, skippedAt.Valid)
+	payload, ok := onboardingSkipPermissionPayload(c, ctx, q, userID, companyID, skippedAt, skippedAt.Valid)
+	if !ok {
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"data": payload})
 }
 
@@ -76,7 +79,10 @@ func OnboardingSkipSetHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	payload := onboardingSkipPermissionPayload(c, ctx, q, userID, companyID, skippedAt, true)
+	payload, ok := onboardingSkipPermissionPayload(c, ctx, q, userID, companyID, skippedAt, true)
+	if !ok {
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"data": payload})
 }
 
@@ -92,9 +98,9 @@ func onboardingSkipUserContext(c *gin.Context) (pgtype.UUID, bool) {
 }
 
 // onboardingSkipPermissionPayload probes the company-level permission and
-// builds the snake_case payload; on probe error it responds 500 and returns a
-// zero payload that is never sent.
-func onboardingSkipPermissionPayload(c *gin.Context, ctx context.Context, q *sqlcgen.Queries, userID, companyID pgtype.UUID, skippedAt pgtype.Timestamptz, skipped bool) onboardingSkipPayload {
+// builds the snake_case payload; on probe error it responds 500 and returns
+// ok=false so the caller stops instead of writing a second response.
+func onboardingSkipPermissionPayload(c *gin.Context, ctx context.Context, q *sqlcgen.Queries, userID, companyID pgtype.UUID, skippedAt pgtype.Timestamptz, skipped bool) (onboardingSkipPayload, bool) {
 	canManage, err := q.UserHasCompanyLevelPermission(ctx, sqlcgen.UserHasCompanyLevelPermissionParams{
 		UserID:    userID,
 		CompanyID: companyID,
@@ -102,12 +108,12 @@ func onboardingSkipPermissionPayload(c *gin.Context, ctx context.Context, q *sql
 	})
 	if err != nil {
 		respondInternalError(c, err)
-		return onboardingSkipPayload{}
+		return onboardingSkipPayload{}, false
 	}
 	var skippedAtStr *string
 	if skippedAt.Valid {
 		s := skippedAt.Time.Format(time.RFC3339)
 		skippedAtStr = &s
 	}
-	return onboardingSkipPayload{Skipped: skipped, SkippedAt: skippedAtStr, CanManageMerchant: canManage}
+	return onboardingSkipPayload{Skipped: skipped, SkippedAt: skippedAtStr, CanManageMerchant: canManage}, true
 }
