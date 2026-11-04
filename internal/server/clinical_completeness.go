@@ -108,12 +108,13 @@ func computeCompletenessChecks(forms []sqlcgen.ClinicalFormFormInstance, diagnos
 
 // GetClinicalCompletenessHandler godoc
 // @Summary Daily clinical record completeness board
-// @Description Per-outpatient-visit soft completeness checks (nurse assessment, SOAP, diagnosis, resume, counter-sign) with visit metadata. ?date=YYYY-MM-DD (merchant-local day) or ?admission_id=, one required; date mode supports ?q=, ?department_id=, ?status=lengkap|belum_lengkap|pending and ?limit/?offset (spec fase-2a §API-1).
+// @Description Per-outpatient-visit soft completeness checks (nurse assessment, SOAP, diagnosis, resume, counter-sign) with visit metadata. ?date_from=&date_to=YYYY-MM-DD (merchant-local range, both required) or ?admission_id=, one required; date mode supports ?q=, ?department_id=, ?status=lengkap|belum_lengkap|pending and ?limit/?offset (spec fase-2a §API-1).
 // @Tags clinical
 // @Produce json
 // @Security BearerAuth
 // @Param X-Merchant-ID header string true "Active merchant UUID"
-// @Param date query string false "Merchant-local day, YYYY-MM-DD"
+// @Param date_from query string false "Range start, merchant-local day YYYY-MM-DD (required with date_to)"
+// @Param date_to query string false "Range end, merchant-local day YYYY-MM-DD (inclusive)"
 // @Param admission_id query string false "Admission UUID"
 // @Param q query string false "Contains case-insensitive match on person name or MRN"
 // @Param department_id query string false "Department UUID filter"
@@ -133,10 +134,15 @@ func GetClinicalCompletenessHandler(c *gin.Context) {
 	q := sqlcgen.New(TxFromContext(c))
 	ctx := c.Request.Context()
 
-	dateRaw := c.Query("date")
+	dateFromRaw := c.Query("date_from")
+	dateToRaw := c.Query("date_to")
 	admRaw := c.Query("admission_id")
-	if dateRaw == "" && admRaw == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "parameter date atau admission_id wajib"})
+	if dateFromRaw == "" && dateToRaw == "" && admRaw == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parameter date_from/date_to atau admission_id wajib"})
+		return
+	}
+	if admRaw == "" && (dateFromRaw == "" || dateToRaw == "") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parameter date_from dan date_to wajib bersama"})
 		return
 	}
 	if !RequirePermissionForMerchant(c, PermClinicalRecordView, merchantID) {
@@ -236,9 +242,18 @@ func GetClinicalCompletenessHandler(c *gin.Context) {
 			admissionStatus: admission.Status, payerName: payerName,
 		}}
 	} else {
-		day, err := time.Parse("2006-01-02", dateRaw)
+		fromDay, err := time.Parse("2006-01-02", dateFromRaw)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date_from"})
+			return
+		}
+		toDay, err := time.Parse("2006-01-02", dateToRaw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date_to"})
+			return
+		}
+		if fromDay.After(toDay) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "date_from melebihi date_to"})
 			return
 		}
 		loc, err := merchantLocation(ctx, q, merchantID)
@@ -246,12 +261,14 @@ func GetClinicalCompletenessHandler(c *gin.Context) {
 			respondInternalError(c, err)
 			return
 		}
-		y, m, d := day.Date()
-		dayStart := time.Date(y, m, d, 0, 0, 0, 0, loc)
+		fy, fmonth, fday := fromDay.Date()
+		fromStart := time.Date(fy, fmonth, fday, 0, 0, 0, 0, loc)
+		ty, tmonth, tday := toDay.Date()
+		toEnd := time.Date(ty, tmonth, tday, 0, 0, 0, 0, loc).Add(24 * time.Hour)
 		admissions, err := q.ListOutpatientAdmissionsByDay(ctx, sqlcgen.ListOutpatientAdmissionsByDayParams{
 			MerchantID: merchantID,
-			Column2:    pgtype.Timestamptz{Time: dayStart, Valid: true},
-			Column3:    pgtype.Timestamptz{Time: dayStart.Add(24 * time.Hour), Valid: true},
+			Column2:    pgtype.Timestamptz{Time: fromStart, Valid: true},
+			Column3:    pgtype.Timestamptz{Time: toEnd, Valid: true},
 		})
 		if err != nil {
 			respondInternalError(c, err)

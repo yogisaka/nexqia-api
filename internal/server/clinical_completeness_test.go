@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 // overall belum_lengkap; (b) a SOAP draft → incomplete + "belum sign";
 // (c) everything signed + diagnosis + countersign done → lengkap;
 // (d) a signed nurse entry without counter-sign → countersign pending;
-// (e) ?date= only covers the merchant-local day.
+// (e) ?date_from=&date_to= only covers the merchant-local day range.
 func TestClinicalCompleteness(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
@@ -29,9 +30,9 @@ func TestClinicalCompleteness(t *testing.T) {
 
 	path := "/api/v1/clinical/completeness"
 
-	// Neither ?date= nor ?admission_id= → 400 with the contract message.
+	// Neither ?date_from=&date_to= nor ?admission_id= → 400 with the contract message.
 	rec, resp := cfDo(t, router, http.MethodGet, path, token, companyID, merchantID, nil)
-	if rec.Code != http.StatusBadRequest || resp["error"] != "parameter date atau admission_id wajib" {
+	if rec.Code != http.StatusBadRequest || resp["error"] != "parameter date_from/date_to atau admission_id wajib" {
 		t.Fatalf("missing params = %d %v, want 400", rec.Code, resp)
 	}
 
@@ -142,7 +143,7 @@ func TestClinicalCompleteness(t *testing.T) {
 		}
 	}
 
-	// (e) ?date= covers only the merchant-local day: the today admission is
+	// (e) ?date_from=&date_to= covers only the merchant-local day: the today admission is
 	// listed; a directly-inserted yesterday admission is not.
 	var tz string
 	if err := pool.QueryRow(ctx,
@@ -156,7 +157,7 @@ func TestClinicalCompleteness(t *testing.T) {
 	now := time.Now().In(loc)
 	y, m, d := now.Date()
 	dateStr := fmt.Sprintf("%04d-%02d-%02d", y, m, d)
-	data = get("?date=" + dateStr)
+	data = get("?date_from=" + dateStr + "&date_to=" + dateStr)
 	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admissionID {
 		t.Fatalf("(e) today rows = %v, want only %s", data, admissionID)
 	}
@@ -173,7 +174,7 @@ func TestClinicalCompleteness(t *testing.T) {
 		companyID, merchantID, fmt.Sprintf("CC-%d-YESTERDAY", time.Now().UnixNano()), personID, departmentID, yesterday); err != nil {
 		t.Fatalf("seed yesterday admission: %v", err)
 	}
-	data = get("?date=" + dateStr)
+	data = get("?date_from=" + dateStr + "&date_to=" + dateStr)
 	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admissionID {
 		t.Fatalf("(e) rows after yesterday insert = %v, want only %s", data, admissionID)
 	}
@@ -282,7 +283,7 @@ func TestClinicalCompleteness(t *testing.T) {
 		t.Fatalf("(a2) queue_number = nil, want the pendaftaran ticket number")
 	}
 	// Date mode returns the SAME row shape with metadata from the joins.
-	data = getViewer("?date=" + dateStr)
+	data = getViewer("?date_from=" + dateStr + "&date_to=" + dateStr)
 	rowM := findRow(data, admissionID)
 	if rowM["physician_name"] != "dr. Klinik Utama" || rowM["payer_name"] != "APSP-cf-cc" || rowM["gender"] != "male" {
 		t.Fatalf("(a2) date-mode row = %v", rowM)
@@ -299,7 +300,7 @@ func TestClinicalCompleteness(t *testing.T) {
 	}
 
 	// (b) q matches person name and MRN (contains, case-insensitive).
-	data = getViewer("?date=" + dateStr + "&q=Klinik%20Lain")
+	data = getViewer("?date_from=" + dateStr + "&date_to=" + dateStr + "&q=Klinik%20Lain")
 	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admB {
 		t.Fatalf("(b) q by name = %v, want only %s", data, admB)
 	}
@@ -307,21 +308,56 @@ func TestClinicalCompleteness(t *testing.T) {
 		"UPDATE core.person SET medical_record_no = 'RM-CC2-99' WHERE id = $1::uuid", person2ID); err != nil {
 		t.Fatalf("set mrn: %v", err)
 	}
-	data = getViewer("?date=" + dateStr + "&q=cc2-99")
+	data = getViewer("?date_from=" + dateStr + "&date_to=" + dateStr + "&q=cc2-99")
 	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admB {
 		t.Fatalf("(b) q by mrn = %v, want only %s", data, admB)
 	}
 
 	// (c) department_id filters; malformed values → contract errors.
-	data = getViewer("?date=" + dateStr + "&department_id=" + dept2ID)
+	data = getViewer("?date_from=" + dateStr + "&date_to=" + dateStr + "&department_id=" + dept2ID)
 	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admB {
 		t.Fatalf("(c) department filter = %v, want only %s", data, admB)
 	}
-	if rec, resp = cfDo(t, router, http.MethodGet, path+"?date="+dateStr+"&department_id=nope", viewer, companyID, merchantID, nil); rec.Code != http.StatusBadRequest || resp["error"] != "invalid department_id" {
+	if rec, resp = cfDo(t, router, http.MethodGet, path+"?date_from="+dateStr+"&date_to="+dateStr+"&department_id=nope", viewer, companyID, merchantID, nil); rec.Code != http.StatusBadRequest || resp["error"] != "invalid department_id" {
 		t.Fatalf("(c) bad department_id = %d %v, want 400 invalid department_id", rec.Code, resp)
 	}
-	if rec, resp = cfDo(t, router, http.MethodGet, path+"?date="+dateStr+"&status=selesai", viewer, companyID, merchantID, nil); rec.Code != http.StatusBadRequest || resp["error"] != "invalid status" {
+	if rec, resp = cfDo(t, router, http.MethodGet, path+"?date_from="+dateStr+"&date_to="+dateStr+"&status=selesai", viewer, companyID, merchantID, nil); rec.Code != http.StatusBadRequest || resp["error"] != "invalid status" {
 		t.Fatalf("(c) bad status = %d %v, want 400 invalid status", rec.Code, resp)
+	}
+
+	// --- Rentang tanggal (plan 2026-11-04-clinical-board-filter Task 1):
+	// date_from+date_to wajib bersama, format tervalidasi, from <= to.
+	// Token viewer2 = bucket rate-limit sendiri (pola viewer, catatan atas).
+	viewer2 := cfSeedUserWithPerms(t, ctx, pool, router, companyID, merchantID, "cf.cc.dates", server.PermClinicalRecordView)
+	yd, ymo, ydd := yesterday.Date()
+	yesterdayStr := fmt.Sprintf("%04d-%02d-%02d", yd, ymo, ydd)
+	wantErr := func(query, msg string) {
+		t.Helper()
+		rec2, resp2 := cfDo(t, router, http.MethodGet, path+query, viewer2, companyID, merchantID, nil)
+		if rec2.Code != http.StatusBadRequest || resp2["error"] != msg {
+			t.Fatalf("GET %s = %d %v, want 400 %q", query, rec2.Code, resp2, msg)
+		}
+	}
+	wantErr("?date_from="+dateStr, "parameter date_from dan date_to wajib bersama")
+	wantErr("?date_to="+dateStr, "parameter date_from dan date_to wajib bersama")
+	wantErr("?date_from=not-a-date&date_to="+dateStr, "invalid date_from")
+	wantErr("?date_from="+dateStr+"&date_to=not-a-date", "invalid date_to")
+	wantErr("?date_from="+dateStr+"&date_to="+yesterdayStr, "date_from melebihi date_to")
+
+	// Rentang multi-hari: kemarin + 3 kunjungan hari ini (cancelled
+	// admC tetap eksklusif) = 4; baris kemarin hadir (visit_no -YESTERDAY).
+	data = getViewer("?date_from=" + yesterdayStr + "&date_to=" + dateStr)
+	if len(data) != 4 {
+		t.Fatalf("(range) rows = %d, want 4 (yesterday + 3 today)", len(data))
+	}
+	hasYesterday := false
+	for _, r := range data {
+		if strings.HasSuffix(r.(map[string]any)["visit_no"].(string), "-YESTERDAY") {
+			hasYesterday = true
+		}
+	}
+	if !hasYesterday {
+		t.Fatalf("(range) yesterday admission missing in %d rows", len(data))
 	}
 
 	// (d) status semantics: admP gets a signed nurse entry without
@@ -338,15 +374,15 @@ func TestClinicalCompleteness(t *testing.T) {
 		map[string]any{"password": ownerPassword}); rec.Code != http.StatusOK {
 		t.Fatalf("(d) sign admP nurse = %d: %s", rec.Code, rec.Body.String())
 	}
-	data = getViewer("?date=" + dateStr + "&status=lengkap")
+	data = getViewer("?date_from=" + dateStr + "&date_to=" + dateStr + "&status=lengkap")
 	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admissionID {
 		t.Fatalf("(d) status=lengkap = %v, want only %s", data, admissionID)
 	}
-	data = getViewer("?date=" + dateStr + "&status=pending")
+	data = getViewer("?date_from=" + dateStr + "&date_to=" + dateStr + "&status=pending")
 	if len(data) != 1 || data[0].(map[string]any)["admission_id"] != admP {
 		t.Fatalf("(d) status=pending = %v, want only %s", data, admP)
 	}
-	data = getViewer("?date=" + dateStr + "&status=belum_lengkap")
+	data = getViewer("?date_from=" + dateStr + "&date_to=" + dateStr + "&status=belum_lengkap")
 	if len(data) != 2 || findRow(data, admP)["overall"] != "belum_lengkap" {
 		t.Fatalf("(d) status=belum_lengkap = %v, want %s + %s (pending row included)", data, admissionID, admP)
 	}
@@ -354,7 +390,7 @@ func TestClinicalCompleteness(t *testing.T) {
 	// (e) limit/offset slice the filtered rows; meta.total = rows after
 	// filter, before pagination = 3 (main + admB + admP; cancelled excluded,
 	// which also covers (f)).
-	page, meta := getViewerWithMeta("?date=" + dateStr + "&limit=2&offset=1")
+	page, meta := getViewerWithMeta("?date_from=" + dateStr + "&date_to=" + dateStr + "&limit=2&offset=1")
 	if meta["total"] != float64(3) || meta["limit"] != float64(2) || meta["offset"] != float64(1) {
 		t.Fatalf("(e) meta = %v, want total 3 limit 2 offset 1", meta)
 	}
@@ -381,16 +417,16 @@ func TestClinicalCompleteness(t *testing.T) {
 		}
 	}
 	seedTicket("loket", "L-77", "waiting", queueBase)
-	if rn := findRow(getViewer("?date="+dateStr), admissionID)["queue_number"]; rn != "L-77" {
+	if rn := findRow(getViewer("?date_from="+dateStr+"&date_to="+dateStr), admissionID)["queue_number"]; rn != "L-77" {
 		t.Fatalf("(g) loket only = %v, want L-77", rn)
 	}
 	seedTicket("poli", "P-9", "waiting", queueBase.Add(time.Minute))
-	if rn := findRow(getViewer("?date="+dateStr), admissionID)["queue_number"]; rn != "P-9" {
+	if rn := findRow(getViewer("?date_from="+dateStr+"&date_to="+dateStr), admissionID)["queue_number"]; rn != "P-9" {
 		t.Fatalf("(g) poli+loket = %v, want P-9 (poli wins)", rn)
 	}
 	seedTicket("loket", "L-88", "cancelled", queueBase.Add(2*time.Minute))
 	seedTicket("poli", "P-10", "skipped", queueBase.Add(3*time.Minute))
-	data = getViewer("?date=" + dateStr)
+	data = getViewer("?date_from=" + dateStr + "&date_to=" + dateStr)
 	if rn := findRow(data, admissionID)["queue_number"]; rn != "P-9" {
 		t.Fatalf("(g) cancelled/skipped ignored = %v, want P-9", rn)
 	}
