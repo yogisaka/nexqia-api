@@ -190,8 +190,39 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 	if soap["scope"] != "platform" || soap["category"] != "soap" {
 		t.Fatalf("soap_dokter = %v", soap)
 	}
-	if v, _ := soap["version"].(float64); v < 1 {
-		t.Fatalf("soap_dokter version = %v, want >= 1", soap["version"])
+	if v, _ := soap["version"].(float64); v != 2 {
+		t.Fatalf("soap_dokter version = %v, want 2", soap["version"])
+	}
+	// soap_dokter v2 = 12 sections (migration 000091).
+	defs, _ := soap["sections"].(map[string]any)["sections"].([]any)
+	if len(defs) != 12 {
+		t.Fatalf("soap_dokter sections = %d, want 12", len(defs))
+	}
+	var alergi map[string]any
+	calcKinds := map[string]bool{}
+	for _, d := range defs {
+		def := d.(map[string]any)
+		key, _ := def["key"].(string)
+		kind, _ := def["kind"].(string)
+		if key == "alergi" {
+			alergi = def
+		}
+		if kind == "calc" {
+			calcKinds[key] = true
+		}
+	}
+	if alergi == nil {
+		t.Fatal("soap_dokter v2 missing alergi section")
+	}
+	if alergi["kind"] != "repeatable" {
+		t.Fatalf("alergi kind = %v, want repeatable", alergi["kind"])
+	}
+	fields, _ := alergi["fields"].([]any)
+	if len(fields) != 6 {
+		t.Fatalf("alergi fields = %d, want 6", len(fields))
+	}
+	if !calcKinds["gcs_total"] || !calcKinds["imt"] {
+		t.Fatalf("calc sections = %v, want gcs_total and imt", calcKinds)
 	}
 }
 
