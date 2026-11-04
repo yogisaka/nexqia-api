@@ -21,3 +21,13 @@ SELECT EXISTS (SELECT 1 FROM core.mrn_config WHERE merchant_id = $1) AS ok;
 
 -- name: CheckOnboardingPayers :one
 SELECT EXISTS (SELECT 1 FROM core.payer WHERE merchant_id = $1 AND deleted_at IS NULL) AS ok;
+
+-- name: GetAppUserOnboardingSkip :one
+SELECT onboarding_skipped_at FROM core.app_user
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: SetAppUserOnboardingSkip :one
+UPDATE core.app_user
+SET onboarding_skipped_at = now(), updated_by = $1
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING onboarding_skipped_at;
