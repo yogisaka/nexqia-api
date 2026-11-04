@@ -280,25 +280,11 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 			}
 			if err := json.Unmarshal(rawVal, &dx); err != nil || dx.Narrative == nil {
 				// narrative wajib; diagnoses hilang = kosong (soft_required,
-				// warning FE — review A3).
+				// warning FE — review A3). Item shape/suspect divalidasi saat
+				// sign (persistSignDiagnoses — remedial 6536088, semantik
+				// fase 1: create/update menerima diagnoses bentuk apa pun).
 				clinicalInvalidSection(c, d.Key)
 				return nil, false
-			}
-			// Suspect flag per row (spec 2a §6.4/A1): key present must be a
-			// boolean (null tolerated via *bool); clinical.diagnosis untouched.
-			for _, dRaw := range dx.Diagnoses {
-				var row map[string]json.RawMessage
-				if err := json.Unmarshal(dRaw, &row); err != nil {
-					clinicalInvalidSection(c, d.Key)
-					return nil, false
-				}
-				if rawSus, ok := row["suspect"]; ok {
-					var b *bool
-					if err := json.Unmarshal(rawSus, &b); err != nil {
-						c.JSON(http.StatusBadRequest, gin.H{"error": "suspect harus boolean"})
-						return nil, false
-					}
-				}
 			}
 		}
 	}

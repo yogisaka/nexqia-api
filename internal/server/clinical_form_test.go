@@ -504,16 +504,47 @@ func TestClinicalFormValidation(t *testing.T) {
 		}
 	})
 	t.Run("suspect", func(t *testing.T) {
-		// (j) suspect non-boolean → 400; boolean → lolos.
-		rec, resp := post("soap_dokter", sections(
-			`"assessment":{"narrative":"n","diagnoses":[{"role":"primary","suspect":"ya"}]}`))
+		// (j) REMEDIAL: shape/suspect divalidasi saat sign, bukan create.
+		// Keduanya pakai entri valid literal withMap (pattern
+		// clinical_diagnosis_test.go:180 — merchant default ICD-10 butuh
+		// mapping icd10) plus "suspect".
+		const withMapBad = `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":"ya"}]}}}`
+		const withMapOK = `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":true}]}}}`
+		cdSeedICD11(t, ctx, pool)
+		// suspect non-boolean → create 201 (draft lolos), sign 400,
+		// entri tetap draft (rollback RunRequestTx).
+		id := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, withMapBad)
+		rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+id+"/sign", token, companyID, merchantID,
+			map[string]any{"password": ownerPassword})
 		if rec.Code != http.StatusBadRequest || resp["error"] != "suspect harus boolean" {
-			t.Fatalf("suspect string = %d %v", rec.Code, resp)
+			t.Fatalf("suspect string sign = %d %v", rec.Code, resp)
 		}
-		rec, _ = post("soap_dokter", sections(
-			`"assessment":{"narrative":"n","diagnoses":[{"role":"primary","suspect":true}]}`))
+		if row := cfGetEntryRow(t, ctx, pool, id); row.Status != "draft" {
+			t.Fatalf("suspect string: status = %s, want draft (rollback)", row.Status)
+		}
+		// suspect boolean → create 201 + sign 200.
+		id = cfCreateDraft(t, router, token, companyID, merchantID, admissionID, withMapOK)
+		if rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+id+"/sign", token, companyID, merchantID,
+			map[string]any{"password": ownerPassword}); rec.Code != http.StatusOK {
+			t.Fatalf("suspect bool sign = %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("diagnosis malformed shape create ok", func(t *testing.T) {
+		// (n) guard regresi: diagnoses ["ISPA"] (item bukan objek) tidak
+		// ditolak saat create; penolakan 400 invalid diagnosis entry saat
+		// sign; entri tetap draft (semantik fase 1).
+		rec, resp := post("soap_dokter", sections(`"assessment":{"narrative":"ISPA","diagnoses":["ISPA"]}`))
 		if rec.Code != http.StatusCreated {
-			t.Fatalf("suspect bool = %d: %s", rec.Code, rec.Body.String())
+			t.Fatalf("malformed create = %d: %s", rec.Code, rec.Body.String())
+		}
+		id := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+		rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+id+"/sign", token, companyID, merchantID,
+			map[string]any{"password": ownerPassword})
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid diagnosis entry" {
+			t.Fatalf("malformed sign = %d %v", rec.Code, resp)
+		}
+		if row := cfGetEntryRow(t, ctx, pool, id); row.Status != "draft" {
+			t.Fatalf("malformed: status = %s, want draft (rollback)", row.Status)
 		}
 	})
 	t.Run("draft v1 shape on v2 template", func(t *testing.T) {

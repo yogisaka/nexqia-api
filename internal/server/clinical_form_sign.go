@@ -166,6 +166,12 @@ func SignClinicalFormHandler(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid diagnosis entry"})
 				return
 			}
+			if errors.Is(err, errSuspectNotBoolean) {
+				// Spec 2a §6.4/A1 (remedial 6536088): 400 after the sign
+				// write → RunRequestTx rolls back; entry stays draft.
+				c.JSON(http.StatusBadRequest, gin.H{"error": "suspect harus boolean"})
+				return
+			}
 			respondInternalError(c, err)
 			return
 		}

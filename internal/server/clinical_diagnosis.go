@@ -24,6 +24,13 @@ import (
 // rolls the sign write back (spec §6.1 — entry stays draft).
 var errInvalidDiagnosis = errors.New("invalid diagnosis entry")
 
+// errSuspectNotBoolean marks a suspect flag that is present but not a JSON
+// boolean/null (spec 2a §6.4/A1, remedial 6536088): the sign handler answers
+// 400 {"error":"suspect harus boolean"} and RunRequestTx rolls the sign write
+// back (entry stays draft). Checked at sign time only — create accepts any
+// diagnoses shape.
+var errSuspectNotBoolean = errors.New("suspect harus boolean")
+
 // conceptRef is the LITERAL spec §5.2 shape {system, code, display}.
 type conceptRef struct {
 	System  string
@@ -103,6 +110,15 @@ func assessmentDiagnoses(formData map[string]any) ([]diagnosisInput, error) {
 			display10, _ := m10["display"].(string)
 			mapSet, _ := m10["map_set"].(string)
 			in.Icd10 = &icd10Ref{Code: code10, Display: display10, Source: source, MapSet: mapSet}
+		}
+		// Suspect flag (spec 2a §6.4/A1, remedial 6536088): checked AFTER the
+		// fase-1 shape parse (wrong shape still → errInvalidDiagnosis) and
+		// before any diagnosis row is written. Key present must be a JSON
+		// boolean or null; anything else → errSuspectNotBoolean.
+		if rawSus, ok := m["suspect"]; ok && rawSus != nil {
+			if _, isBool := rawSus.(bool); !isBool {
+				return nil, errSuspectNotBoolean
+			}
 		}
 		out = append(out, in)
 	}
