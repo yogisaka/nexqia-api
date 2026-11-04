@@ -13,6 +13,14 @@
 -- The ordering merge (newest first) is done in Go (internal/server/
 -- clinical_timeline.go), not in SQL.
 
+-- name: GetUserDisplayName :one
+-- Fase 2a clinical preview (plan 2026-11-04-clinical-board-fase2a-plan Task 2):
+-- display name of one active user — person full name, else username.
+SELECT COALESCE(pe.full_name, u.username) AS display_name
+FROM core.app_user u
+LEFT JOIN core.person pe ON pe.id = u.person_id
+WHERE u.id = $1 AND u.deleted_at IS NULL;
+
 -- name: ListOutpatientAdmissionsByDay :many
 -- Daily completeness board (plan 2026-10-21-cppt-rajal-b Task 3, spec §11):
 -- outpatient visits of one merchant inside [from, to) — the handler passes

@@ -42,6 +42,9 @@ func RegisterClinicalRoutes(rg *gin.RouterGroup) {
 	// server.go is outside the task's Files list; gin allows the static child
 	// /admissions/:id/clinical-timeline next to /admissions/:id.
 	rg.GET("/admissions/:id/clinical-timeline", AccessLog("clinical_form", "view", "id"), GetClinicalTimelineHandler)
+	// Board sheet preview (fase 2a plan Task 2, spec §API-2) — small read
+	// model per admission, same guard shape as the timeline.
+	rg.GET("/admissions/:id/clinical-preview", AccessLog("clinical_form", "view", "id"), GetClinicalBoardPreviewHandler)
 	// Daily completeness board (plan B Task 3, spec §11) — pure read.
 	rg.GET("/clinical/completeness", AccessLog("clinical_form", "view", ""), GetClinicalCompletenessHandler)
 }
