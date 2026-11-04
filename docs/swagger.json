@@ -518,6 +518,59 @@
                 }
             }
         },
+        "/admissions/{id}/clinical-preview": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Person + last SOAP (at/author_name/excerpt) + diagnoses + allergies (spec §API-2).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Small clinical preview read model of one admission (board sheet)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Admission UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/admissions/{id}/clinical-timeline": {
             "get": {
                 "security": [
@@ -2954,7 +3007,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Per-outpatient-visit soft completeness checks (nurse assessment, SOAP, diagnosis, resume, counter-sign). ?date=YYYY-MM-DD (merchant-local day) or ?admission_id=, one required (spec §11).",
+                "description": "Per-outpatient-visit soft completeness checks (nurse assessment, SOAP, diagnosis, resume, counter-sign) with visit metadata. ?date_from=\u0026date_to=YYYY-MM-DD (merchant-local range, both required) or ?admission_id=, one required; date mode supports ?q=, ?department_id=, ?status=lengkap|belum_lengkap|pending and ?limit/?offset (spec fase-2a §API-1).",
                 "produces": [
                     "application/json"
                 ],
@@ -2972,14 +3025,50 @@
                     },
                     {
                         "type": "string",
-                        "description": "Merchant-local day, YYYY-MM-DD",
-                        "name": "date",
+                        "description": "Range start, merchant-local day YYYY-MM-DD (required with date_to)",
+                        "name": "date_from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Range end, merchant-local day YYYY-MM-DD (inclusive)",
+                        "name": "date_to",
                         "in": "query"
                     },
                     {
                         "type": "string",
                         "description": "Admission UUID",
                         "name": "admission_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Contains case-insensitive match on person name or MRN",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Department UUID filter",
+                        "name": "department_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "lengkap | belum_lengkap | pending",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 20, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
                         "in": "query"
                     }
                 ],
@@ -3000,6 +3089,147 @@
                         "description": "Forbidden",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/content-templates": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "List the caller's own content templates for one form_type",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Clinical form type",
+                        "name": "form_type",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Save a personal content template from the SOAP editor",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Template data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createContentTemplateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/content-templates/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Delete the caller's own content template",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Template UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
                         }
                     },
                     "404": {
@@ -3741,6 +3971,118 @@
                     },
                     "409": {
                         "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/patient-summary": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Person identity + allergies + deduped active diagnoses + recent outpatient visits + latest signed SOAP recommendation (spec §7).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Composed patient summary (drawer #32)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "person_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/person-forms": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Signed non-gizi entries across the person's admissions, newest filled_at first, limit 10 (spec §7).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Signed clinical form entries of one person (\"Salin dari catatan lalu\")",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "person_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Form type filter (default: all non-gizi)",
+                        "name": "form_type",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -12210,6 +12552,16 @@
                         }
                     }
                 }
+            }
+        },
+        "/onboarding-skip": {
+            "get": {
+                "summary": "Status skip onboarding untuk user yang sedang login",
+                "responses": {}
+            },
+            "post": {
+                "summary": "Tandai skip onboarding untuk user yang sedang login (idempoten)",
+                "responses": {}
             }
         },
         "/onboarding-status": {
@@ -21907,6 +22259,9 @@
             }
         },
         "server.createClinicalFormRequest": {
+            "type": "object"
+        },
+        "server.createContentTemplateRequest": {
             "type": "object"
         },
         "server.createCounterRequest": {

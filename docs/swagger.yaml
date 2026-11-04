@@ -403,6 +403,8 @@ definitions:
     type: object
   server.createClinicalFormRequest:
     type: object
+  server.createContentTemplateRequest:
+    type: object
   server.createCounterRequest:
     properties:
       binding:
@@ -3303,6 +3305,41 @@ paths:
       summary: Add a charge row to a visit (recomputes the billing account)
       tags:
       - billing
+  /admissions/{id}/clinical-preview:
+    get:
+      description: Person + last SOAP (at/author_name/excerpt) + diagnoses + allergies
+        (spec §API-2).
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Admission UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Small clinical preview read model of one admission (board sheet)
+      tags:
+      - clinical
   /admissions/{id}/clinical-timeline:
     get:
       description: Admission + person + active allergies + diagnoses + nutrition orders
@@ -4937,22 +4974,48 @@ paths:
   /clinical/completeness:
     get:
       description: Per-outpatient-visit soft completeness checks (nurse assessment,
-        SOAP, diagnosis, resume, counter-sign). ?date=YYYY-MM-DD (merchant-local day)
-        or ?admission_id=, one required (spec §11).
+        SOAP, diagnosis, resume, counter-sign) with visit metadata. ?date_from=&date_to=YYYY-MM-DD
+        (merchant-local range, both required) or ?admission_id=, one required; date
+        mode supports ?q=, ?department_id=, ?status=lengkap|belum_lengkap|pending
+        and ?limit/?offset (spec fase-2a §API-1).
       parameters:
       - description: Active merchant UUID
         in: header
         name: X-Merchant-ID
         required: true
         type: string
-      - description: Merchant-local day, YYYY-MM-DD
+      - description: Range start, merchant-local day YYYY-MM-DD (required with date_to)
         in: query
-        name: date
+        name: date_from
+        type: string
+      - description: Range end, merchant-local day YYYY-MM-DD (inclusive)
+        in: query
+        name: date_to
         type: string
       - description: Admission UUID
         in: query
         name: admission_id
         type: string
+      - description: Contains case-insensitive match on person name or MRN
+        in: query
+        name: q
+        type: string
+      - description: Department UUID filter
+        in: query
+        name: department_id
+        type: string
+      - description: lengkap | belum_lengkap | pending
+        in: query
+        name: status
+        type: string
+      - description: Page size (default 20, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Page offset
+        in: query
+        name: offset
+        type: integer
       produces:
       - application/json
       responses:
@@ -4975,6 +5038,95 @@ paths:
       security:
       - BearerAuth: []
       summary: Daily clinical record completeness board
+      tags:
+      - clinical
+  /clinical/content-templates:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Clinical form type
+        in: query
+        name: form_type
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List the caller's own content templates for one form_type
+      tags:
+      - clinical
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Template data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createContentTemplateRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Save a personal content template from the SOAP editor
+      tags:
+      - clinical
+  /clinical/content-templates/{id}:
+    delete:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Template UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete the caller's own content template
       tags:
       - clinical
   /clinical/diet-types:
@@ -5444,6 +5596,80 @@ paths:
       - BearerAuth: []
       summary: Revise a nutrition order (optimistic locking; active -> completed|cancelled
         only)
+      tags:
+      - clinical
+  /clinical/patient-summary:
+    get:
+      description: Person identity + allergies + deduped active diagnoses + recent
+        outpatient visits + latest signed SOAP recommendation (spec §7).
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Person UUID
+        in: query
+        name: person_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 'Composed patient summary (drawer #32)'
+      tags:
+      - clinical
+  /clinical/person-forms:
+    get:
+      description: Signed non-gizi entries across the person's admissions, newest
+        filled_at first, limit 10 (spec §7).
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Person UUID
+        in: query
+        name: person_id
+        required: true
+        type: string
+      - description: 'Form type filter (default: all non-gizi)'
+        in: query
+        name: form_type
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Signed clinical form entries of one person ("Salin dari catatan lalu")
       tags:
       - clinical
   /companies/{id}:
@@ -10774,6 +11000,13 @@ paths:
       summary: List VVM stage checks (newest first, optional lot filter, paginated)
       tags:
       - inventory
+  /onboarding-skip:
+    get:
+      responses: {}
+      summary: Status skip onboarding untuk user yang sedang login
+    post:
+      responses: {}
+      summary: Tandai skip onboarding untuk user yang sedang login (idempoten)
   /onboarding-status:
     get:
       responses: {}
