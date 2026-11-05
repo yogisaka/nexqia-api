@@ -86,3 +86,18 @@ WHERE admission_id = ANY(sqlc.arg('ids')::uuid[])
 ORDER BY admission_id,
          CASE queue_type WHEN 'poli' THEN 0 WHEN 'loket' THEN 1 ELSE 2 END,
          created_at DESC;
+
+-- name: ListAdmissionDocuments :many
+SELECT DISTINCT ON (ml.id)
+    pd.id, pd.document_type, dt.name AS document_type_name, pd.label,
+    m.original_filename AS filename, m.size_bytes,
+    COALESCE(pe.full_name, u.username) AS created_by_name, pd.created_at
+FROM core.media_link ml
+JOIN core.person_document pd
+  ON pd.media_id = ml.media_id AND pd.person_id = $2 AND pd.deleted_at IS NULL
+JOIN core.document_type dt ON dt.code = pd.document_type
+JOIN core.media m ON m.id = ml.media_id
+LEFT JOIN core.app_user u ON u.id = pd.created_by
+LEFT JOIN core.person pe ON pe.id = u.person_id
+WHERE ml.owner_table = 'admission' AND ml.owner_id = $1 AND ml.deleted_at IS NULL
+ORDER BY ml.id, pd.created_at DESC;

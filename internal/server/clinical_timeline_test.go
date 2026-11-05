@@ -21,9 +21,13 @@ func TestClinicalTimeline(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
 	router := newTestRouter(t, ctx, pool)
-	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "tl")
+	companyID, merchantID, userID, token := cfSeedEnv(t, ctx, pool, router, "tl")
 	cdSeedICD11(t, ctx, pool)
 	personID, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "tl")
+
+	// Another admission of the SAME person (berkas RM revisi Task 3): a
+	// document linked only to admissionID must not leak into its timeline.
+	admissionBID, _ := seedAuditPersonAdmission(t, ctx, pool, router, token, companyID, merchantID, personID, "tl-b")
 
 	// One active + one inactive allergy (contract: inactive tidak muncul).
 	for _, a := range []struct {
@@ -65,6 +69,39 @@ func TestClinicalTimeline(t *testing.T) {
 		t.Fatalf("create order = %d: %s", rec.Code, rec.Body.String())
 	}
 	orderID := resp["data"].(map[string]any)["id"].(string)
+
+	// Two person documents over core.media (contract), seeded LAST so the
+	// linked document is newer than every form/order entry (contract e):
+	// a surat_rujukan linked to admissionID ('berkas_rm') and a ktp WITHOUT
+	// any link.
+	seedTimelineDoc := func(checksum, filename, docType string) string {
+		t.Helper()
+		var mediaID, docID string
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO core.media (company_id, merchant_id, storage_provider, storage_key, original_filename, mime_type, size_bytes, checksum_sha256, status, uploaded_by)
+			 VALUES ($1, $2::uuid, 's3_cdn', 'merchant/'||$2::text||'/'||$3, $4, 'application/pdf', 2048, $3, 'ready', $5::uuid)
+			 RETURNING id::text`,
+			companyID, merchantID, checksum, filename, userID).Scan(&mediaID); err != nil {
+			t.Fatalf("seed media %s: %v", filename, err)
+		}
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO core.person_document (company_id, merchant_id, person_id, media_id, document_type, label, created_by)
+			 VALUES ($1, $2, $3::uuid, $4::uuid, $5, 'label-'||$5, $6::uuid)
+			 RETURNING id::text`,
+			companyID, merchantID, personID, mediaID, docType, userID).Scan(&docID); err != nil {
+			t.Fatalf("seed person_document %s: %v", docType, err)
+		}
+		return docID
+	}
+	rujukanID := seedTimelineDoc("tl-rujukan-checksum", "rujukan-a.pdf", "surat_rujukan")
+	seedTimelineDoc("tl-ktp-checksum", "ktp-a.pdf", "ktp")
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO core.media_link (media_id, owner_table, owner_id, purpose, created_by)
+		 SELECT m.id, 'admission', $1::uuid, 'berkas_rm', $2::uuid
+		 FROM core.media m WHERE m.checksum_sha256 = 'tl-rujukan-checksum'`,
+		admissionID, userID); err != nil {
+		t.Fatalf("seed media_link: %v", err)
+	}
 
 	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/admissions/"+admissionID+"/clinical-timeline", token, companyID, merchantID, nil)
 	if rec.Code != http.StatusOK {
@@ -112,28 +149,78 @@ func TestClinicalTimeline(t *testing.T) {
 		t.Fatalf("order = %v", o)
 	}
 
-	// items: newest first — order, signed SOAP, draft nurse assessment.
+	// items: newest first — person_document (linked, seeded last), diet
+	// order, signed SOAP, draft nurse assessment. The unlinked ktp must not
+	// appear at all (contract b).
 	items := data["items"].([]any)
-	if len(items) != 3 {
-		t.Fatalf("items = %v, want 3", items)
+	if len(items) != 4 {
+		t.Fatalf("items = %v, want 4", items)
 	}
-	first := items[0].(map[string]any)
+	doc := items[0].(map[string]any)
+	if doc["kind"] != "person_document" || doc["id"] != rujukanID {
+		t.Fatalf("items[0] = %v, want the linked surat_rujukan", doc)
+	}
+	if doc["document_type_name"] != "Surat Rujukan" || doc["document_type"] != "surat_rujukan" {
+		t.Fatalf("document item type = %v, want Surat Rujukan/surat_rujukan", doc)
+	}
+	if doc["filename"] != "rujukan-a.pdf" || doc["size_bytes"] != float64(2048) || doc["label"] != "label-surat_rujukan" {
+		t.Fatalf("document item file fields = %v", doc)
+	}
+	if name, _ := doc["created_by_name"].(string); name == "" {
+		t.Fatalf("created_by_name = %v, want filled", doc["created_by_name"])
+	}
+	if doc["created_at"] == nil {
+		t.Fatalf("document created_at = nil")
+	}
+	for _, it := range items[1:] {
+		if it.(map[string]any)["kind"] == "person_document" {
+			t.Fatalf("unlinked ktp leaked into items = %v", items)
+		}
+	}
+	first := items[1].(map[string]any)
 	if first["kind"] != "nutrition_order" || first["id"] != orderID || first["diet_type_name"] != "TL-DIET" || first["status"] != "active" {
-		t.Fatalf("items[0] = %v, want the diet order", first)
+		t.Fatalf("items[1] = %v, want the diet order", first)
 	}
-	soap := items[1].(map[string]any)
+	soap := items[2].(map[string]any)
 	if soap["kind"] != "form" || soap["id"] != soapID || soap["status"] != "signed" {
-		t.Fatalf("items[1] = %v, want the signed SOAP", soap)
+		t.Fatalf("items[2] = %v, want the signed SOAP", soap)
 	}
 	if soap["signed_at"] == nil || soap["filled_by"] == nil {
 		t.Fatalf("soap item fields = %v", soap)
 	}
-	draft := items[2].(map[string]any)
+	draft := items[3].(map[string]any)
 	if draft["kind"] != "form" || draft["id"] != draftID || draft["status"] != "draft" {
-		t.Fatalf("items[2] = %v, want the nurse draft", draft)
+		t.Fatalf("items[3] = %v, want the nurse draft", draft)
 	}
 	if draft["signed_at"] != nil || draft["counter_signed_at"] != nil || draft["addendum_to_id"] != nil {
 		t.Fatalf("draft item optional fields = %v, want null", draft)
+	}
+
+	// (c) The document linked to admissionID must not surface on the OTHER
+	// admission's timeline (same person, no link of its own).
+	if rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/admissions/"+admissionBID+"/clinical-timeline", token, companyID, merchantID, nil); rec.Code != http.StatusOK {
+		t.Fatalf("timeline B = %d: %s", rec.Code, rec.Body.String())
+	}
+	itemsB := resp["data"].(map[string]any)["items"].([]any)
+	for _, it := range itemsB {
+		if it.(map[string]any)["kind"] == "person_document" {
+			t.Fatalf("admission B items = %v, want no person_document", itemsB)
+		}
+	}
+
+	// (d) Soft-delete the linked document (deleted_at + deleted_by together,
+	// CHECK migration 000073) → entry gone after reload.
+	if _, err := pool.Exec(ctx,
+		`UPDATE core.person_document SET deleted_at = now(), deleted_by = $2::uuid WHERE id = $1::uuid`,
+		rujukanID, userID); err != nil {
+		t.Fatalf("soft-delete person_document: %v", err)
+	}
+	if rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/admissions/"+admissionID+"/clinical-timeline", token, companyID, merchantID, nil); rec.Code != http.StatusOK {
+		t.Fatalf("timeline reload = %d: %s", rec.Code, rec.Body.String())
+	}
+	items = resp["data"].(map[string]any)["items"].([]any)
+	if len(items) != 3 || items[0].(map[string]any)["kind"] != "nutrition_order" {
+		t.Fatalf("items after soft-delete = %v, want 3 with the diet order on top", items)
 	}
 
 	// Permission: a user without clinical.record.view → 403.

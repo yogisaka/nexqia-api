@@ -134,7 +134,17 @@ func GetClinicalTimelineHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	items := make([]timelineItem, 0, len(forms)+len(orders))
+	// Person documents linked to this admission (berkas RM revisi Task 3,
+	// spec 2026-11-05-berkas-rm-revisi-design Q4): media_link rows with
+	// purpose 'berkas_rm' resolve to the person's active documents.
+	docs, err := q.ListAdmissionDocuments(ctx, sqlcgen.ListAdmissionDocumentsParams{
+		OwnerID: id, PersonID: admission.PersonID,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	items := make([]timelineItem, 0, len(forms)+len(orders)+len(docs))
 	for _, f := range forms {
 		at := f.FilledAt
 		if !at.Valid {
@@ -160,6 +170,19 @@ func GetClinicalTimelineHandler(c *gin.Context) {
 			"created_at":     tsJSON(o.CreatedAt),
 			"status":         o.Status,
 			"diet_type_name": o.DietTypeName,
+		}})
+	}
+	for _, d := range docs {
+		items = append(items, timelineItem{at: d.CreatedAt.Time, data: gin.H{
+			"kind":               "person_document",
+			"id":                 uuidJSON(d.ID),
+			"document_type":      d.DocumentType,
+			"document_type_name": d.DocumentTypeName,
+			"label":              d.Label,
+			"filename":           d.Filename,
+			"size_bytes":         d.SizeBytes,
+			"created_by_name":    d.CreatedByName,
+			"created_at":         tsJSON(d.CreatedAt),
 		}})
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].at.After(items[j].at) })
