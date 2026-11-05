@@ -1,4 +1,4 @@
-.PHONY: migrate-up migrate-down migrate-force sync-runtime-password seed import-terminology bootstrap-platform-admin test test-integration lint fmt run dev sqlc-generate swag-generate
+.PHONY: migrate-up migrate-down migrate-force sync-runtime-password seed seed-legacy-terminology import-terminology import-masterdata bootstrap-platform-admin test test-integration lint fmt run dev sqlc-generate swag-generate
 
 migrate-up:
 	set -a && . ./.env && set +a && $$(go env GOPATH)/bin/migrate -path migrations -database "$$DATABASE_URL" up
@@ -20,6 +20,12 @@ seed:
 
 import-terminology:
 	set -a && . ./.env && set +a && go run ./cmd/import-terminology $(ARGS)
+
+seed-legacy-terminology:
+	set -a && . ./.env && set +a && gunzip -c data-import/legacy-master-terminology.sql.gz | psql "$$DATABASE_URL" && psql "$$DATABASE_URL" -f seed/002_legacy_terminology_cleanup.sql
+
+import-masterdata:
+	set -a && . ./.env && set +a && go run ./cmd/import-masterdata $(ARGS)
 
 bootstrap-platform-admin:
 	set -a && . ./.env && set +a && go run ./cmd/bootstrap-platform-admin

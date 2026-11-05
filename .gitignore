@@ -4,3 +4,4 @@
 /tmp/
 /internal/db/sqlcgen/
 /cmd/migrate-data/
+/data-import/
