@@ -276,6 +276,14 @@ func TestPersonDocumentDocumentTypes(t *testing.T) {
 	if !codes["ktp"] || !codes["kartu_bpjs"] {
 		t.Fatalf("document-types must contain ktp and kartu_bpjs, got %v", codes)
 	}
+	if !codes["hasil_lab_luar"] || !codes["surat_sehat"] {
+		t.Fatalf("document-types must contain berkas RM catalog entries, got %v", codes)
+	}
+	for _, d := range body.Data {
+		if d.Code == "lainnya" && d.SortOrder != 200 {
+			t.Fatalf("lainnya must have sort_order 200, got %d", d.SortOrder)
+		}
+	}
 }
 
 // TestPersonDocumentUploadDedup — an identical file reuses the media row
