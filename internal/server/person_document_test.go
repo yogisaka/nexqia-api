@@ -617,3 +617,115 @@ func TestPersonDocumentUploadOrphanCleanup(t *testing.T) {
 		t.Fatalf("failed tx must leave no document rows, got %d", docCount)
 	}
 }
+
+// docUploadAdmission is docUpload plus the optional admission_id field.
+func docUploadAdmission(t *testing.T, e *docEnv, personID, documentType, label, admissionID, filename string, data []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatalf("write file part: %v", err)
+	}
+	mw.WriteField("document_type", documentType)
+	if label != "" {
+		mw.WriteField("label", label)
+	}
+	if admissionID != "" {
+		mw.WriteField("admission_id", admissionID)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	return docRequest(e, http.MethodPost, "/api/v1/persons/"+personID+"/documents", &buf, mw.FormDataContentType())
+}
+
+// TestPersonDocumentUploadAdmissionContext — upload with admission_id links
+// the media to the admission (core.media_link purpose 'berkas_rm'); the
+// response carries original_filename/created_by_name/virus_scan_status
+// (plan 2026-11-04-berkas-rm-a-backend Task 2).
+func TestPersonDocumentUploadAdmissionContext(t *testing.T) {
+	e := setupDocEnv(t, "docadm.owner", 10<<20)
+	ctx := context.Background()
+	// Admission for the document's own person (cfSeedAdmission pattern).
+	admissionID, _ := seedAuditPersonAdmission(t, ctx, e.pool, e.seedRouter, e.token, e.companyID, e.merchantID, e.personID, "docadm")
+	// Admission of ANOTHER person (same tenant) for the 400 case.
+	_, otherAdmissionID := cfSeedAdmission(t, ctx, e.pool, e.seedRouter, e.token, e.companyID, e.merchantID, "docadm-other")
+
+	// (a) valid admission_id → 201 with the new metadata fields.
+	rec := docUploadAdmission(t, e, e.personID, "ktp", "KTP kunjungan", admissionID, "ktp-adm.pdf", testPDF)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload with admission expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Document map[string]any `json:"document"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	doc := body.Document
+	if doc["original_filename"] != "ktp-adm.pdf" {
+		t.Fatalf("expected original_filename ktp-adm.pdf, got %v", doc["original_filename"])
+	}
+	if name, _ := doc["created_by_name"].(string); name == "" {
+		t.Fatalf("created_by_name must be non-empty, got %v", doc["created_by_name"])
+	}
+	if doc["virus_scan_status"] != "pending" {
+		t.Fatalf("expected virus_scan_status pending, got %v", doc["virus_scan_status"])
+	}
+
+	// (b) the media_link row exists.
+	docID, _ := doc["id"].(string)
+	var linkCount int
+	if err := e.pool.QueryRow(ctx,
+		`SELECT count(*) FROM core.media_link ml
+		 JOIN core.person_document d ON d.media_id = ml.media_id
+		 WHERE d.id = $1 AND ml.owner_table = 'admission' AND ml.owner_id = $2 AND ml.purpose = 'berkas_rm'`,
+		docID, admissionID).Scan(&linkCount); err != nil {
+		t.Fatalf("count media_link: %v", err)
+	}
+	if linkCount != 1 {
+		t.Fatalf("expected 1 media_link (admission, berkas_rm), got %d", linkCount)
+	}
+
+	// (c) re-upload the IDENTICAL file with the same admission → still 201
+	// (media dedup + ON CONFLICT DO NOTHING on the link).
+	if rec := docUploadAdmission(t, e, e.personID, "ktp", "KTP ulang", admissionID, "ktp-adm.pdf", testPDF); rec.Code != http.StatusCreated {
+		t.Fatalf("re-upload expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// (d) admission of another person → 400.
+	rec = docUploadAdmission(t, e, e.personID, "ktp", "", otherAdmissionID, "ktp-x.pdf", testPDF)
+	if rec.Code != http.StatusBadRequest || documentError(t, rec) != "admission tidak ditemukan" {
+		t.Fatalf("foreign admission expected 400 admission tidak ditemukan, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// (e) non-UUID admission_id → 400.
+	rec = docUploadAdmission(t, e, e.personID, "ktp", "", "abc", "ktp-y.pdf", testPDF)
+	if rec.Code != http.StatusBadRequest || documentError(t, rec) != "invalid admission_id" {
+		t.Fatalf("invalid admission_id expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// (f) without admission_id → 201 and NO new media_link (distinct payload
+	// so a fresh media row is created; same file would dedup onto the linked
+	// media above).
+	otherPDF := append([]byte(nil), testPDF...)
+	otherPDF = append(otherPDF, "\n% distinct payload for upload-f\n"...)
+	var linksBefore, linksAfter int
+	if err := e.pool.QueryRow(ctx, "SELECT count(*) FROM core.media_link").Scan(&linksBefore); err != nil {
+		t.Fatalf("count media_link before: %v", err)
+	}
+	rec = docUpload(t, e, e.personID, "ktp", "", "ktp-plain.pdf", otherPDF)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload without admission expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := e.pool.QueryRow(ctx, "SELECT count(*) FROM core.media_link").Scan(&linksAfter); err != nil {
+		t.Fatalf("count media_link after: %v", err)
+	}
+	if linksAfter != linksBefore {
+		t.Fatalf("upload without admission_id must not create media_link rows, before=%d after=%d", linksBefore, linksAfter)
+	}
+}

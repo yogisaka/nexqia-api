@@ -70,7 +70,7 @@ func maxUploadBytes(store storage.ObjectStorage) int64 {
 
 // documentJSON maps the document fields to the snake_case response shape of
 // spec §5.1 — no storage_key ever leaves the server.
-func documentJSON(id, personID pgtype.UUID, documentType, documentTypeName, label string, issuedDate, expiredDate pgtype.Date, mimeType string, sizeBytes int64, createdBy pgtype.UUID, createdAt, updatedAt pgtype.Timestamptz, rowVersion int32) gin.H {
+func documentJSON(id, personID pgtype.UUID, documentType, documentTypeName, label string, issuedDate, expiredDate pgtype.Date, mimeType string, sizeBytes int64, createdBy pgtype.UUID, createdAt, updatedAt pgtype.Timestamptz, rowVersion int32, originalFilename, createdByName, virusScanStatus string) gin.H {
 	return gin.H{
 		"id":                 uuidJSON(id),
 		"person_id":          uuidJSON(personID),
@@ -85,6 +85,9 @@ func documentJSON(id, personID pgtype.UUID, documentType, documentTypeName, labe
 		"created_at":         tsJSON(createdAt),
 		"updated_at":         tsJSON(updatedAt),
 		"row_version":        rowVersion,
+		"original_filename":  originalFilename,
+		"created_by_name":    createdByName,
+		"virus_scan_status":  virusScanStatus,
 	}
 }
 
@@ -207,6 +210,28 @@ func UploadPersonDocumentHandler(store storage.ObjectStorage) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "jenis dokumen tidak dikenal"})
 			return
 		}
+		// Optional admission context (berkas RM revisi, Task 2): validated
+		// after document_type and before GetMediaByChecksum/store.Put so a
+		// bad admission never touches storage or writes.
+		admissionRef := c.PostForm("admission_id")
+		var admissionID pgtype.UUID
+		if admissionRef != "" {
+			id, ok := parseUUID(admissionRef)
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid admission_id"})
+				return
+			}
+			admission, err := q.GetAdmissionByID(ctx, id)
+			if errors.Is(err, pgx.ErrNoRows) || (err == nil && (admission.PersonID != personID || admission.MerchantID != merchantID)) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "admission tidak ditemukan"})
+				return
+			}
+			if err != nil {
+				respondInternalError(c, err)
+				return
+			}
+			admissionID = id
+		}
 
 		// K12 step 4: if anything fails after the object was PUT, the tx rolls
 		// back (response >= 400) — drop the now-orphaned object best-effort.
@@ -241,7 +266,7 @@ func UploadPersonDocumentHandler(store storage.ObjectStorage) gin.HandlerFunc {
 				respondInternalError(c, err)
 				return
 			}
-			if _, err := q.UpdateMediaStatus(ctx, sqlcgen.UpdateMediaStatusParams{
+			if media, err = q.UpdateMediaStatus(ctx, sqlcgen.UpdateMediaStatusParams{
 				ID: media.ID, Status: "ready", VirusScanStatus: "pending",
 			}); err != nil {
 				respondInternalError(c, err)
@@ -262,10 +287,27 @@ func UploadPersonDocumentHandler(store storage.ObjectStorage) gin.HandlerFunc {
 			respondInternalError(c, err)
 			return
 		}
+		if admissionID.Valid {
+			// Link the (deduped) media to the admission; a UNIQUE conflict
+			// means the link already exists — silent success, still 201.
+			if _, err := q.CreateMediaLink(ctx, sqlcgen.CreateMediaLinkParams{
+				MediaID: media.ID, OwnerTable: "admission", OwnerID: admissionID,
+				Purpose: "berkas_rm", CreatedBy: AuthUserID(c),
+			}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				respondInternalError(c, err)
+				return
+			}
+		}
+		createdByName, err := q.GetUserDisplayName(ctx, AuthUserID(c))
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
 		c.JSON(http.StatusCreated, gin.H{"document": documentJSON(
 			doc.ID, doc.PersonID, doc.DocumentType, catalog[doc.DocumentType], doc.Label,
 			doc.IssuedDate, doc.ExpiredDate, mimeType, int64(len(buf)),
 			doc.CreatedBy, doc.CreatedAt, doc.UpdatedAt, doc.RowVersion,
+			media.OriginalFilename, createdByName, media.VirusScanStatus,
 		)})
 	}
 }
@@ -305,7 +347,8 @@ func ListPersonDocumentsHandler(c *gin.Context) {
 	for i, r := range rows {
 		items[i] = documentJSON(r.ID, r.PersonID, r.DocumentType, r.DocumentTypeName, r.Label,
 			r.IssuedDate, r.ExpiredDate, r.MimeType, r.SizeBytes,
-			r.CreatedBy, r.CreatedAt, r.UpdatedAt, r.RowVersion)
+			r.CreatedBy, r.CreatedAt, r.UpdatedAt, r.RowVersion,
+			r.OriginalFilename, r.CreatedByName, r.VirusScanStatus)
 		present[r.DocumentType] = true
 	}
 	resp := gin.H{"data": items, "meta": gin.H{}}
@@ -426,6 +469,7 @@ func UpdatePersonDocumentHandler(c *gin.Context) {
 		updated.ID, updated.PersonID, updated.DocumentType, updated.DocumentTypeName, updated.Label,
 		updated.IssuedDate, updated.ExpiredDate, updated.MimeType, updated.SizeBytes,
 		updated.CreatedBy, updated.CreatedAt, updated.UpdatedAt, updated.RowVersion,
+		updated.OriginalFilename, updated.CreatedByName, updated.VirusScanStatus,
 	), "meta": gin.H{}})
 }
 

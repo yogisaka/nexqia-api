@@ -12,20 +12,28 @@ INSERT INTO core.person_document (
 RETURNING *;
 
 -- name: GetPersonDocumentByID :one
-SELECT d.*, m.mime_type, m.size_bytes, m.original_filename, m.storage_key, dt.name AS document_type_name
+SELECT d.*, m.mime_type, m.size_bytes, m.original_filename, m.storage_key,
+       m.virus_scan_status, dt.name AS document_type_name,
+       COALESCE(pe.full_name, u.username) AS created_by_name
 FROM core.person_document d
 JOIN core.media m ON m.id = d.media_id
 JOIN core.document_type dt ON dt.code = d.document_type
+LEFT JOIN core.app_user u ON u.id = d.created_by
+LEFT JOIN core.person pe ON pe.id = u.person_id
 WHERE d.id = $1 AND d.deleted_at IS NULL;
 
 -- name: ListPersonDocumentsByPerson :many
 -- Merchant filter: isolation is enforced here (RLS alone is not enough for
 -- roles that bypass it, and person is company-level while documents are
 -- merchant-level, K11).
-SELECT d.*, m.mime_type, m.size_bytes, dt.name AS document_type_name
+SELECT d.*, m.mime_type, m.size_bytes, m.original_filename, m.virus_scan_status,
+       dt.name AS document_type_name,
+       COALESCE(pe.full_name, u.username) AS created_by_name
 FROM core.person_document d
 JOIN core.media m ON m.id = d.media_id
 JOIN core.document_type dt ON dt.code = d.document_type
+LEFT JOIN core.app_user u ON u.id = d.created_by
+LEFT JOIN core.person pe ON pe.id = u.person_id
 WHERE d.person_id = $1 AND d.merchant_id = $2 AND d.deleted_at IS NULL
 ORDER BY d.created_at DESC;
 
