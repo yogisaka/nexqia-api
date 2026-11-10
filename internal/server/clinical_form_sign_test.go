@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -150,8 +151,9 @@ func TestClinicalFormSignatureDeterministic(t *testing.T) {
 		t.Fatalf("empty hashes A=%s B=%s", hashA, hashB)
 	}
 
-	// One character changed → different hash.
-	changed := `{"sections":{"subjective":"Demam 4 hari, batuk berdahak.","objective":{"sistolic":120,"diastolic":80,"heart_rate":88,"temperature":37.4,"respiratory_rate":20,"spo2":97,"weight_kg":62.5,"height_cm":168,"pain_score":2},"assessment":{"narrative":"Suspek infeksi saluran napas atas","diagnoses":[]},"plan":"Parasetamol 500 mg 3×1 bila demam; kontrol 3 hari bila memburuk."}}`
+	// One character changed → different hash. v3-shaped fixture (guard TTE
+	// sign passes — spec 2026-11-10-cppt-pemeriksaan-v3 §Guard TTE sign).
+	changed := `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 4 hari, batuk berdahak.","diagnosa":{"narrative":"Suspek ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"}}]}}}`
 	idC := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, changed)
 	cfPinFilledAt(t, ctx, pool, idC)
 	if hashC := sign(idC); hashC == hashA {
@@ -262,6 +264,110 @@ func TestClinicalFormAddendum(t *testing.T) {
 	chain, _ := resp["data"].(map[string]any)["addendums"].([]any)
 	if len(chain) != 1 || chain[0] != add["id"] {
 		t.Fatalf("addendums = %v, want [%v]", chain, add["id"])
+	}
+}
+
+// soapGuardPass is the minimal v3 fixture that passes the TTE sign guard
+// (spec 2026-11-10-cppt-pemeriksaan-v3 §Guard TTE sign): diagnosa primer +
+// keluhan utama + jenis anamnesis filled. The primary diagnosis carries the
+// icd10 auto mapping so diagnosis persistence succeeds under the default
+// ICD-10 merchant standard (spec §7.3).
+const soapGuardPass = `{"sections":{
+ "anamnesis_info":{"jenis":"autoanamnesis"},
+ "keluhan_utama":"Demam 3 hari.",
+ "diagnosa":{"narrative":"Suspek ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"}}]}}}`
+
+// cfGuardSign creates a draft with formData then signs it, returning the
+// sign response recorder and decoded body.
+func cfGuardSign(t *testing.T, router *gin.Engine, token, companyID, merchantID, admissionID, formData string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	id := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, formData)
+	return cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+id+"/sign", token, companyID, merchantID,
+		map[string]any{"password": ownerPassword})
+}
+
+// TestClinicalFormSignGuardRequired — sign blocks (400) per wajib kosong,
+// with the exact spec messages and fixed order; >1 primary has its own
+// message; moda RTL kosong TIDAK blocks; empty draft 400s without panic
+// (spec 2026-11-10-cppt-pemeriksaan-v3 §Guard TTE sign).
+func TestClinicalFormSignGuardRequired(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	// ~18 API calls in one test exceeds testConfig's burst of 20 — lift the
+	// rate limit for this test only (pola TestClinicalFormValidation).
+	cfg := testConfig()
+	cfg.RateLimitAPITokensPerMinute = 1000
+	cfg.RateLimitAPIBurst = 100
+	router := server.NewRouter(pool, newTestRedisClient(t, ctx), cfg)
+	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "guard")
+	cdSeedICD11(t, ctx, pool)
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "guard")
+
+	// 3 wajib terisi → 200 + status signed.
+	rec, resp := cfGuardSign(t, router, token, companyID, merchantID, admissionID, soapGuardPass)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sign pass = %d: %s", rec.Code, rec.Body.String())
+	}
+	if entry := resp["data"].(map[string]any)["entry"].(map[string]any); entry["status"] != "signed" {
+		t.Fatalf("status = %v, want signed", entry["status"])
+	}
+
+	// Tanpa diagnosa primer saja → 400, 1 item.
+	noPrimary := `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 3 hari.","diagnosa":{"narrative":"Suspek ISPA"}}}`
+	rec, resp = cfGuardSign(t, router, token, companyID, merchantID, admissionID, noPrimary)
+	if rec.Code != http.StatusBadRequest || resp["error"] != "bagian wajib belum terisi: diagnosa primer" {
+		t.Fatalf("no primary = %d %v", rec.Code, resp)
+	}
+
+	// keluhan_utama kosong (trim) saja → 400 (diagnosa primer ada, jadi
+	// hanya "keluhan utama" yang dilaporkan).
+	emptyKeluhan := `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"   ","diagnosa":{"narrative":"Suspek ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"}}]}}}`
+	rec, resp = cfGuardSign(t, router, token, companyID, merchantID, admissionID, emptyKeluhan)
+	if rec.Code != http.StatusBadRequest || resp["error"] != "bagian wajib belum terisi: keluhan utama" {
+		t.Fatalf("empty keluhan = %d %v", rec.Code, resp)
+	}
+
+	// jenis anamnesis kosong saja (section absent) → 400.
+	noJenis := `{"sections":{"keluhan_utama":"Demam 3 hari.","diagnosa":{"narrative":"Suspek ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"}}]}}}`
+	rec, resp = cfGuardSign(t, router, token, companyID, merchantID, admissionID, noJenis)
+	if rec.Code != http.StatusBadRequest || resp["error"] != "bagian wajib belum terisi: jenis anamnesis" {
+		t.Fatalf("empty jenis = %d %v", rec.Code, resp)
+	}
+
+	// Kombinasi 2+ → daftar gabungan urutan tetap (contoh eksak spec).
+	combo := `{"sections":{"keluhan_utama":"Demam 3 hari.","diagnosa":{"narrative":"Suspek ISPA"}}}`
+	rec, resp = cfGuardSign(t, router, token, companyID, merchantID, admissionID, combo)
+	if rec.Code != http.StatusBadRequest || resp["error"] != "bagian wajib belum terisi: diagnosa primer, jenis anamnesis" {
+		t.Fatalf("combo = %d %v", rec.Code, resp)
+	}
+	// Guard fires before any write: the entry stays draft.
+	id := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, combo)
+	if _, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+id+"/sign", token, companyID, merchantID,
+		map[string]any{"password": ownerPassword}); resp["error"] == nil {
+		t.Fatalf("combo sign expected 400, got %v", resp)
+	}
+	if row := cfGetEntryRow(t, ctx, pool, id); row.Status != "draft" || row.SignatureHash.Valid {
+		t.Fatalf("entry mutated by guard 400: status=%s hash=%v", row.Status, row.SignatureHash)
+	}
+
+	// >1 diagnosa primer → 400 "diagnosa primer maksimal 1".
+	twoPrimary := `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 3 hari.","diagnosa":{"narrative":"ISPA + ISK","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"A"}},{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"A"}}]}}}`
+	rec, resp = cfGuardSign(t, router, token, companyID, merchantID, admissionID, twoPrimary)
+	if rec.Code != http.StatusBadRequest || resp["error"] != "diagnosa primer maksimal 1" {
+		t.Fatalf("two primary = %d %v", rec.Code, resp)
+	}
+
+	// Moda RTL kosong (rtl section tanpa moda) → TIDAK 400.
+	withRtlEmpty := `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 3 hari.","diagnosa":{"narrative":"Suspek ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"}}]},"rencana_tindak_lanjut":{"kriteria_rujukan_darurat":"Demam >3 hari"}}}`
+	rec, _ = cfGuardSign(t, router, token, companyID, merchantID, admissionID, withRtlEmpty)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rtl empty moda = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Draft tanpa isi apa pun → 400 gabungan lengkap (bukan panic).
+	rec, resp = cfGuardSign(t, router, token, companyID, merchantID, admissionID, `{"sections":{}}`)
+	if rec.Code != http.StatusBadRequest || resp["error"] != "bagian wajib belum terisi: diagnosa primer, keluhan utama, jenis anamnesis" {
+		t.Fatalf("empty draft = %d %v", rec.Code, resp)
 	}
 }
 

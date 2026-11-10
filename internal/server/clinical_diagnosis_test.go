@@ -67,8 +67,9 @@ func cdDiagnoses(t *testing.T, ctx context.Context, pool *pgxpool.Pool, admissio
 }
 
 // soapNoICD10 is the §5.2 example minus the icd10 mapping (license §7.4:
-// kolom ICD-10 NULL dibolehkan, baris tetap tersimpan).
-const soapNoICD10 = `{"sections":{"subjective":"Demam 3 hari, batuk berdahak.","objective":{"sistolic":120,"diastolic":80},"assessment":{"narrative":"Suspek ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"}}]},"plan":"Parasetamol."}}`
+// kolom ICD-10 NULL dibolehkan, baris tetap tersimpan). v3 sections (guard
+// TTE sign wajib terisi — spec 2026-11-10-cppt-pemeriksaan-v3).
+const soapNoICD10 = `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 3 hari.","diagnosa":{"diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"}}]}}}`
 
 // TestClinicalDiagnosisDualCode — signing the LITERAL spec §5.2 SOAP persists
 // one clinical.diagnosis row: role primary, concept snapshot (ICD-11 CA00.00),
@@ -139,12 +140,18 @@ func TestClinicalDiagnosisInvalidShape(t *testing.T) {
 	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "baddx")
 	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "baddx")
 	cdSeedICD11(t, ctx, pool)
+	// Merchant standard ICD-11 so the valid primary row (added in front so
+	// the TTE sign guard passes — spec 2026-11-10-cppt-pemeriksaan-v3)
+	// resolves without an icd10 mapping before the malformed row errors.
+	cdSetMerchantStd(t, ctx, pool, companyID, merchantID, "")
 
+	// Each case: valid primary first (guard needs exactly 1 primary) + the
+	// malformed row under test.
 	cases := map[string]string{
-		"role salah":       `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"utama","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}}]}}}`,
-		"concept kosong":   `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00"}}]}}}`,
-		"icd10 source":     `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","source":"guess"}}]}}}`,
-		"item bukan objek": `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":["ISPA"]}}}`,
+		"role salah":       `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam.","diagnosa":{"diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}},{"role":"utama","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}}]}}}`,
+		"concept kosong":   `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam.","diagnosa":{"diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}},{"role":"secondary","concept":{"system":"ICD-11","code":"CA00.00"}}]}}}`,
+		"icd10 source":     `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam.","diagnosa":{"diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}},{"role":"secondary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","source":"guess"}}]}}}`,
+		"item bukan objek": `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam.","diagnosa":{"diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}},"ISPA"]}}}`,
 	}
 	for name, fd := range cases {
 		id := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, fd)
@@ -176,8 +183,8 @@ func TestClinicalDiagnosisICD10StandardRequiresMapping(t *testing.T) {
 	// Concept exists, but the merchant standard stays the default ICD-10.
 	cdSeedICD11(t, ctx, pool)
 
-	const noMap = `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}}]}}}`
-	const withMap = `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"}}]}}}`
+	const noMap = `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam.","diagnosa":{"diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"}}]}}}`
+	const withMap = `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam.","diagnosa":{"diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"}}]}}}`
 
 	// Without icd10 mapping → 400, entry stays draft.
 	id := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, noMap)
@@ -217,7 +224,7 @@ func TestClinicalFormSignAtomic(t *testing.T) {
 	cdSeedICD11(t, ctx, pool)
 	cdSetMerchantStd(t, ctx, pool, companyID, merchantID, "")
 
-	fd := `{"sections":{"subjective":"Demam.","objective":{},"assessment":{"narrative":"Suspek.","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"TIDAK-ADA","display":"Kode fiktif"}}]},"plan":"."}}`
+	fd := `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam.","diagnosa":{"narrative":"Suspek.","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"TIDAK-ADA","display":"Kode fiktif"}}]}}}`
 	id := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, fd)
 	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+id+"/sign", token, companyID, merchantID,
 		map[string]any{"password": ownerPassword})

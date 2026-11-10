@@ -132,6 +132,18 @@ func SignClinicalFormHandler(c *gin.Context) {
 	if !verifyEntryUserPassword(c, q, AuthUserID(c), req.Password) {
 		return
 	}
+	// Guard TTE sign (spec 2026-11-10-cppt-pemeriksaan-v3 §Guard TTE sign):
+	// soap_dokter v3 wajib mengisi diagnosa primer (maks 1), keluhan utama,
+	// dan jenis anamnesis sebelum TTE. Dijalankan SEBELUM tulis pertama
+	// (q.SignClinicalFormInstance) — 400 di sini tidak menulis apa pun dan
+	// ambient RunRequestTx tidak perlu rollback eksplisit. Moda RTL TIDAK
+	// dicek server (guard lunak — FE).
+	if entry.FormType == "soap_dokter" {
+		if msg, blocked := soapSignGuardMessage(entry.FormData); blocked {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+	}
 	var formData map[string]any
 	if err := json.Unmarshal(entry.FormData, &formData); err != nil {
 		respondInternalError(c, err)
@@ -177,6 +189,52 @@ func SignClinicalFormHandler(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"entry": clinicalFormJSON(signed)}, "meta": gin.H{}})
+}
+
+// soapSignGuardMessage evaluates the v3 sign-time mandatory sections on the
+// stored form_data (spec 2026-11-10-cppt-pemeriksaan-v3 §Guard TTE sign,
+// soap_dokter only). Unparseable/missing shapes count as empty — never
+// panics. Order is fixed: diagnosa primer → keluhan utama → jenis anamnesis.
+// More than one primary diagnosis returns immediately with its own message.
+func soapSignGuardMessage(formData json.RawMessage) (string, bool) {
+	var wrapper struct {
+		Sections map[string]any `json:"sections"`
+	}
+	_ = json.Unmarshal(formData, &wrapper)
+	sections := wrapper.Sections
+	primary := 0
+	if dx, ok := sections["diagnosa"].(map[string]any); ok {
+		if rows, ok := dx["diagnoses"].([]any); ok {
+			for _, r := range rows {
+				if m, ok := r.(map[string]any); ok {
+					if role, _ := m["role"].(string); role == "primary" {
+						primary++
+					}
+				}
+			}
+		}
+	}
+	if primary > 1 {
+		return "diagnosa primer maksimal 1", true
+	}
+	var missing []string
+	if primary == 0 {
+		missing = append(missing, "diagnosa primer")
+	}
+	if ku, _ := sections["keluhan_utama"].(string); strings.TrimSpace(ku) == "" {
+		missing = append(missing, "keluhan utama")
+	}
+	jenis := ""
+	if ai, ok := sections["anamnesis_info"].(map[string]any); ok {
+		jenis, _ = ai["jenis"].(string)
+	}
+	if jenis != "autoanamnesis" && jenis != "alloanamnesis" {
+		missing = append(missing, "jenis anamnesis")
+	}
+	if len(missing) == 0 {
+		return "", false
+	}
+	return "bagian wajib belum terisi: " + strings.Join(missing, ", "), true
 }
 
 // CountersignClinicalFormHandler godoc
