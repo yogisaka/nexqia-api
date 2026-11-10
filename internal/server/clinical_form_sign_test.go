@@ -240,7 +240,7 @@ func TestClinicalFormAddendum(t *testing.T) {
 	}
 
 	// Success: new draft referencing the signed target.
-	addendumData := `{"sections":{"subjective":"Demam 3 hari, muntah tambahan.","objective":{"sistolic":115,"diastolic":75},"assessment":{"narrative":"ISEL","diagnoses":[]},"plan":"Lanjut terapi."}}`
+	addendumData := `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 3 hari, muntah tambahan.","diagnosa":{"narrative":"Suspek ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"}}]}}}`
 	rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+targetID+"/addendum", token, companyID, merchantID,
 		map[string]any{"form_data": cfRawJSON(t, addendumData), "reason": " pasien muntah setelah catatan awal "})
 	if rec.Code != http.StatusCreated {

@@ -518,8 +518,8 @@ func TestClinicalFormValidation(t *testing.T) {
 		// Keduanya pakai entri valid literal withMap (pattern
 		// clinical_diagnosis_test.go:180 — merchant default ICD-10 butuh
 		// mapping icd10) plus "suspect".
-		const withMapBad = `{"sections":{"diagnosa":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":"ya"}]}}}`
-		const withMapOK = `{"sections":{"diagnosa":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":true}]}}}`
+		const withMapBad = `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 3 hari.","diagnosa":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":"ya"}]}}}`
+		const withMapOK = `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 3 hari.","diagnosa":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":true}]}}}`
 		cdSeedICD11(t, ctx, pool)
 		// suspect non-boolean → create 201 (draft lolos), sign 400,
 		// entri tetap draft (rollback RunRequestTx).
@@ -542,8 +542,12 @@ func TestClinicalFormValidation(t *testing.T) {
 	t.Run("diagnosis malformed shape create ok", func(t *testing.T) {
 		// (n) guard regresi: diagnoses ["ISPA"] (item bukan objek) tidak
 		// ditolak saat create; penolakan 400 invalid diagnosis entry saat
-		// sign; entri tetap draft (semantik fase 1).
-		rec, resp := post("soap_dokter", sections(`"diagnosa":{"narrative":"ISPA","diagnoses":["ISPA"]}`))
+		// sign; entri tetap draft (semantik fase 1). REMEDIAL: guard TTE
+		// sign wajib lolos dulu — entri primary valid (mapping icd10, pola
+		// clinical_diagnosis_test.go:154) + keluhan_utama + jenis terisi,
+		// sehingga guard gagal justru di shape entri, bukan wajib kosong.
+		cdSeedICD11(t, ctx, pool)
+		rec, resp := post("soap_dokter", sections(`"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Demam 3 hari.","diagnosa":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"}},"ISPA"]}`))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("malformed create = %d: %s", rec.Code, rec.Body.String())
 		}
