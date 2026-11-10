@@ -140,14 +140,23 @@ func newTestRouter(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *gin.E
 	return server.NewRouter(pool, newTestRedisClient(t, ctx), testConfig())
 }
 
-// soapFormData is the LITERAL spec §5.2 example (used as the happy-path test
-// payload; expectation values come from the spec, not from the code).
+// soapFormData is the LITERAL spec §Bentuk nilai example (template v3,
+// migration 000095; expectation values come from the spec, not from the
+// code): NEWS2 = RR22(2)+nadi96(1)+suhu38.2(1)+SpO₂95 sk1(1)+SBP118(0)
+// +respons a(0)+udara(0) = 5; GCS 4+5+6 = 15 → compos_mentis.
 const soapFormData = `{"sections":{
-  "subjective":"Demam 3 hari, batuk berdahak.",
-  "objective":{"sistolic":120,"diastolic":80,"heart_rate":88,"temperature":37.4,"respiratory_rate":20,"spo2":97,"weight_kg":62.5,"height_cm":168,"pain_score":2},
-  "assessment":{"narrative":"Suspek infeksi saluran napas atas",
-    "diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"}}]},
-  "plan":"Parasetamol 500 mg 3×1 bila demam; kontrol 3 hari bila memburuk."}}`
+  "anamnesis_info":{"jenis":"autoanamnesis"},
+  "keluhan_utama":"Demam 3 hari, batuk berdahak.",
+  "rps":"Demam 3 hari, batuk berdahak, memburuk saat malam.",
+  "alergi":[{"pemicu":"Penisilin","jenis":"drug","reaksi":"Urtikaria","keparahan":"sedang","efek_samping":"","tanggal":"2019-03-01","sumber":"master"}],
+  "tanda_vital":{"td_sistolik":118,"td_diastolik":76,"nafas":22,"nadi":96,"suhu":38.2,"spo2":95,"spo2_scale":1,"oksigen":"udara_ruang","waktu_asesmen":"2026-11-06T08:15:00+07:00","kriteria":"rutin","news2_total":5},
+  "antropometri":{"bb":62,"tb":158,"lk":null,"imt":24.8,"imt_kategori":"bb_lebih","var_tambahan":[{"variable":"","value":""}]},
+  "pemeriksaan_fisik":{"keadaan_umum":"sedang","organ":{"kepala":{"status":"tidak_ada"},"thorax":{"status":"ada_kelainan","keterangan":"Ronki basa halus kiri","strokes":[{"points":[{"x":0.42,"y":0.31}],"color":"#D92D20","width":3,"label":"A"}]},"genital_urogenital":{"status":"tidak_ada"}}},
+  "kesadaran":{"e":"4","v":"5","m":"6","gcs":15,"kategori":"compos_mentis","pupil":{"kiri_mm":3,"kanan_mm":3,"bentuk":"bulat","refleks_kiri":"cepat","refleks_kanan":"cepat"},"pupil_score":0,"gcs_p":15,"respons":"a"},
+  "diagnosa":{"narrative":"Suspek infeksi saluran napas atas",
+    "diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"},"suspect":false}]},
+  "rencana_tindak_lanjut":{"moda":"kontrol_poliklinik","target_tanggal":"2026-11-13","kriteria_rujukan_darurat":"Demam >3 hari, sesak berat"},
+  "rekomendasi":{"teks":"Kontrol 7 hari, amoksisilin 500mg 3×1 habiskan","tanggal_kontrol":"2026-11-13"}}}`
 
 func cfRawJSON(t *testing.T, s string) json.RawMessage {
 	t.Helper()
@@ -191,39 +200,33 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 	if soap["scope"] != "platform" || soap["category"] != "soap" {
 		t.Fatalf("soap_dokter = %v", soap)
 	}
-	if v, _ := soap["version"].(float64); v != 2 {
-		t.Fatalf("soap_dokter version = %v, want 2", soap["version"])
+	if v, _ := soap["version"].(float64); v != 3 {
+		t.Fatalf("soap_dokter version = %v, want 3", soap["version"])
 	}
-	// soap_dokter v2 = 12 sections (migration 000091).
+	// soap_dokter v3 = 22 sections (migration 000095, spec §Kontrak data).
 	defs, _ := soap["sections"].(map[string]any)["sections"].([]any)
-	if len(defs) != 12 {
-		t.Fatalf("soap_dokter sections = %d, want 12", len(defs))
+	if len(defs) != 22 {
+		t.Fatalf("soap_dokter sections = %d, want 22", len(defs))
 	}
-	var alergi map[string]any
-	calcKinds := map[string]bool{}
+	kindOf := map[string]string{}
 	for _, d := range defs {
 		def := d.(map[string]any)
 		key, _ := def["key"].(string)
 		kind, _ := def["kind"].(string)
-		if key == "alergi" {
-			alergi = def
+		kindOf[key] = kind
+	}
+	wantKind := map[string]string{
+		"anamnesis_info": "radio_conditional", "tanda_vital": "vitals",
+		"antropometri": "antropometri", "pemeriksaan_fisik": "physical_exam",
+		"kesadaran": "consciousness", "nyeri": "repeatable",
+		"alergi": "repeatable", "tindakan": "repeatable",
+		"diagnosa": "diagnosis", "rencana_tindak_lanjut": "rtl",
+		"rekomendasi": "rekomendasi",
+	}
+	for key, want := range wantKind {
+		if got := kindOf[key]; got != want {
+			t.Fatalf("soap_dokter v3 section %s kind = %q, want %q", key, got, want)
 		}
-		if kind == "calc" {
-			calcKinds[key] = true
-		}
-	}
-	if alergi == nil {
-		t.Fatal("soap_dokter v2 missing alergi section")
-	}
-	if alergi["kind"] != "repeatable" {
-		t.Fatalf("alergi kind = %v, want repeatable", alergi["kind"])
-	}
-	fields, _ := alergi["fields"].([]any)
-	if len(fields) != 6 {
-		t.Fatalf("alergi fields = %d, want 6", len(fields))
-	}
-	if !calcKinds["gcs_total"] || !calcKinds["imt"] {
-		t.Fatalf("calc sections = %v, want gcs_total and imt", calcKinds)
 	}
 }
 
@@ -266,7 +269,7 @@ func TestClinicalFormDraftCreateUpdateDelete(t *testing.T) {
 		t.Fatalf("list = %d %v", rec.Code, resp)
 	}
 
-	updated := `{"sections":{"subjective":"Demam 3 hari, membaik.","objective":{"sistolic":118,"diastolic":78},"assessment":{"narrative":"ISEL, membaik","diagnoses":[]},"plan":"Lanjut parasetamol."}}`
+	updated := `{"sections":{"keluhan_utama":"Demam 3 hari, membaik.","rps":"Demam membaik, batuk berkurang.","narasi_asesmen":"ISEL, membaik","rencana_tindak_lanjut":{"moda":"kontrol_poliklinik","target_tanggal":"2026-11-13","kriteria_rujukan_darurat":"Demam >3 hari, sesak berat"}}}`
 	rec, resp = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/forms/"+id, token, companyID, merchantID, map[string]any{
 		"form_data": cfRawJSON(t, updated),
 	})
@@ -274,7 +277,7 @@ func TestClinicalFormDraftCreateUpdateDelete(t *testing.T) {
 		t.Fatalf("patch = %d: %s", rec.Code, rec.Body.String())
 	}
 	patched := resp["data"].(map[string]any)["entry"].(map[string]any)["form_data"].(map[string]any)
-	if patched["sections"].(map[string]any)["subjective"] != "Demam 3 hari, membaik." {
+	if patched["sections"].(map[string]any)["keluhan_utama"] != "Demam 3 hari, membaik." {
 		t.Fatalf("patched form_data = %v", patched)
 	}
 
@@ -330,9 +333,8 @@ func TestClinicalFormValidation(t *testing.T) {
 		})
 	}
 
-	// Happy path: the literal §5.2 example is accepted. On template v2 the
-	// new optional sections (keluhan_utama/alergi/gcs/…/rekomendasi) are empty
-	// here, so only the shape of warnings is asserted, not emptiness.
+	// Happy path: the literal §Bentuk nilai example (template v3) is
+	// accepted; only the shape of warnings is asserted, not emptiness.
 	rec, resp := post("soap_dokter", cfRawJSON(t, soapFormData))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("happy soap = %d: %s", rec.Code, rec.Body.String())
@@ -353,13 +355,13 @@ func TestClinicalFormValidation(t *testing.T) {
 	}
 
 	// Unknown section key.
-	rec, resp = post("soap_dokter", sections(`"subjective":"ada"`, `"halo":"x"`))
+	rec, resp = post("soap_dokter", sections(`"keluhan_utama":"ada"`, `"halo":"x"`))
 	if rec.Code != http.StatusBadRequest || resp["error"] != "unknown section key: halo" {
 		t.Fatalf("unknown key = %d %v", rec.Code, resp)
 	}
 	// Wrong type per kind (textarea given a number).
-	rec, resp = post("soap_dokter", sections(`"subjective":123`))
-	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'subjective'" {
+	rec, resp = post("soap_dokter", sections(`"rps":123`))
+	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'rps'" {
 		t.Fatalf("wrong type = %d %v", rec.Code, resp)
 	}
 	// Vitals outside (0,1000).
@@ -377,9 +379,9 @@ func TestClinicalFormValidation(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'tanda_vital'" {
 		t.Fatalf("pain_score 11 = %d %v", rec.Code, resp)
 	}
-	// assessment narrative-only (tanpa diagnoses) → draft tersimpan
+	// diagnosa narrative-only (tanpa diagnoses) → draft tersimpan
 	// (soft_required, review A3).
-	rec, _ = post("soap_dokter", sections(`"assessment":{"narrative":"Hanya naratif klinis."}`))
+	rec, _ = post("soap_dokter", sections(`"diagnosa":{"narrative":"Hanya naratif klinis."}`))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("narrative-only assessment = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -425,60 +427,67 @@ func TestClinicalFormValidation(t *testing.T) {
 	}
 
 	// ── Kinds repeatable/calc + suspect (plan 2a Task 2, spec §5/§6) ──
-	// soapV2FormData = LITERAL spec §5 example (migration 000091 template).
-	// Expectations computed from the spec: gcs 4+5+6=15; imt = round(62/(158/100)²,1) = round(24.8357,1) = 24.8.
-	const soapV2FormData = `{"sections":{
+	// soapV3FormData = LITERAL spec §Bentuk nilai example (migration 000095
+	// template v3). Expectations computed from the spec: pupil
+	// lambat(1)+cepat(0) → pupil_score 1 → gcs_p 14; imt = round(62/(158/100)²,1)
+	// = round(24.8357,1) = 24.8 → bb_lebih; NEWS2 = RR18(0)+nadi84(0)+
+	// suhu37.6(0)+SpO₂98 sk1(0)+SBP120(0)+udara(0)+respons a(0) = 0.
+	const soapV3FormData = `{"sections":{
+	  "anamnesis_info":{"jenis":"alloanamnesis","informan":{"nama":"Bapak Sutoyo","hubungan":"orang_tua","alasan":"pasien anak"},"keandalan":"andal"},
 	  "keluhan_utama":"Batuk berdahak 5 hari, demam sejak 2 hari lalu",
-	  "subjective":"Batuk berdahak kuning, memburuk saat malam. Demam 38-39°C turun-naik.",
-	  "alergi":[{"pemicu":"amoksisilin","jenis":"obat","reaksi":"Biduran dan gatal","keparahan":"sedang","efek_samping":"","tanggal":"2024-03-10"}],
-	  "objective":{"sistolic":120,"diastolic":80,"heart_rate":84,"temperature":37.6,"respiratory_rate":18,"spo2":98,"weight_kg":62,"height_cm":158,"pain_score":6},
-	  "gcs_eye":"4","gcs_verbal":"5","gcs_motorik":"6","gcs_total":15,"imt":24.8,
-	  "assessment":{"narrative":"Suspek infeksi saluran napas atas",
+	  "rps":"Batuk berdahak kuning, memburuk saat malam. Demam 38-39°C turun-naik.",
+	  "alergi":[{"pemicu":"amoksisilin","jenis":"drug","reaksi":"Biduran dan gatal","keparahan":"sedang","efek_samping":"","tanggal":"2024-03-10","sumber":"catatan"}],
+	  "tanda_vital":{"td_sistolik":120,"td_diastolik":80,"nafas":18,"nadi":84,"suhu":37.6,"spo2":98,"spo2_scale":1,"oksigen":"udara_ruang","waktu_asesmen":"2026-11-06T08:15:00+07:00","kriteria":"rutin","news2_total":0},
+	  "antropometri":{"bb":62,"tb":158,"lk":null,"imt":24.8,"imt_kategori":"bb_lebih","var_tambahan":[{"variable":"","value":""}]},
+	  "kesadaran":{"e":"4","v":"5","m":"6","gcs":15,"kategori":"compos_mentis","pupil":{"kiri_mm":3,"kanan_mm":3,"bentuk":"bulat","refleks_kiri":"lambat","refleks_kanan":"cepat"},"pupil_score":1,"gcs_p":14,"respons":"a"},
+	  "nyeri":[{"skala":"nrs","skor":3,"lokasi":"Regio pectoralis","durasi":"3 hari","frekuensi":"ireguler","karakteristik":"tertusuk","berkurang":"istirahat","penyebab":"batuk","lama":"<1 minggu","poss":"1"}],
+	  "diagnosa":{"narrative":"Suspek infeksi saluran napas atas",
 	    "diagnoses":[
 	      {"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"},"suspect":false},
 	      {"role":"secondary","concept":{"system":"ICD-11","code":"DA0A.0","display":"Dental caries"},"suspect":true}]},
-	  "plan":"Rehat total 3 hari. Terapi simtomatik: paracetamol 500 mg 3x1 selama demam.",
-	  "rekomendasi":"Kontrol 3 hari jika demam >38.5°C atau batuk memburuk"}}`
+	  "tindakan":[{"kode":"96.72","nama":"Irrigasi kateter vesika urinaria","tarif_snapshot":150000,"waktu":"09:30","dokter":"dr. X","cito":false,"catatan_hasil":"Keluar kateter F16","lokasi_unit":"Poli tindakan","petugas_mengorder":"sdr. Rina"}],
+	  "rencana_tindak_lanjut":{"moda":"kontrol_poliklinik","target_tanggal":"2026-11-13","kriteria_rujukan_darurat":"Demam >3 hari, sesak berat"},
+	  "rekomendasi":{"teks":"Kontrol 3 hari jika demam >38.5°C atau batuk memburuk","tanggal_kontrol":"2026-11-13"}}}`
 
-	t.Run("v2 example accepted", func(t *testing.T) {
-		// (a) full spec §5 example → 201.
-		if rec, _ := post("soap_dokter", cfRawJSON(t, soapV2FormData)); rec.Code != http.StatusCreated {
-			t.Fatalf("spec §5 example = %d: %s", rec.Code, rec.Body.String())
+	t.Run("v3 example accepted", func(t *testing.T) {
+		// (a) full spec §Bentuk nilai example → 201.
+		if rec, _ := post("soap_dokter", cfRawJSON(t, soapV3FormData)); rec.Code != http.StatusCreated {
+			t.Fatalf("spec §Bentuk nilai example = %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 	t.Run("calc gcs", func(t *testing.T) {
 		// (b) 4+5+6 = 15, ditulis 14 → 400.
 		rec, resp := post("soap_dokter", sections(
-			`"gcs_eye":"4"`, `"gcs_verbal":"5"`, `"gcs_motorik":"6"`, `"gcs_total":14`))
-		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi gcs_total tidak konsisten" {
+			`"kesadaran":{"e":"4","v":"5","m":"6","gcs":14}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi gcs tidak konsisten" {
 			t.Fatalf("gcs mismatch = %d %v", rec.Code, resp)
 		}
-		// (c) verbal "t" + total "T" → lolos (input parsial + T dinilai konsisten).
-		rec, _ = post("soap_dokter", sections(`"gcs_verbal":"t"`, `"gcs_total":"T"`))
+		// (c) "T" + gcs/kategori/gcs_p null → lolos (T dinilai konsisten).
+		rec, _ = post("soap_dokter", sections(`"kesadaran":{"v":"T","gcs":null,"kategori":null,"pupil_score":null,"gcs_p":null}`))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("gcs T = %d: %s", rec.Code, rec.Body.String())
 		}
-		// (d) verbal "t" + total numerik → 400.
-		rec, resp = post("soap_dokter", sections(`"gcs_verbal":"t"`, `"gcs_total":15`))
-		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi gcs_total tidak konsisten" {
-			t.Fatalf("gcs t numeric = %d %v", rec.Code, resp)
+		// (d) "T" + gcs numerik → 400 (bentuk).
+		rec, resp = post("soap_dokter", sections(`"kesadaran":{"v":"T","gcs":15}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'kesadaran'" {
+			t.Fatalf("gcs T numeric = %d %v", rec.Code, resp)
 		}
 	})
 	t.Run("calc imt", func(t *testing.T) {
 		// (e) BB 62 / TB 158 → imt seharusnya 24.8; ditulis 30 → 400.
 		rec, resp := post("soap_dokter", sections(
-			`"objective":{"weight_kg":62,"height_cm":158}`, `"imt":30`))
+			`"antropometri":{"bb":62,"tb":158,"imt":30,"imt_kategori":"bb_lebih"}`))
 		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt tidak konsisten" {
 			t.Fatalf("imt mismatch = %d %v", rec.Code, resp)
 		}
 		rec, _ = post("soap_dokter", sections(
-			`"objective":{"weight_kg":62,"height_cm":158}`, `"imt":24.8`))
+			`"antropometri":{"bb":62,"tb":158,"imt":24.8,"imt_kategori":"bb_lebih"}`))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("imt ok = %d: %s", rec.Code, rec.Body.String())
 		}
-		// (f) imt terisi, weight_kg kosong (parsial) → 400.
+		// (f) imt terisi, bb kosong (parsial) → 400.
 		rec, resp = post("soap_dokter", sections(
-			`"objective":{"height_cm":158}`, `"imt":24.8`))
+			`"antropometri":{"tb":158,"imt":24.8}`))
 		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt tidak konsisten" {
 			t.Fatalf("imt partial filled = %d %v", rec.Code, resp)
 		}
@@ -509,8 +518,8 @@ func TestClinicalFormValidation(t *testing.T) {
 		// Keduanya pakai entri valid literal withMap (pattern
 		// clinical_diagnosis_test.go:180 — merchant default ICD-10 butuh
 		// mapping icd10) plus "suspect".
-		const withMapBad = `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":"ya"}]}}}`
-		const withMapOK = `{"sections":{"assessment":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":true}]}}}`
+		const withMapBad = `{"sections":{"diagnosa":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":"ya"}]}}}`
+		const withMapOK = `{"sections":{"diagnosa":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"ISPA"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":true}]}}}`
 		cdSeedICD11(t, ctx, pool)
 		// suspect non-boolean → create 201 (draft lolos), sign 400,
 		// entri tetap draft (rollback RunRequestTx).
@@ -534,7 +543,7 @@ func TestClinicalFormValidation(t *testing.T) {
 		// (n) guard regresi: diagnoses ["ISPA"] (item bukan objek) tidak
 		// ditolak saat create; penolakan 400 invalid diagnosis entry saat
 		// sign; entri tetap draft (semantik fase 1).
-		rec, resp := post("soap_dokter", sections(`"assessment":{"narrative":"ISPA","diagnoses":["ISPA"]}`))
+		rec, resp := post("soap_dokter", sections(`"diagnosa":{"narrative":"ISPA","diagnoses":["ISPA"]}`))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("malformed create = %d: %s", rec.Code, rec.Body.String())
 		}
@@ -548,38 +557,34 @@ func TestClinicalFormValidation(t *testing.T) {
 			t.Fatalf("malformed: status = %s, want draft (rollback)", row.Status)
 		}
 	})
-	t.Run("draft v1 shape on v2 template", func(t *testing.T) {
-		// (k) draft dengan 4 key lama saja → PATCH di template v2 tetap 200 (D7).
-		rec, resp := post("soap_dokter", sections(
-			`"subjective":"lama"`, `"objective":{"sistolic":120}`,
-			`"assessment":{"narrative":"ISEL"}`, `"plan":"p"`))
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("v1-shape create = %d: %s", rec.Code, rec.Body.String())
+	t.Run("old v1/v2 shape rejected on v3 template", func(t *testing.T) {
+		// (k) key v1/v2 pada template v3 → 400 unknown section key
+		// (perilaku baru resolve-aktif, migration 000095).
+		rec, resp := post("soap_dokter", sections(`"subjective":"lama"`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "unknown section key: subjective" {
+			t.Fatalf("v1 key = %d %v", rec.Code, resp)
 		}
-		id := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
-		rec, _ = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/forms/"+id, token, companyID, merchantID, map[string]any{
-			"form_data": sections(`"subjective":"masih lama"`),
-		})
-		if rec.Code != http.StatusOK {
-			t.Fatalf("v1-shape patch = %d: %s", rec.Code, rec.Body.String())
+		rec, resp = post("soap_dokter", sections(`"gcs_eye":"4"`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "unknown section key: gcs_eye" {
+			t.Fatalf("v2 gcs key = %d %v", rec.Code, resp)
 		}
 	})
 	t.Run("calc partial inputs", func(t *testing.T) {
-		// (l) PARSIAL-LOLOS: satu input, calc absen → draft sah.
-		rec, _ := post("soap_dokter", sections(`"gcs_eye":"4"`))
+		// (l) PARSIAL-LOLOS: satu input, calc absen/null → draft sah.
+		rec, _ := post("soap_dokter", sections(`"kesadaran":{"e":"4","gcs":null,"kategori":null,"pupil_score":null,"gcs_p":null}`))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("gcs partial ok = %d: %s", rec.Code, rec.Body.String())
 		}
-		rec, _ = post("soap_dokter", sections(`"objective":{"weight_kg":62}`))
+		rec, _ = post("soap_dokter", sections(`"antropometri":{"bb":62,"imt":null,"imt_kategori":null}`))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("imt partial ok = %d: %s", rec.Code, rec.Body.String())
 		}
 		// (m) PARSIAL-TERISI: calc terisi padahal input belum lengkap → 400.
-		rec, resp := post("soap_dokter", sections(`"gcs_eye":"4"`, `"gcs_total":4`))
-		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi gcs_total tidak konsisten" {
+		rec, resp := post("soap_dokter", sections(`"kesadaran":{"e":"4","gcs":4}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi gcs tidak konsisten" {
 			t.Fatalf("gcs partial filled = %d %v", rec.Code, resp)
 		}
-		rec, resp = post("soap_dokter", sections(`"objective":{"weight_kg":62}`, `"imt":24.8`))
+		rec, resp = post("soap_dokter", sections(`"antropometri":{"bb":62,"imt":24.8}`))
 		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt tidak konsisten" {
 			t.Fatalf("imt partial filled = %d %v", rec.Code, resp)
 		}

@@ -53,19 +53,19 @@ type diagnosisInput struct {
 	Icd10   *icd10Ref
 }
 
-// assessmentDiagnoses parses sections.assessment.diagnoses from the decoded
-// form_data (spec §5.2 LITERAL). Missing section/keys mean no diagnoses; a
-// present but malformed entry returns errInvalidDiagnosis.
+// assessmentDiagnoses parses sections.diagnosa.diagnoses from the decoded
+// form_data (spec §5.2 LITERAL, soap v3). Missing section/keys mean no
+// diagnoses; a present but malformed entry returns errInvalidDiagnosis.
 func assessmentDiagnoses(formData map[string]any) ([]diagnosisInput, error) {
 	sections, _ := formData["sections"].(map[string]any)
 	if sections == nil {
 		return nil, nil
 	}
-	assessment, _ := sections["assessment"].(map[string]any)
-	if assessment == nil {
+	diagnosa, _ := sections["diagnosa"].(map[string]any)
+	if diagnosa == nil {
 		return nil, nil
 	}
-	raw, present := assessment["diagnoses"]
+	raw, present := diagnosa["diagnoses"]
 	if !present || raw == nil {
 		return nil, nil
 	}
