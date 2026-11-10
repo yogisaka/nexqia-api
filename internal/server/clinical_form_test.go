@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -583,6 +584,159 @@ func TestClinicalFormValidation(t *testing.T) {
 			t.Fatalf("imt partial filled = %d %v", rec.Code, resp)
 		}
 	})
+
+	// ── SOAP v3 kinds (plan 2026-11-10-cppt-pemeriksaan-v3-1-be Task 1) ──
+	// Synthetic v3 defs (spec 2026-11-10-cppt-pemeriksaan-v3 §Kontrak data)
+	// seeded as a platform template and exercised through Create so
+	// validateClinicalFormData runs against the new kinds. The v3 template
+	// migration (plan Task 3) does not exist yet, so a synthetic one is the
+	// only way to reach the new dispatch from package server_test (the
+	// validator itself is unexported).
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO core.template (kind, code, name, scope, usage) VALUES ('clinical_form','cf_v3_form','V3 Form','platform','insert')`); err != nil {
+		t.Fatalf("seed v3 template: %v", err)
+	}
+	var v3TemplateID string
+	if err := pool.QueryRow(ctx, `SELECT id::text FROM core.template WHERE code = 'cf_v3_form'`).Scan(&v3TemplateID); err != nil {
+		t.Fatalf("resolve v3 template: %v", err)
+	}
+	const cfV3Sections = `{"sections":[
+	  {"key":"anamnesis_info","label":"Informasi Anamnesis","kind":"radio_conditional",
+	   "options":[{"value":"autoanamnesis","label":"Autoanamnesis"},{"value":"alloanamnesis","label":"Alloanamnesis"}]},
+	  {"key":"antropometri","label":"Antropometri","kind":"antropometri"},
+	  {"key":"pemeriksaan_fisik","label":"Pemeriksaan Fisik","kind":"physical_exam"},
+	  {"key":"kesadaran","label":"Kesadaran","kind":"consciousness"},
+	  {"key":"rencana_tindak_lanjut","label":"Rencana Tindak Lanjut","kind":"rtl"},
+	  {"key":"rekomendasi","label":"Rekomendasi","kind":"rekomendasi"},
+	  {"key":"tanda_vital","label":"Tanda Vital","kind":"vitals"},
+	  {"key":"tindakan","label":"Tindakan","kind":"repeatable","fields":[
+	    {"key":"waktu","label":"Waktu","type":"time"},
+	    {"key":"tarif_snapshot","label":"Tarif","type":"number"},
+	    {"key":"cito","label":"Cito","type":"boolean"},
+	    {"key":"dokter","label":"Dokter","type":"text"},
+	    {"key":"tanggal","label":"Tanggal","type":"date"}]}
+	]}`
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO core.template_clinical_form (template_id, form_type, category, sections)
+		 VALUES ($1::uuid, 'cf_v3_form', 'soap', $2)`, v3TemplateID, cfV3Sections); err != nil {
+		t.Fatalf("seed v3 sections: %v", err)
+	}
+
+	// 513 points / 51 strokes for the guard limits (spec: ≤512 titik/stroke,
+	// ≤50 stroke/organ) — expectations computed from the spec limits.
+	manyPoints := `[{"points":[` + strings.Repeat(`{"x":0.1,"y":0.1},`, 513) + `{"x":0.2,"y":0.2}],"color":"#D92D20","width":3}]`
+	manyStrokes := `[` + strings.Repeat(`{"points":[{"x":0.1,"y":0.1}],"color":"#D92D20","width":3},`, 51) + `{"points":[{"x":0.2,"y":0.2}],"color":"#D92D20","width":3}]`
+
+	v3Cases := []struct{ name, section, value, wantErr string }{
+		// Valid — LITERAL spec §Bentuk nilai examples.
+		{"radio allo valid", "anamnesis_info",
+			`{"jenis":"alloanamnesis","informan":{"nama":"Bapak Sutoyo","hubungan":"orang_tua","alasan":"pasien anak"},"keandalan":"andal"}`, ""},
+		{"radio auto valid", "anamnesis_info", `{"jenis":"autoanamnesis"}`, ""},
+		{"antropometri valid", "antropometri",
+			`{"bb":62,"tb":158,"lk":null,"imt":24.8,"imt_kategori":"bb_lebih","var_tambahan":[{"variable":"","value":""}]}`, ""},
+		{"physical exam valid", "pemeriksaan_fisik",
+			`{"keadaan_umum":"sedang","organ":{"kepala":{"status":"tidak_ada"},"thorax":{"status":"ada_kelainan","keterangan":"Ronki basa halus kiri","strokes":[{"points":[{"x":0.42,"y":0.31}],"color":"#D92D20","width":3,"label":"A"}]},"genital_urogenital":{"status":"tidak_ada"}}}`, ""},
+		{"consciousness valid", "kesadaran",
+			`{"e":"4","v":"5","m":"6","gcs":15,"kategori":"compos_mentis","pupil":{"kiri_mm":3,"kanan_mm":3,"bentuk":"bulat","refleks_kiri":"cepat","refleks_kanan":"cepat"},"pupil_score":0,"gcs_p":15,"respons":"a"}`, ""},
+		{"rtl valid", "rencana_tindak_lanjut",
+			`{"moda":"kontrol_poliklinik","target_tanggal":"2026-11-13","kriteria_rujukan_darurat":"Demam >3 hari, sesak berat"}`, ""},
+		{"rekomendasi valid", "rekomendasi",
+			`{"teks":"Kontrol 7 hari, amoksisilin 500mg 3×1 habiskan","tanggal_kontrol":"2026-11-13"}`, ""},
+		{"tanda vital valid", "tanda_vital",
+			`{"td_sistolik":118,"td_diastolik":76,"nafas":22,"nadi":96,"suhu":38.2,"spo2":95,"spo2_scale":1,"oksigen":"udara_ruang","waktu_asesmen":"2026-11-06T08:15:00+07:00","kriteria":"rutin","news2_total":5}`, ""},
+		{"tindakan row valid", "tindakan",
+			`[{"waktu":"09:30","tarif_snapshot":150000,"cito":false,"dokter":"dr. X","tanggal":"2026-11-13"}]`, ""},
+		// Invalid — enum/bentuk/rentang violations.
+		{"radio jenis salah", "anamnesis_info", `{"jenis":"wawancara"}`,
+			"invalid value for section 'anamnesis_info'"},
+		{"radio allo tanpa informan", "anamnesis_info", `{"jenis":"alloanamnesis"}`,
+			"informan wajib diisi saat alloanamnesis"},
+		{"radio allo informan kosong", "anamnesis_info",
+			`{"jenis":"alloanamnesis","informan":{"nama":"","hubungan":"orang_tua"}}`,
+			"informan wajib diisi saat alloanamnesis"},
+		{"radio key asing", "anamnesis_info", `{"jenis":"autoanamnesis","foo":1}`,
+			"invalid value for section 'anamnesis_info'"},
+		{"antropometri bb 1000", "antropometri", `{"bb":1000,"tb":158}`,
+			"invalid value for section 'antropometri'"},
+		{"antropometri kategori salah", "antropometri", `{"bb":62,"tb":158,"imt_kategori":"gemuk"}`,
+			"invalid value for section 'antropometri'"},
+		{"physical organ asing", "pemeriksaan_fisik", `{"organ":{"kaki":{"status":"tidak_ada"}}}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"physical status salah", "pemeriksaan_fisik", `{"organ":{"kepala":{"status":"normal"}}}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"physical keadaan umum salah", "pemeriksaan_fisik", `{"keadaan_umum":"sehat"}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"stroke koordinat >1", "pemeriksaan_fisik",
+			`{"organ":{"thorax":{"status":"ada_kelainan","strokes":[{"points":[{"x":1.5,"y":0.1}],"color":"#D92D20","width":3}]}}}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"stroke width 6", "pemeriksaan_fisik",
+			`{"organ":{"thorax":{"status":"ada_kelainan","strokes":[{"points":[{"x":0.1,"y":0.1}],"color":"#D92D20","width":6}]}}}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"stroke label C", "pemeriksaan_fisik",
+			`{"organ":{"thorax":{"status":"ada_kelainan","strokes":[{"points":[{"x":0.1,"y":0.1}],"color":"#D92D20","width":3,"label":"C"}]}}}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"stroke >512 titik", "pemeriksaan_fisik",
+			`{"organ":{"thorax":{"status":"ada_kelainan","strokes":` + manyPoints + `}}}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"stroke >50 per organ", "pemeriksaan_fisik",
+			`{"organ":{"thorax":{"status":"ada_kelainan","strokes":` + manyStrokes + `}}}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"strokes di genital", "pemeriksaan_fisik",
+			`{"organ":{"genital_urogenital":{"status":"tidak_ada","strokes":[]}}}`,
+			"invalid value for section 'pemeriksaan_fisik'"},
+		{"consciousness t kecil", "kesadaran", `{"e":"t"}`,
+			"invalid value for section 'kesadaran'"},
+		{"consciousness T gcs terisi", "kesadaran", `{"e":"T","gcs":15,"kategori":null,"gcs_p":null}`,
+			"invalid value for section 'kesadaran'"},
+		{"consciousness pupil mm 10", "kesadaran",
+			`{"e":"4","v":"5","m":"6","pupil":{"kiri_mm":10,"kanan_mm":3,"refleks_kiri":"cepat","refleks_kanan":"cepat"}}`,
+			"invalid value for section 'kesadaran'"},
+		{"consciousness refleks salah", "kesadaran",
+			`{"e":"4","v":"5","m":"6","pupil":{"kiri_mm":3,"kanan_mm":3,"refleks_kiri":"cepat","refleks_kanan":"normal"}}`,
+			"invalid value for section 'kesadaran'"},
+		{"rtl moda salah", "rencana_tindak_lanjut", `{"moda":"kontrol_rumah"}`,
+			"invalid value for section 'rencana_tindak_lanjut'"},
+		{"rtl tanggal salah", "rencana_tindak_lanjut",
+			`{"moda":"kontrol_poliklinik","target_tanggal":"13/11/2026"}`,
+			"invalid value for section 'rencana_tindak_lanjut'"},
+		{"rekomendasi tanggal salah", "rekomendasi", `{"teks":"x","tanggal_kontrol":"besok"}`,
+			"invalid value for section 'rekomendasi'"},
+		{"tanda vital waktu bukan RFC3339", "tanda_vital",
+			`{"td_sistolik":118,"waktu_asesmen":"2026-11-06 08:15:00"}`,
+			"invalid value for section 'tanda_vital'"},
+		{"tanda vital spo2 101", "tanda_vital", `{"spo2":101}`,
+			"invalid value for section 'tanda_vital'"},
+		{"tanda vital kriteria salah", "tanda_vital", `{"kriteria":"lain"}`,
+			"invalid value for section 'tanda_vital'"},
+		{"tanda vital news2 21", "tanda_vital", `{"news2_total":21}`,
+			"invalid value for section 'tanda_vital'"},
+		{"tindakan waktu salah", "tindakan", `[{"waktu":"24:00"}]`,
+			"invalid value for section 'tindakan'"},
+		{"tindakan tarif string", "tindakan", `[{"tarif_snapshot":"150000"}]`,
+			"invalid value for section 'tindakan'"},
+		{"tindakan cito string", "tindakan", `[{"cito":"ya"}]`,
+			"invalid value for section 'tindakan'"},
+	}
+	for _, tc := range v3Cases {
+		t.Run("v3 "+tc.name, func(t *testing.T) {
+			rec, resp := post("cf_v3_form", sections(`"`+tc.section+`":`+tc.value))
+			if tc.wantErr == "" {
+				if rec.Code != http.StatusCreated {
+					t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+				}
+				return
+			}
+			if rec.Code != http.StatusBadRequest || resp["error"] != tc.wantErr {
+				t.Fatalf("want 400 %q, got %d %v", tc.wantErr, rec.Code, resp)
+			}
+		})
+	}
+	// Legacy vitals path on key tanda_vital must not change (v2 template
+	// ases_awal_perawat): pain_score 0–10 stays valid beside v3 fields.
+	rec, _ = post("ases_awal_perawat", sections(`"tanda_vital":{"sistolic":120,"pain_score":3}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("legacy tanda_vital pain_score = %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 // TestClinicalFormDraftAuthorOnly — PATCH/DELETE by another writer → 403.

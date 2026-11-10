@@ -95,6 +95,9 @@ var clinicalSectionKinds = map[string]bool{
 	"textarea": true, "text": true, "number": true, "select": true,
 	"vitals": true, "diagnosis": true, "date": true,
 	"repeatable": true, "calc": true,
+	// SOAP v3 kinds (spec 2026-11-10-cppt-pemeriksaan-v3 §Kontrak data).
+	"radio_conditional": true, "antropometri": true, "physical_exam": true,
+	"consciousness": true, "rtl": true, "rekomendasi": true,
 }
 
 // resolveClinicalFormTemplate picks the active clinical_form template for
@@ -231,6 +234,15 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 				return nil, false
 			}
 		case "vitals":
+			// STRICT v3 whitelist only for the tanda_vital section key (spec
+			// 2026-11-10-cppt-pemeriksaan-v3 §Bentuk nilai #10); other vitals
+			// sections (e.g. objective) keep the legacy path unchanged.
+			if d.Key == "tanda_vital" {
+				if !clinicalValidateVitalsV3(c, d.Key, rawVal) {
+					return nil, false
+				}
+				continue
+			}
 			var vitals map[string]float64
 			if err := json.Unmarshal(rawVal, &vitals); err != nil {
 				clinicalInvalidSection(c, d.Key)
@@ -284,6 +296,12 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 				// sign (persistSignDiagnoses — remedial 6536088, semantik
 				// fase 1: create/update menerima diagnoses bentuk apa pun).
 				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+		case "radio_conditional", "antropometri", "physical_exam", "consciousness", "rtl", "rekomendasi":
+			// SOAP v3 kinds (clinical_form_kinds.go) — dispatch per kind.
+			// Other kinds (calc) keep their legacy fall-through below.
+			if !clinicalValidateKindV3(c, d, rawVal) {
 				return nil, false
 			}
 		}
@@ -456,9 +474,28 @@ func clinicalCalcNumber(raw json.RawMessage) (float64, bool) {
 }
 
 // clinicalRepeatableFieldOk validates one repeatable row value against its
-// field def (spec 2a §6.2): text = string, select = string in options,
-// date = YYYY-MM-DD.
+// field def (spec 2a §6.2: text/select/date; v3 §Bentuk nilai #18: number =
+// json.Number, time = HH:MM, boolean = bool).
 func clinicalRepeatableFieldOk(raw json.RawMessage, fd clinicalRepeatableFieldDef) bool {
+	switch fd.Type {
+	case "number":
+		// json.Number would also accept a JSON string (it has string kind) —
+		// reject quoted values so `tarif_snapshot:"150000"` fails.
+		if len(raw) > 0 && raw[0] == '"' {
+			return false
+		}
+		var n json.Number
+		return json.Unmarshal(raw, &n) == nil
+	case "boolean":
+		var b bool
+		return json.Unmarshal(raw, &b) == nil
+	case "time":
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return false
+		}
+		return clinicalTimeRe.MatchString(s)
+	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return false
