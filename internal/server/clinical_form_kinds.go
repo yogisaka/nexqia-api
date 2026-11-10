@@ -6,8 +6,10 @@ package server
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -503,4 +505,280 @@ func clinicalValidateKindV3(c *gin.Context, d clinicalSectionDef, raw json.RawMe
 		return clinicalValidateRekomendasi(c, d.Key, raw)
 	}
 	return clinicalInvalidKind(c, d.Key)
+}
+
+// ── Calc consistency v3 (spec 2026-11-10-cppt-pemeriksaan-v3 §Validasi
+// server, §NEWS2) ──
+//
+// clinicalValidateCalcV3 is called from validateClinicalFormData AFTER the
+// per-kind shape validation: user-supplied calc values must equal the
+// recompute (mismatch → 400 "kalkulasi <field> tidak konsisten", pattern
+// clinical_form.go:349); partial inputs → the calc field must be null (null
+// is always accepted — the server only rejects mismatch; with complete inputs
+// a null value is FE's responsibility, spec: "server hanya menolak mismatch").
+
+// clinicalImtKategori: <18.5 kurus | 18.5–22.9 normal | 23–24.9 bb_lebih |
+// ≥25 obesitas (batas atas tiap rentang tertutup, spec §Bentuk nilai #11 /
+// KMK 509/2025 via ledger).
+func clinicalImtKategori(imt float64) string {
+	switch {
+	case imt < 18.5:
+		return "kurus"
+	case imt < 23:
+		return "normal"
+	case imt < 25:
+		return "bb_lebih"
+	default:
+		return "obesitas"
+	}
+}
+
+// clinicalGcsKategori: 15 compos_mentis | 13–14 somnolen | 9–12 sopor |
+// ≤8 koma (spec §Bentuk nilai #13).
+func clinicalGcsKategori(gcs int64) string {
+	switch {
+	case gcs >= 15:
+		return "compos_mentis"
+	case gcs >= 13:
+		return "somnolen"
+	case gcs >= 9:
+		return "sopor"
+	default:
+		return "koma"
+	}
+}
+
+// NEWS2 weights (spec §NEWS2 — satu-satunya sumber: ledger riset
+// 2026-11-06-cppt-pemeriksaan-riset.md §dataset line 29; server recompute,
+// TIDAK dikarang ulang).
+//
+// RR: ≤8:+3 · 9–11:+1 · 12–20:0 · 21–24:+2 · ≥25:+3
+func clinicalNEWS2RespRate(v float64) int {
+	switch {
+	case v <= 8:
+		return 3
+	case v <= 11:
+		return 1
+	case v <= 20:
+		return 0
+	case v <= 24:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// SpO₂ skala 1: ≥96:0 · 94–95:+1 · 92–93:+2 · ≤91:+3
+// SpO₂ skala 2: ≥97:0 · 94–96:+1 · 92–93:+2 · ≤91:+3
+func clinicalNEWS2SpO2(v float64, scale2 bool) int {
+	if scale2 {
+		switch {
+		case v >= 97:
+			return 0
+		case v >= 94:
+			return 1
+		case v >= 92:
+			return 2
+		default:
+			return 3
+		}
+	}
+	switch {
+	case v >= 96:
+		return 0
+	case v >= 94:
+		return 1
+	case v >= 92:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// O₂: udara_ruang:0 · tambahan:+2
+func clinicalNEWS2SupplementalO2(mode string) int {
+	if mode == "tambahan" {
+		return 2
+	}
+	return 0
+}
+
+// SBP: ≤90:+3 · 91–100:+2 · 101–199:0 · ≥200:+3
+func clinicalNEWS2SBP(v float64) int {
+	switch {
+	case v <= 90:
+		return 3
+	case v <= 100:
+		return 2
+	case v <= 199:
+		return 0
+	default:
+		return 3
+	}
+}
+
+// Nadi: ≤40:+3 · 41–50:+1 · 51–90:0 · 91–110:+1 · 111–130:+2 · ≥131:+3
+func clinicalNEWS2HeartRate(v float64) int {
+	switch {
+	case v <= 40:
+		return 3
+	case v <= 50:
+		return 1
+	case v <= 90:
+		return 0
+	case v <= 110:
+		return 1
+	case v <= 130:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// Suhu: ≤35.0:+3 · 35.1–36.0:+1 · 36.1–38.0:0 · 38.1–39.0:+1 · ≥39.1:+3
+func clinicalNEWS2Temp(v float64) int {
+	switch {
+	case v <= 35.0:
+		return 3
+	case v <= 36.0:
+		return 1
+	case v <= 38.0:
+		return 0
+	case v <= 39.0:
+		return 1
+	default:
+		return 3
+	}
+}
+
+// clinicalNEWS2Total recomputes the total from the 7 required inputs
+// (RR, SpO₂+scale, O₂, SBP, nadi, suhu) + ACVPU kesadaran.respons
+// (a=0, c|v|p|u=+3). Verified example (ledger): RR22=2, nadi96=1,
+// suhu38.2=1, SpO₂ 95 sk1=1, TD118=0, Alert=0 → 5.
+func clinicalNEWS2Total(rr, spo2, sbp, hr, temp float64, spo2Scale float64, oksigen, respons string) int {
+	total := clinicalNEWS2RespRate(rr) +
+		clinicalNEWS2SpO2(spo2, spo2Scale == 2) +
+		clinicalNEWS2SupplementalO2(oksigen) +
+		clinicalNEWS2SBP(sbp) +
+		clinicalNEWS2HeartRate(hr) +
+		clinicalNEWS2Temp(temp)
+	if respons != "" && respons != "a" {
+		total += 3
+	}
+	return total
+}
+
+// clinicalSectionMap parses one section value as a JSON object (nil bila
+// absen/kosong/tak terparse — calc pass runs after shape validation, so a
+// parse failure here cannot happen for validated kinds).
+func clinicalSectionMap(sections map[string]json.RawMessage, key string) map[string]json.RawMessage {
+	var m map[string]json.RawMessage
+	if raw, ok := sections[key]; ok && !clinicalSectionEmpty(raw) {
+		_ = json.Unmarshal(raw, &m)
+	}
+	return m
+}
+
+func clinicalValidateCalcV3(c *gin.Context, sections map[string]json.RawMessage) bool {
+	mismatch := func(field string) bool {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kalkulasi " + field + " tidak konsisten"})
+		return false
+	}
+
+	// antropometri: imt = round(bb/(tb/100)², 1) bila bb & tb ada;
+	// imt_kategori dari imt recompute.
+	if m := clinicalSectionMap(sections, "antropometri"); m != nil {
+		bb, bbFilled, _ := clinicalKindNumOpt(m, "bb")
+		tb, tbFilled, _ := clinicalKindNumOpt(m, "tb")
+		complete := bbFilled && tbFilled
+		expected := math.Round(bb/math.Pow(tb/100, 2)*10) / 10
+		if imt, filled, _ := clinicalKindNumOpt(m, "imt"); filled &&
+			(!complete || math.Abs(imt-expected) > 1e-9) {
+			return mismatch("imt")
+		}
+		if kat, filled, _ := clinicalKindStrOpt(m, "imt_kategori"); filled &&
+			(!complete || kat != clinicalImtKategori(expected)) {
+			return mismatch("imt_kategori")
+		}
+	}
+
+	// kesadaran: gcs = e+v+m (bila ketiganya numerik); kategori dari gcs;
+	// pupil_score = skor refleks (cepat=0, lambat=1, tidak_ada=2) kiri+kanan
+	// bila keduanya ada; gcs_p = gcs − pupil_score bila gcs ada.
+	if m := clinicalSectionMap(sections, "kesadaran"); m != nil {
+		numComp := func(field string) (int64, bool) {
+			s, filled, ok := clinicalKindStrOpt(m, field)
+			if !filled || !ok {
+				return 0, false
+			}
+			n, err := strconv.Atoi(s)
+			return int64(n), err == nil
+		}
+		e, eNum := numComp("e")
+		v, vNum := numComp("v")
+		mv, mNum := numComp("m")
+		gcsComplete := eNum && vNum && mNum
+		gcs := e + v + mv
+		if gcsVal, filled, _ := clinicalKindNumOpt(m, "gcs"); filled &&
+			(!gcsComplete || int64(gcsVal) != gcs) {
+			return mismatch("gcs")
+		}
+		if kat, filled, _ := clinicalKindStrOpt(m, "kategori"); filled &&
+			(!gcsComplete || kat != clinicalGcsKategori(gcs)) {
+			return mismatch("kategori")
+		}
+		reflScore := func(s string) int64 {
+			switch s {
+			case "lambat":
+				return 1
+			case "tidak_ada":
+				return 2
+			}
+			return 0 // "cepat"
+		}
+		expectedPS, psComplete := int64(0), false
+		if p := clinicalSectionMap(map[string]json.RawMessage{"kesadaran": m["pupil"]}, "kesadaran"); p != nil {
+			rl, rlFilled, _ := clinicalKindStrOpt(p, "refleks_kiri")
+			rr, rrFilled, _ := clinicalKindStrOpt(p, "refleks_kanan")
+			psComplete = rlFilled && rrFilled
+			if psComplete {
+				expectedPS = reflScore(rl) + reflScore(rr)
+			}
+		}
+		if ps, filled, _ := clinicalKindNumOpt(m, "pupil_score"); filled &&
+			(!psComplete || int64(ps) != expectedPS) {
+			return mismatch("pupil_score")
+		}
+		if gcsP, filled, _ := clinicalKindIntOpt(m, "gcs_p"); filled &&
+			(!gcsComplete || !psComplete || gcsP != gcs-expectedPS) {
+			return mismatch("gcs_p")
+		}
+	}
+
+	// tanda_vital: news2_total dihitung HANYA bila SEMUA 7 input ada
+	// (nafas, spo2, spo2_scale, oksigen, td_sistolik, nadi, suhu) +
+	// kesadaran.respons dari section lain pada raw form_data.
+	if m := clinicalSectionMap(sections, "tanda_vital"); m != nil {
+		news2, news2Filled, _ := clinicalKindIntOpt(m, "news2_total")
+		if news2Filled {
+			num := func(field string) (float64, bool) {
+				v, filled, ok := clinicalKindNumOpt(m, field)
+				return v, filled && ok
+			}
+			rr, rrOK := num("nafas")
+			spo2, spo2OK := num("spo2")
+			scale, scaleOK := num("spo2_scale")
+			sbp, sbpOK := num("td_sistolik")
+			hr, hrOK := num("nadi")
+			temp, tempOK := num("suhu")
+			oksigen, oksFilled, oksOK := clinicalKindStrOpt(m, "oksigen")
+			respons, respFilled, _ := clinicalKindStrOpt(clinicalSectionMap(sections, "kesadaran"), "respons")
+			scaleValid := scaleOK && (scale == 1 || scale == 2)
+			complete := rrOK && spo2OK && scaleValid && oksFilled && oksOK && sbpOK && hrOK && tempOK && respFilled
+			if !complete || news2 != int64(clinicalNEWS2Total(rr, spo2, sbp, hr, temp, scale, oksigen, respons)) {
+				return mismatch("news2_total")
+			}
+		}
+	}
+	return true
 }

@@ -610,6 +610,7 @@ func TestClinicalFormValidation(t *testing.T) {
 	  {"key":"rekomendasi","label":"Rekomendasi","kind":"rekomendasi"},
 	  {"key":"tanda_vital","label":"Tanda Vital","kind":"vitals"},
 	  {"key":"tindakan","label":"Tindakan","kind":"repeatable","fields":[
+	    {"key":"concept_id","label":"Konsep","type":"text"},
 	    {"key":"waktu","label":"Waktu","type":"time"},
 	    {"key":"tarif_snapshot","label":"Tarif","type":"number"},
 	    {"key":"cito","label":"Cito","type":"boolean"},
@@ -643,7 +644,10 @@ func TestClinicalFormValidation(t *testing.T) {
 		{"rekomendasi valid", "rekomendasi",
 			`{"teks":"Kontrol 7 hari, amoksisilin 500mg 3×1 habiskan","tanggal_kontrol":"2026-11-13"}`, ""},
 		{"tanda vital valid", "tanda_vital",
-			`{"td_sistolik":118,"td_diastolik":76,"nafas":22,"nadi":96,"suhu":38.2,"spo2":95,"spo2_scale":1,"oksigen":"udara_ruang","waktu_asesmen":"2026-11-06T08:15:00+07:00","kriteria":"rutin","news2_total":5}`, ""},
+			// news2_total harus null tanpa kesadaran.respons (calc parsial —
+			// plan Task 2); literal contoh lengkap (news2 5) di sub-test
+			// "v3 calc news2" di bawah.
+			`{"td_sistolik":118,"td_diastolik":76,"nafas":22,"nadi":96,"suhu":38.2,"spo2":95,"spo2_scale":1,"oksigen":"udara_ruang","waktu_asesmen":"2026-11-06T08:15:00+07:00","kriteria":"rutin","news2_total":null}`, ""},
 		{"tindakan row valid", "tindakan",
 			`[{"waktu":"09:30","tarif_snapshot":150000,"cito":false,"dokter":"dr. X","tanggal":"2026-11-13"}]`, ""},
 		// Invalid — enum/bentuk/rentang violations.
@@ -731,6 +735,135 @@ func TestClinicalFormValidation(t *testing.T) {
 			}
 		})
 	}
+	// ── v3 calc consistency (plan Task 2, spec §Validasi server + §NEWS2) ──
+	// Expectations computed from the contract definitions: imt =
+	// round(62/(158/100)²,1) = round(24.8357,1) = 24.8 → bb_lebih (23–24.9);
+	// gcs = 4+5+6 = 15 → compos_mentis; refleks lambat(1)+cepat(0) →
+	// pupil_score 1 → gcs_p = 15−1 = 14; NEWS2: RR22(+2)+nadi96(+1)+
+	// suhu38.2(+1)+SpO₂ 95 sk1(+1)+SBP118(0)+Alert(0)+udara(0) = 5.
+	t.Run("v3 calc antropometri", func(t *testing.T) {
+		rec, _ = post("cf_v3_form", sections(`"antropometri":{"bb":62,"tb":158,"imt":24.8,"imt_kategori":"bb_lebih"}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("antro spec example = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, resp = post("cf_v3_form", sections(`"antropometri":{"bb":62,"tb":158,"imt":24.9,"imt_kategori":"bb_lebih"}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt tidak konsisten" {
+			t.Fatalf("imt mismatch = %d %v", rec.Code, resp)
+		}
+		rec, resp = post("cf_v3_form", sections(`"antropometri":{"bb":62,"tb":158,"imt":24.8,"imt_kategori":"normal"}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt_kategori tidak konsisten" {
+			t.Fatalf("imt_kategori mismatch = %d %v", rec.Code, resp)
+		}
+		// Parsial (tb saja): imt null diterima, terisi → 400.
+		rec, _ = post("cf_v3_form", sections(`"antropometri":{"tb":158,"imt":null,"imt_kategori":null}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("antro partial null = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, resp = post("cf_v3_form", sections(`"antropometri":{"tb":158,"imt":24.8}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi imt tidak konsisten" {
+			t.Fatalf("antro partial filled = %d %v", rec.Code, resp)
+		}
+	})
+	t.Run("v3 calc kesadaran", func(t *testing.T) {
+		const gcsFull = `"kesadaran":{"e":"4","v":"5","m":"6","gcs":15,"kategori":"compos_mentis",` +
+			`"pupil":{"kiri_mm":3,"kanan_mm":3,"refleks_kiri":"lambat","refleks_kanan":"cepat"},` +
+			`"pupil_score":1,"gcs_p":14,"respons":"a"}`
+		rec, _ = post("cf_v3_form", sections(gcsFull))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("gcs spec example = %d: %s", rec.Code, rec.Body.String())
+		}
+		for _, tc := range []struct{ val, wantErr string }{
+			{`{"gcs":14}`, "kalkulasi gcs tidak konsisten"},
+			{`{"e":"4","v":"5","m":"6","gcs":14}`, "kalkulasi gcs tidak konsisten"},
+			{`{"e":"4","v":"5","m":"6","gcs":14,"kategori":"compos_mentis","respons":"a"}`, "kalkulasi gcs tidak konsisten"},
+			{`{"e":"4","v":"5","m":"6","gcs":15,"kategori":"somnolen","respons":"a"}`, "kalkulasi kategori tidak konsisten"},
+			{`{"e":"4","v":"5","m":"6","gcs":15,"kategori":"compos_mentis","pupil":{"refleks_kiri":"lambat","refleks_kanan":"cepat"},"pupil_score":2,"gcs_p":14,"respons":"a"}`, "kalkulasi pupil_score tidak konsisten"},
+			{`{"e":"4","v":"5","m":"6","gcs":15,"kategori":"compos_mentis","pupil":{"refleks_kiri":"lambat","refleks_kanan":"cepat"},"pupil_score":1,"gcs_p":15,"respons":"a"}`, "kalkulasi gcs_p tidak konsisten"},
+		} {
+			rec, resp = post("cf_v3_form", sections(`"kesadaran":`+tc.val))
+			if rec.Code != http.StatusBadRequest || resp["error"] != tc.wantErr {
+				t.Fatalf("want 400 %q, got %d %v body=%s", tc.wantErr, rec.Code, resp, rec.Body.String())
+			}
+		}
+		// Parsial: e saja + null diterima.
+		rec, _ = post("cf_v3_form", sections(`"kesadaran":{"e":"4","gcs":null,"kategori":null,"pupil_score":null,"gcs_p":null}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("gcs partial null = %d: %s", rec.Code, rec.Body.String())
+		}
+		// "T": gcs/kategori/gcs_p null diterima; gcs terisi → 400 (bentuk).
+		rec, _ = post("cf_v3_form", sections(`"kesadaran":{"e":"T","v":"T","m":"T","gcs":null,"kategori":null,"gcs_p":null,"pupil_score":null}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("gcs T null = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, resp = post("cf_v3_form", sections(`"kesadaran":{"e":"T","gcs":15}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'kesadaran'" {
+			t.Fatalf("gcs T filled = %d %v", rec.Code, resp)
+		}
+	})
+	t.Run("v3 calc news2", func(t *testing.T) {
+		const news2Vitals = `"tanda_vital":{"td_sistolik":118,"td_diastolik":76,"nafas":22,"nadi":96,` +
+			`"suhu":38.2,"spo2":95,"spo2_scale":1,"oksigen":"udara_ruang","news2_total":5}`
+		// Contoh ledger lengkap (dengan kesadaran.respons) → 5, diterima.
+		rec, _ = post("cf_v3_form", sections(news2Vitals, `"kesadaran":{"respons":"a"}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("news2 spec example = %d: %s", rec.Code, rec.Body.String())
+		}
+		// Mismatch 6 → 400.
+		rec, resp = post("cf_v3_form", sections(`"tanda_vital":{"td_sistolik":118,"td_diastolik":76,"nafas":22,"nadi":96,"suhu":38.2,"spo2":95,"spo2_scale":1,"oksigen":"udara_ruang","news2_total":6}`, `"kesadaran":{"respons":"a"}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi news2_total tidak konsisten" {
+			t.Fatalf("news2 mismatch = %d %v", rec.Code, resp)
+		}
+		// Parsial (kesadaran absen): null diterima, terisi → 400.
+		rec, _ = post("cf_v3_form", sections(`"tanda_vital":{"td_sistolik":118,"nafas":22,"nadi":96,"suhu":38.2,"spo2":95,"spo2_scale":1,"oksigen":"udara_ruang","news2_total":null}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("news2 partial null = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, resp = post("cf_v3_form", sections(`"tanda_vital":{"td_sistolik":118,"nafas":22,"nadi":96,"suhu":38.2,"spo2":95,"spo2_scale":1,"oksigen":"udara_ruang","news2_total":5}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "kalkulasi news2_total tidak konsisten" {
+			t.Fatalf("news2 partial filled = %d %v", rec.Code, resp)
+		}
+	})
+	t.Run("v3 tindakan concept", func(t *testing.T) {
+		// Seed ICD-9-CM system + concept (pattern price_list_test.go:496-511).
+		var systemID string
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO terminology.code_system (system_uri, name, version)
+			 VALUES ('http://hl7.org/fhir/sid/icd-9-cm', 'ICD-9-CM', 'test')
+			 ON CONFLICT (system_uri) DO UPDATE SET name = EXCLUDED.name
+			 RETURNING id::text`).Scan(&systemID); err != nil {
+			t.Fatalf("seed icd-9-cm system: %v", err)
+		}
+		conceptCode := fmt.Sprintf("CF9-%06d", cfNext())
+		var conceptID string
+		if err := pool.QueryRow(ctx,
+			"INSERT INTO terminology.concept (code_system_id, code, display) VALUES ($1, $2, 'Test procedure') RETURNING id::text",
+			systemID, conceptCode).Scan(&conceptID); err != nil {
+			t.Fatalf("seed concept: %v", err)
+		}
+		// Concept aktif → 201.
+		rec, _ = post("cf_v3_form", sections(`"tindakan":[{"concept_id":"`+conceptID+`","dokter":"dr. X"}]`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("concept aktif = %d: %s", rec.Code, rec.Body.String())
+		}
+		// Baris tanpa concept_id (draft parsial) → tetap 201.
+		rec, _ = post("cf_v3_form", sections(`"tindakan":[{"dokter":"dr. X"}]`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("concept kosong = %d: %s", rec.Code, rec.Body.String())
+		}
+		// Non-aktif → 400 pesan kontrak.
+		if _, err := pool.Exec(ctx, `UPDATE terminology.concept SET is_active = false WHERE id = $1::uuid`, conceptID); err != nil {
+			t.Fatalf("deactivate concept: %v", err)
+		}
+		rec, resp = post("cf_v3_form", sections(`"tindakan":[{"concept_id":"`+conceptID+`","dokter":"dr. X"}]`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "tindakan harus konsep ICD-9-CM aktif" {
+			t.Fatalf("concept non-aktif = %d %v", rec.Code, resp)
+		}
+		// Non-UUID → 400.
+		rec, resp = post("cf_v3_form", sections(`"tindakan":[{"concept_id":"bukan-uuid","dokter":"dr. X"}]`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'tindakan'" {
+			t.Fatalf("concept non-uuid = %d %v", rec.Code, resp)
+		}
+	})
 	// Legacy vitals path on key tanda_vital must not change (v2 template
 	// ases_awal_perawat): pain_score 0–10 stays valid beside v3 fields.
 	rec, _ = post("ases_awal_perawat", sections(`"tanda_vital":{"sistolic":120,"pain_score":3}`))

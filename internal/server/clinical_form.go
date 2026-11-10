@@ -392,7 +392,70 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 			return nil, false
 		}
 	}
+	// SOAP v3 calc consistency (spec 2026-11-10-cppt-pemeriksaan-v3 §Validasi
+	// server): imt/imt_kategori, gcs/kategori/pupil_score/gcs_p,
+	// news2_total — recompute vs user value after shape validation.
+	if !clinicalValidateCalcV3(c, payload.Sections) {
+		return nil, false
+	}
 	return warnings, true
+}
+
+// validateTindakanConcepts checks every sections.tindakan row with a
+// non-empty concept_id against the ICD-9-CM code system (spec
+// 2026-11-10-cppt-pemeriksaan-v3 §Bentuk nilai #18; query EXISTS persis
+// tariff.go:82-86). Called from Create/Update handlers AFTER
+// validateClinicalFormData succeeded — the validator has no tx, the handler
+// runs ambient RunRequestTx so a 400 auto-rolls back. Rows without
+// concept_id (partial draft) are accepted. The returned error message is the
+// contract 400 message; DB errors are written as 500 inside (responded → the
+// caller must not overwrite, see c.Writer.Written()).
+func validateTindakanConcepts(c *gin.Context, raw json.RawMessage) error {
+	var payload struct {
+		Sections map[string]json.RawMessage `json:"sections"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
+		return nil
+	}
+	rawT, ok := payload.Sections["tindakan"]
+	if !ok || clinicalSectionEmpty(rawT) {
+		return nil
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(rawT, &rows); err != nil {
+		return errors.New("invalid value for section 'tindakan'")
+	}
+	for _, row := range rows {
+		rawCID, present := row["concept_id"]
+		if !present || string(rawCID) == "null" {
+			continue
+		}
+		var conceptIDStr string
+		if err := json.Unmarshal(rawCID, &conceptIDStr); err != nil {
+			return errors.New("invalid value for section 'tindakan'")
+		}
+		if conceptIDStr == "" {
+			continue
+		}
+		id, okID := parseUUID(conceptIDStr)
+		if !okID {
+			return errors.New("invalid value for section 'tindakan'")
+		}
+		var exists bool
+		err := TxFromContext(c).QueryRow(c.Request.Context(), `
+			SELECT EXISTS(SELECT 1 FROM terminology.concept ct
+			JOIN terminology.code_system cs ON cs.id = ct.code_system_id
+			WHERE ct.id = $1 AND ct.is_active AND ct.is_selectable AND cs.system_uri = $2)`,
+			id, icd9cmSystemURI).Scan(&exists)
+		if err != nil {
+			respondInternalError(c, err)
+			return err
+		}
+		if !exists {
+			return errors.New("tindakan harus konsep ICD-9-CM aktif")
+		}
+	}
+	return nil
 }
 
 // clinicalCalcInputs reads the current values of a calc definition's inputs
@@ -661,6 +724,12 @@ func CreateClinicalFormHandler(c *gin.Context) {
 	if len(formData) == 0 {
 		formData = json.RawMessage(`{"sections":{}}`)
 	}
+	if err := validateTindakanConcepts(c, formData); err != nil && !c.Writer.Written() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else if err != nil {
+		return
+	}
 	entry, err := q.CreateClinicalFormInstance(ctx, sqlcgen.CreateClinicalFormInstanceParams{
 		CompanyID: AuthCompanyID(c), MerchantID: merchantID, AdmissionID: admissionID,
 		FormType: req.FormType, TemplateID: tpl.TemplateID, TemplateVersion: tpl.Version,
@@ -850,6 +919,12 @@ func UpdateClinicalFormHandler(c *gin.Context) {
 	}
 	warnings, okV := validateClinicalFormData(c, entry.FormType, defs, req.FormData)
 	if !okV {
+		return
+	}
+	if err := validateTindakanConcepts(c, req.FormData); err != nil && !c.Writer.Written() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else if err != nil {
 		return
 	}
 	updated, err := q.UpdateClinicalFormInstanceDraft(ctx, sqlcgen.UpdateClinicalFormInstanceDraftParams{
