@@ -443,3 +443,212 @@ func TestClinicalCompleteness(t *testing.T) {
 		t.Fatalf("(perm) viewer = %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestClinicalCompletenessAdmissionMode — admission-mode enrichment (plan
+// 2026-11-11-cppt-revisi-a-zona-atas Task 1, spec §4.3): every check gains
+// who/at/detail, a 6th "alergi" check appears, and the date-mode response
+// stays WITHOUT the new fields (5 checks, byte-identical shape).
+// Expectations come from the contract literals, not from handler output:
+// soap detail = "Subjektif <s>/2 · Objektif <o>/1 · Assessment <a>/1 ·
+// Plan <p>/1" (S: keluhan_utama trim≠"" + anamnesis_info terisi; O: ≥1 dari
+// tanda_vital/pemeriksaan_fisik terisi; A: ≥1 diagnosa; P: rtl.moda terisi);
+// alergi detail = "<zat> (<reaksi>)" join ", " maks 3 + "+<n> lainnya";
+// masters win over soap rows (who "master", at null).
+func TestClinicalCompletenessAdmissionMode(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := newTestRouter(t, ctx, pool)
+	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "cam")
+	cdSeedICD11(t, ctx, pool)
+	personID, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "cam")
+	// Second person/admission WITHOUT master allergies → soap-only alergi case.
+	_, admission2ID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "cam2")
+
+	// Viewer token = rate-limit bucket sendiri (pola TestClinicalCompleteness).
+	viewer := cfSeedUserWithPerms(t, ctx, pool, router, companyID, merchantID, "cf.cam.viewer", server.PermClinicalRecordView)
+	path := "/api/v1/clinical/completeness"
+	get := func(token, query string) []any {
+		rec, resp := cfDo(t, router, http.MethodGet, path+query, token, companyID, merchantID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", query, rec.Code, rec.Body.String())
+		}
+		return resp["data"].([]any)
+	}
+	findCheck := func(row map[string]any, key string) map[string]any {
+		for _, c := range row["checks"].([]any) {
+			chk := c.(map[string]any)
+			if chk["key"] == key {
+				return chk
+			}
+		}
+		t.Fatalf("check %s missing in %v", key, row["checks"])
+		return nil
+	}
+	rfc := func(v any) time.Time {
+		t.Helper()
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("at = %v, want RFC3339 string", v)
+		}
+		at, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatalf("at %q not RFC3339: %v", s, err)
+		}
+		return at
+	}
+
+	// (a) Fresh visit: 6 checks, all with the who/at/detail keys; alergi
+	// incomplete with the contract literal detail; diagnosis/resume literals
+	// always present; form checks without forms → who/at/detail null.
+	row := get(viewer, "?admission_id="+admissionID)[0].(map[string]any)
+	checks := row["checks"].([]any)
+	if len(checks) != 6 {
+		t.Fatalf("(a) checks = %d, want 6", len(checks))
+	}
+	aler := findCheck(row, "alergi")
+	if aler["status"] != "incomplete" || aler["label"] != "Catatan alergi" || aler["who"] != nil ||
+		aler["at"] != nil || aler["detail"] != "Belum ada alergi tercatat" {
+		t.Fatalf("(a) alergi = %v", aler)
+	}
+	if chk := findCheck(row, "diagnosis"); chk["detail"] != "Wajib utk TTE (PMK 24/2022 Ps. 46) — kosong = TTE diblok" ||
+		chk["who"] != nil || chk["at"] != nil {
+		t.Fatalf("(a) diagnosis = %v", chk)
+	}
+	if chk := findCheck(row, "resume_rajal"); chk["detail"] != "Diisi di tab Resume & Pulang sebelum discharge" {
+		t.Fatalf("(a) resume = %v", chk)
+	}
+	if chk := findCheck(row, "countersign"); chk["status"] != "complete" || chk["who"] != nil || chk["at"] != nil || chk["detail"] != nil {
+		t.Fatalf("(a) countersign = %v", chk)
+	}
+	for _, key := range []string{"ases_awal_perawat", "soap_dokter"} {
+		if chk := findCheck(row, key); chk["who"] != nil || chk["at"] != nil || chk["detail"] != nil {
+			t.Fatalf("(a) %s = %v, want who/at/detail null", key, chk)
+		}
+	}
+
+	// (b) 4 master allergies → complete, who "master", at null, detail =
+	// 3 items + "+1 lainnya" (contract join rule; query orders by
+	// recorded_at DESC → pinned timestamps fix the item order).
+	for i, al := range [][2]string{{"Sulfa", "ruam"}, {"Telur", "gatal"}, {"Aspirin", "sesak"}, {"Kacang", "benjol"}} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO core.patient_allergy (company_id, person_id, allergy_type, substance_name, reaction, is_active, recorded_at)
+			 VALUES ($1, $2, $3, $4, $5, true, $6)`,
+			companyID, personID, []string{"drug", "food", "drug", "food"}[i], al[0], al[1],
+			time.Now().Add(-time.Duration(i)*time.Hour)); err != nil {
+			t.Fatalf("(b) seed master allergy %s: %v", al[0], err)
+		}
+	}
+	row = get(viewer, "?admission_id="+admissionID)[0].(map[string]any)
+	aler = findCheck(row, "alergi")
+	if aler["status"] != "complete" || aler["who"] != "master" || aler["at"] != nil ||
+		aler["detail"] != "Sulfa (ruam), Telur (gatal), Aspirin (sesak), +1 lainnya" {
+		t.Fatalf("(b) alergi = %v", aler)
+	}
+
+	// (c) soap_dokter draft: S keluhan+jenis terisi, tanda_vital terisi,
+	// diagnosa 1 entry, rtl kosong → detail "Subjektif 2/2 · Objektif 1/1 ·
+	// Assessment 1/1 · Plan 0/1" (contract example); who = pengisi via
+	// GetUserDisplayName (non-null), at = filled_at RFC3339; master alergi
+	// wins over the soap alergi row.
+	camSoap := `{"sections":{
+	  "anamnesis_info":{"jenis":"autoanamnesis"},
+	  "keluhan_utama":"Demam 3 hari.",
+	  "tanda_vital":{"nafas":22},
+	  "diagnosa":{"narrative":"ISPA","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"manual","map_set":"icd10-icd11-map"},"suspect":false}]},
+	  "alergi":[{"pemicu":"Seafood","jenis":"food","reaksi":"Urtikaria"}]
+	}}`
+	soapID := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, camSoap)
+	row = get(viewer, "?admission_id="+admissionID)[0].(map[string]any)
+	chk := findCheck(row, "soap_dokter")
+	if chk["status"] != "incomplete" || chk["detail"] != "Subjektif 2/2 · Objektif 1/1 · Assessment 1/1 · Plan 0/1" ||
+		chk["who"] == nil || rfc(chk["at"]).IsZero() {
+		t.Fatalf("(c) soap = %v", chk)
+	}
+
+	// (d) Sign the draft → at switches to signed_at, detail unchanged shape.
+	if rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+soapID+"/sign", token, companyID, merchantID,
+		map[string]any{"password": ownerPassword}); rec.Code != http.StatusOK {
+		t.Fatalf("(d) sign soap = %d: %s", rec.Code, rec.Body.String())
+	}
+	row = get(viewer, "?admission_id="+admissionID)[0].(map[string]any)
+	chk = findCheck(row, "soap_dokter")
+	if chk["status"] != "complete" || rfc(chk["at"]).IsZero() || chk["who"] == nil {
+		t.Fatalf("(d) signed soap = %v", chk)
+	}
+
+	// (e) Nurse entry signed + counter-signed → countersign detail ends with
+	// " — selesai" and at = counter_signed_at.
+	nurseData := `{"sections":{"keluhan":"Pusing sejak pagi."}}`
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_awal_perawat", "form_data": cfRawJSON(t, nurseData),
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("(e) create nurse = %d: %s", rec.Code, rec.Body.String())
+	}
+	nurseID := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+	if rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+nurseID+"/sign", token, companyID, merchantID,
+		map[string]any{"password": ownerPassword}); rec.Code != http.StatusOK {
+		t.Fatalf("(e) sign nurse = %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms/"+nurseID+"/countersign", token, companyID, merchantID,
+		map[string]any{"password": ownerPassword}); rec.Code != http.StatusOK {
+		t.Fatalf("(e) countersign nurse = %d: %s", rec.Code, rec.Body.String())
+	}
+	row = get(viewer, "?admission_id="+admissionID)[0].(map[string]any)
+	chk = findCheck(row, "countersign")
+	if chk["status"] != "complete" || chk["at"] == nil || rfc(chk["at"]).IsZero() {
+		t.Fatalf("(e) countersign = %v", chk)
+	}
+	if detail, ok := chk["detail"].(string); !ok || !strings.HasSuffix(detail, " — selesai") {
+		t.Fatalf("(e) countersign detail = %v, want '<nama> — selesai'", chk["detail"])
+	}
+
+	// (f) soap-only alergi (person cam2 has no master allergy) → complete,
+	// who null, detail "<zat> (<reaksi>)".
+	cfCreateDraft(t, router, token, companyID, merchantID, admission2ID, camSoap)
+	row = get(viewer, "?admission_id="+admission2ID)[0].(map[string]any)
+	aler = findCheck(row, "alergi")
+	if aler["status"] != "complete" || aler["who"] != nil || aler["at"] != nil || aler["detail"] != "Seafood (Urtikaria)" {
+		t.Fatalf("(f) alergi = %v", aler)
+	}
+
+	// (g) Date mode stays byte-identical: 5 checks, no who/at/detail keys
+	// anywhere in the response.
+	var tz string
+	if err := pool.QueryRow(ctx,
+		"SELECT timezone FROM core.merchant WHERE id = $1::uuid", merchantID).Scan(&tz); err != nil {
+		t.Fatalf("read merchant timezone: %v", err)
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		t.Fatalf("load tz %s: %v", tz, err)
+	}
+	y, m, d := time.Now().In(loc).Date()
+	dateStr := fmt.Sprintf("%04d-%02d-%02d", y, m, d)
+	rows := get(viewer, "?date_from="+dateStr+"&date_to="+dateStr)
+	var mainRow map[string]any
+	for _, r := range rows {
+		if rm := r.(map[string]any); rm["admission_id"] == admissionID {
+			mainRow = rm
+		}
+	}
+	if mainRow == nil {
+		t.Fatalf("(g) admission row missing in date mode (%d rows)", len(rows))
+	}
+	for _, bad := range []string{"who", "detail"} {
+		if _, present := mainRow[bad]; present {
+			t.Fatalf("(g) date-mode row carries %q: %v", bad, mainRow)
+		}
+	}
+	if dmChecks, ok := mainRow["checks"].([]any); !ok || len(dmChecks) != 5 {
+		t.Fatalf("(g) date-mode checks = %v, want 5", mainRow["checks"])
+	}
+	for _, c := range mainRow["checks"].([]any) {
+		chk := c.(map[string]any)
+		for _, bad := range []string{"who", "at", "detail"} {
+			if _, present := chk[bad]; present {
+				t.Fatalf("(g) date-mode check carries %q: %v", bad, chk)
+			}
+		}
+	}
+}

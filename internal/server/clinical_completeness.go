@@ -9,7 +9,10 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -104,6 +107,253 @@ func computeCompletenessChecks(forms []sqlcgen.ClinicalFormFormInstance, diagnos
 		}
 	}
 	return checks, overall
+}
+
+// ── admission-mode enrichment (spec 2026-11-11-cppt-pemeriksaan-revisi §4.3)
+// who/at/detail per check + the 6th "alergi" check. Admission mode ONLY — the
+// date/board response stays byte-identical. Names come from the existing
+// GetUserDisplayName query (pattern clinical_board_preview.go); the
+// physicianName row fallback is FORBIDDEN (user decision 2026-11-11: risk of
+// mis-attributing the filler in the medical record).
+
+// completenessDisplayName resolves a user display name; missing/NULL user →
+// JSON null (FE renders an informative placeholder).
+func completenessDisplayName(ctx context.Context, q *sqlcgen.Queries, id pgtype.UUID) any {
+	if !id.Valid {
+		return nil
+	}
+	name, err := q.GetUserDisplayName(ctx, id)
+	if err != nil {
+		return nil
+	}
+	return name
+}
+
+// completenessFilled reports whether a raw JSON value is non-empty ("terisi"):
+// string trim ≠ "", number/bool non-null, array with ≥1 non-empty item,
+// object with ≥1 non-empty field; null/missing/invalid → false.
+func completenessFilled(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t) != ""
+	case []any:
+		for _, item := range t {
+			b, _ := json.Marshal(item)
+			if completenessFilled(b) {
+				return true
+			}
+		}
+		return false
+	case map[string]any:
+		for _, val := range t {
+			b, _ := json.Marshal(val)
+			if completenessFilled(b) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+// completenessSoapDetail renders the S/O/A/P snapshot of one soap_dokter
+// form_data — the FE tabCompleteness rules (PemeriksaanTab.tsx:175-186):
+// S d=2 (keluhan_utama string filled, anamnesis_info object filled), O d=1
+// (tanda_vital or pemeriksaan_fisik filled), A d=1 (≥1 diagnosa entry),
+// P d=1 (rencana_tindak_lanjut.moda filled).
+func completenessSoapDetail(form []byte) any {
+	var body struct {
+		Sections map[string]json.RawMessage `json:"sections"`
+	}
+	if err := json.Unmarshal(form, &body); err != nil {
+		return nil
+	}
+	sec := body.Sections
+	s := 0
+	if completenessFilled(sec["keluhan_utama"]) {
+		s++
+	}
+	if completenessFilled(sec["anamnesis_info"]) {
+		s++
+	}
+	o := 0
+	if completenessFilled(sec["tanda_vital"]) || completenessFilled(sec["pemeriksaan_fisik"]) {
+		o++
+	}
+	a := 0
+	var dx struct {
+		Diagnoses []json.RawMessage `json:"diagnoses"`
+	}
+	if err := json.Unmarshal(sec["diagnosa"], &dx); err == nil && len(dx.Diagnoses) > 0 {
+		a++
+	}
+	p := 0
+	var rtl map[string]json.RawMessage
+	if err := json.Unmarshal(sec["rencana_tindak_lanjut"], &rtl); err == nil && completenessFilled(rtl["moda"]) {
+		p++
+	}
+	return fmt.Sprintf("Subjektif %d/2 · Objektif %d/1 · Assessment %d/1 · Plan %d/1", s, o, a, p)
+}
+
+// completenessAllergyDetail joins "<zat> (<reaksi>)" with ", ", max 3 items,
+// then "+<n> lainnya".
+func completenessAllergyDetail(items []string) string {
+	if len(items) > 3 {
+		return strings.Join(items[:3], ", ") + fmt.Sprintf(", +%d lainnya", len(items)-3)
+	}
+	return strings.Join(items, ", ")
+}
+
+// enrichAdmissionChecks adds who/at/detail to each of the 5 base checks and
+// appends the 6th "alergi" check, then recomputes overall over the 6 checks.
+// who/at only come from data already joined by the board queries (forms
+// fields + GetUserDisplayName on filled_by/counter_signed_by).
+func enrichAdmissionChecks(ctx context.Context, q *sqlcgen.Queries, checks []gin.H,
+	forms []sqlcgen.ClinicalFormFormInstance, category map[string]string, personID pgtype.UUID,
+) ([]gin.H, string, error) {
+	// Mirror computeCompletenessChecks form selection: first signed wins,
+	// else the latest draft.
+	firstSigned := map[string]*sqlcgen.ClinicalFormFormInstance{}
+	lastDraft := map[string]*sqlcgen.ClinicalFormFormInstance{}
+	for i := range forms {
+		f := &forms[i]
+		if f.Status == "signed" && firstSigned[f.FormType] == nil {
+			firstSigned[f.FormType] = f
+		}
+		if f.Status == "draft" {
+			lastDraft[f.FormType] = f
+		}
+	}
+	pick := func(formType string) *sqlcgen.ClinicalFormFormInstance {
+		if f := firstSigned[formType]; f != nil {
+			return f
+		}
+		return lastDraft[formType]
+	}
+
+	for _, chk := range checks {
+		key, _ := chk["key"].(string)
+		var who, at, detail any
+		switch key {
+		case "ases_awal_perawat", "soap_dokter", "resume_rajal":
+			if f := pick(key); f != nil {
+				who = completenessDisplayName(ctx, q, f.FilledBy)
+				if f.Status == "signed" {
+					at = tsJSON(f.SignedAt)
+				} else {
+					at = tsJSON(f.FilledAt)
+				}
+				switch key {
+				case "ases_awal_perawat":
+					if f.Status != "signed" {
+						detail = "Draf perawat belum ditandatangani"
+					}
+				case "soap_dokter":
+					detail = completenessSoapDetail(f.FormData)
+				case "resume_rajal":
+					detail = "Diisi di tab Resume & Pulang sebelum discharge"
+				}
+			} else if key == "resume_rajal" {
+				detail = "Diisi di tab Resume & Pulang sebelum discharge"
+			}
+		case "diagnosis":
+			detail = "Wajib utk TTE (PMK 24/2022 Ps. 46) — kosong = TTE diblok"
+		case "countersign":
+			// Counter-signer of the latest counter-signed entry answers who;
+			// contract pins at = counter_signed_at + "<nama> — selesai".
+			var last *sqlcgen.ClinicalFormFormInstance
+			for i := range forms {
+				f := &forms[i]
+				if f.Status == "signed" && f.CounterSignedAt.Valid &&
+					completenessCountersignCategories[category[f.FormType]] {
+					last = f
+				}
+			}
+			if last != nil {
+				who = completenessDisplayName(ctx, q, last.CounterSignedBy)
+				at = tsJSON(last.CounterSignedAt)
+				if name, ok := who.(string); ok {
+					detail = name + " — selesai"
+				}
+			}
+		}
+		chk["who"], chk["at"], chk["detail"] = who, at, detail
+	}
+
+	// 6th check "alergi": complete when the master has ≥1 active allergy OR
+	// the admission soap_dokter carries ≥1 alergi row. Master wins the
+	// detail/who rendering.
+	masterRows, err := q.ListPatientAllergiesByPerson(ctx, personID)
+	if err != nil {
+		return nil, "", err
+	}
+	masterItems := make([]string, 0, len(masterRows))
+	for _, a := range masterRows {
+		if a.Reaction.Valid && a.Reaction.String != "" {
+			masterItems = append(masterItems, a.SubstanceName+" ("+a.Reaction.String+")")
+		} else {
+			masterItems = append(masterItems, a.SubstanceName)
+		}
+	}
+	soapItems := []string{}
+	for _, f := range forms {
+		if f.FormType != "soap_dokter" {
+			continue
+		}
+		var body struct {
+			Sections struct {
+				Alergi []struct {
+					Pemicu string `json:"pemicu"`
+					Reaksi string `json:"reaksi"`
+				} `json:"alergi"`
+			} `json:"sections"`
+		}
+		if err := json.Unmarshal(f.FormData, &body); err != nil {
+			continue
+		}
+		for _, r := range body.Sections.Alergi {
+			if strings.TrimSpace(r.Pemicu) == "" {
+				continue
+			}
+			item := r.Pemicu
+			if strings.TrimSpace(r.Reaksi) != "" {
+				item += " (" + r.Reaksi + ")"
+			}
+			soapItems = append(soapItems, item)
+		}
+	}
+	aler := gin.H{"key": "alergi", "label": "Catatan alergi"}
+	var who, at, detail any
+	switch {
+	case len(masterItems) > 0:
+		aler["status"] = "complete"
+		who, detail = "master", completenessAllergyDetail(masterItems)
+	case len(soapItems) > 0:
+		aler["status"] = "complete"
+		detail = completenessAllergyDetail(soapItems)
+	default:
+		aler["status"] = "incomplete"
+		detail = "Belum ada alergi tercatat"
+	}
+	aler["who"], aler["at"], aler["detail"] = who, at, detail
+	checks = append(checks, aler)
+
+	overall := "lengkap"
+	for _, chk := range checks {
+		if s := chk["status"].(string); s != "complete" {
+			overall = "belum_lengkap"
+			break
+		}
+	}
+	return checks, overall, nil
 }
 
 // GetClinicalCompletenessHandler godoc
@@ -347,6 +597,16 @@ func GetClinicalCompletenessHandler(c *gin.Context) {
 	composed := make([]composedRow, 0, len(rows))
 	for _, row := range rows {
 		checks, overall := computeCompletenessChecks(formsBy[row.id], diagnosesBy[row.id], category)
+		if admRaw != "" {
+			// Admission mode only (spec §4.3): who/at/detail + 6th alergi
+			// check; date/board responses stay byte-identical.
+			var err error
+			checks, overall, err = enrichAdmissionChecks(ctx, q, checks, formsBy[row.id], category, row.personID)
+			if err != nil {
+				respondInternalError(c, err)
+				return
+			}
+		}
 		composed = append(composed, composedRow{row: row, checks: checks, overall: overall})
 	}
 
