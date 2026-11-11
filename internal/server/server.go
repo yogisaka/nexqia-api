@@ -104,6 +104,8 @@ func NewRouter(pool *pgxpool.Pool, redisClient *redis.Client, cfg config.Config)
 	RegisterMRNConfigRoutes(locked)
 	RegisterDiagnosisConfigRoutes(locked)
 	RegisterRBACRoutes(locked, cfg, hasher)
+	// Read-only staff directory for clinical pickers (clinical.record.view).
+	RegisterStaffDirectoryRoutes(locked)
 	RegisterMFARoutes(locked, enc, hasher)
 	RegisterAccountRoutes(locked, hasher, limiter, cfg)
 	// PIN-lock + MFA policy management per merchant (spec

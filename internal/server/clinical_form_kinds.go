@@ -202,7 +202,9 @@ var clinicalTimeRe = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
 // clinicalValidatePhysicalExam: keadaan_umum enum|null; organ map limited to
 // the 18 spec keys; per-organ status enum + optional keterangan + strokes
 // (≤50 strokes/stroke ≤512 points, normalized coords, #RRGGBB, width 2..5,
-// label "A"|"B"|null); genital_urogenital may not carry strokes.
+// label "A"|"B"|null); genital_urogenital may not carry strokes. The
+// top-level key `pemeriksaan_lain` (FE-only free text) is intentionally
+// ignored by this validator — the FE owns its shape (keputusan 2026-11-11).
 func clinicalValidatePhysicalExam(c *gin.Context, key string, raw json.RawMessage) bool {
 	var pe struct {
 		KeadaanUmum json.RawMessage            `json:"keadaan_umum"`
