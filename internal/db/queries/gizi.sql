@@ -126,7 +126,8 @@ ORDER BY started_at DESC;
 
 -- Jumlah kunjungan (admission) person untuk badge riwayat episode.
 -- name: CountKunjunganByPerson :one
-SELECT count(*) FROM operations.admission WHERE person_id = $1;
+SELECT count(*) FROM operations.admission
+WHERE person_id = $1 AND deleted_at IS NULL;
 
 -- Hasil skrining terbaru PER instrument untuk admission (badge + Tinjau).
 -- name: ListLatestNutritionScreeningByAdmission :many
@@ -146,12 +147,21 @@ SET score = $2, interpretation = $3, bands = $4, payload = $5,
     row_version = row_version + 1
 WHERE form_instance_id = $1 AND instrument = 'mst';
 
+-- Jalur persist hook (plan chunk 1 Task 6 fix-forward temuan review SEDANG):
+-- upsert idempoten per (form_instance_id, instrument) — race create/PATCH
+-- hook pada form yang sama tidak lagi membuat baris duplikat (index partial
+-- uq_nsr_form_instrument, migration 000100). row_version/updated_at naik via
+-- trg_touch_row (tanpa +1 eksplisit di DO UPDATE).
 -- name: InsertGiziScreeningResult :one
 INSERT INTO clinical.nutrition_screening_result
     (company_id, merchant_id, person_id, admission_id, episode_id,
      form_instance_id, instrument, score, max_score, interpretation,
      bands, payload, calculated_by, created_by)
 VALUES ($1, $2, $3, $4, $5, $6, 'mst', $7, 5, $8, $9, $10, $11, $12)
+ON CONFLICT (form_instance_id, instrument) WHERE form_instance_id IS NOT NULL
+DO UPDATE SET score = EXCLUDED.score, interpretation = EXCLUDED.interpretation,
+    bands = EXCLUDED.bands, payload = EXCLUDED.payload, calculated_at = now(),
+    calculated_by = EXCLUDED.calculated_by
 RETURNING id;
 
 -- Pra-000098 template asuhan_gizi belum ada → count 0 sah.

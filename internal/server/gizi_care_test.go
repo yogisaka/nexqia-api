@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
 
@@ -354,6 +356,66 @@ func TestGiziScreeningResultHook(t *testing.T) {
 	if payload["berisiko_mst"] != true { // skor 4 >= 2
 		t.Fatalf("payload = %v, want berisiko_mst=true", payload)
 	}
+
+	t.Run("upsert saat baris ada", func(t *testing.T) {
+		// Jalur INSERT/ON CONFLICT (race hook, migration 000100): panggil
+		// InsertGiziScreeningResult ke-2 untuk form yang sama → tetap 1 baris,
+		// skor terbaru menang (kontrak upsert Task 6; interpretasi skor 2 =
+		// 'sedang' dari definisi band 1–3, bukan output kode).
+		var comp, merch, pers, adm, createdBy string
+		if err := pool.QueryRow(ctx,
+			`SELECT company_id::text, merchant_id::text, person_id::text,
+			        admission_id::text, calculated_by::text
+			 FROM clinical.nutrition_screening_result
+			 WHERE form_instance_id = $1::uuid AND instrument = 'mst'`,
+			formID).Scan(&comp, &merch, &pers, &adm, &createdBy); err != nil {
+			t.Fatalf("read nsr untuk upsert: %v", err)
+		}
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		for _, g := range [][2]string{{"app.current_company_id", comp}, {"app.current_merchant_id", merch}} {
+			if _, err := tx.Exec(ctx, "SELECT set_config($1, $2, true)", g[0], g[1]); err != nil {
+				t.Fatalf("set_config %s: %v", g[0], err)
+			}
+		}
+		gzUUID := func(t *testing.T, s string) pgtype.UUID {
+			t.Helper()
+			var u pgtype.UUID
+			if err := u.Scan(s); err != nil {
+				t.Fatalf("uuid %s: %v", s, err)
+			}
+			return u
+		}
+		if _, err := sqlcgen.New(tx).InsertGiziScreeningResult(ctx, sqlcgen.InsertGiziScreeningResultParams{
+			CompanyID: gzUUID(t, comp), MerchantID: gzUUID(t, merch), PersonID: gzUUID(t, pers),
+			AdmissionID: gzUUID(t, adm), FormInstanceID: gzUUID(t, formID),
+			Score: 2, Interpretation: "sedang",
+			Bands: json.RawMessage(`[]`), Payload: json.RawMessage(`{"berisiko_mst":false}`),
+			CalculatedBy: gzUUID(t, createdBy), CreatedBy: gzUUID(t, createdBy),
+		}); err != nil {
+			t.Fatalf("upsert nsr: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		var score, rowVersion, n int
+		if err := pool.QueryRow(ctx,
+			`SELECT score, row_version, (SELECT count(*) FROM clinical.nutrition_screening_result
+			   WHERE form_instance_id = $1::uuid)
+			 FROM clinical.nutrition_screening_result
+			 WHERE form_instance_id = $1::uuid AND instrument = 'mst'`,
+			formID).Scan(&score, &rowVersion, &n); err != nil {
+			t.Fatalf("read nsr setelah upsert: %v", err)
+		}
+		if n != 1 || score != 2 {
+			t.Fatalf("upsert: rows=%d score=%d, want 1 baris skor 2 (terbaru)", n, score)
+		}
+		if rowVersion != 3 { // 1 (insert awal) + trg_touch_row di PATCH + DO UPDATE
+			t.Fatalf("row_version = %d, want 3 (naik via trg_touch_row)", rowVersion)
+		}
+	})
 
 	t.Run("update tidak duplikat", func(t *testing.T) {
 		var n int

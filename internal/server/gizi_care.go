@@ -279,20 +279,23 @@ func giziAdmission(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, a
 
 // giziAgeDays derives age in days from birth_date to measured_at in the
 // merchant timezone (pola merchant_day.go); birth_date NULL → NULL.
-func giziAgeDays(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, birth pgtype.Date, measured time.Time) pgtype.Int4 {
+// Error merchantLocation TIDAK ditelan (temuan review): respondInternalError
+// (auto-rollback ambient tx via RunRequestTx) + false agar tanpa fallback NULL.
+func giziAgeDays(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, birth pgtype.Date, measured time.Time) (pgtype.Int4, bool) {
 	if !birth.Valid {
-		return pgtype.Int4{}
+		return pgtype.Int4{}, true
 	}
 	loc, err := merchantLocation(c.Request.Context(), q, merchantID)
 	if err != nil {
-		return pgtype.Int4{}
+		respondInternalError(c, err)
+		return pgtype.Int4{}, false
 	}
 	birthMidnight := time.Date(birth.Time.Year(), birth.Time.Month(), birth.Time.Day(), 0, 0, 0, 0, loc)
 	days := int(measured.In(loc).Sub(birthMidnight).Hours() / 24)
 	if days < 0 {
 		days = 0
 	}
-	return pgtype.Int4{Int32: int32(days), Valid: true}
+	return pgtype.Int4{Int32: int32(days), Valid: true}, true
 }
 
 // CreateGiziAnthropometryHandler godoc
@@ -363,7 +366,10 @@ func CreateGiziAnthropometryHandler(c *gin.Context) {
 		giziJSONHelperError(c, "gender")
 		return
 	}
-	ageDays := giziAgeDays(c, q, merchantID, admission.BirthDate, measured)
+	ageDays, okAge := giziAgeDays(c, q, merchantID, admission.BirthDate, measured)
+	if !okAge {
+		return
+	}
 	row, err := q.InsertAnthropometry(c.Request.Context(), sqlcgen.InsertAnthropometryParams{
 		CompanyID: AuthCompanyID(c), MerchantID: merchantID, PersonID: admission.PersonID,
 		AdmissionID: admissionID, MeasuredAt: pgtype.Timestamptz{Time: measured, Valid: true},
