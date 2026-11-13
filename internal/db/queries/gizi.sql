@@ -177,6 +177,32 @@ FROM ref.growth_curve
 WHERE indicator = $1 AND gender = $2
 ORDER BY x ASC;
 
+-- Rules snapshot D5 (chunk 3 Task 2, spec §6): SATU baris per admission
+-- (instrument 'rules', tanpa form_instance — di luar index partial
+-- uq_nsr_form_instrument 000100). UPDATE dulu; 0 baris → INSERT (pola hook).
+-- max_score 8 literal (8 pemicu berbobot; tinja_pucat display-only).
+-- name: UpdateGiziRulesSnapshot :execrows
+UPDATE clinical.nutrition_screening_result
+SET score = $2, max_score = 8, interpretation = $3, payload = $4,
+    episode_id = $5, calculated_at = now(), calculated_by = $6,
+    row_version = row_version + 1
+WHERE admission_id = $1 AND instrument = 'rules' AND form_instance_id IS NULL;
+
+-- name: InsertGiziRulesSnapshot :exec
+INSERT INTO clinical.nutrition_screening_result
+    (company_id, merchant_id, person_id, admission_id, episode_id, instrument,
+     score, max_score, interpretation, payload, calculated_by, created_by)
+VALUES ($1, $2, $3, $4, $5, 'rules', $6, 8, $7, $8, $9, $9);
+
+-- Hb + warna tinja bumil (chunk 3 Task 2): forms asuhan_gizi admission,
+-- terbaru dulu — parsing sections.biokimia/tinja dilakukan di Go
+-- (nutrition_risk.go).
+-- name: ListAsuhanGiziByAdmission :many
+SELECT id, form_data
+FROM clinical_form.form_instance
+WHERE admission_id = $1 AND form_type = 'asuhan_gizi' AND deleted_at IS NULL
+ORDER BY filled_at DESC;
+
 -- Titik pasien: SEMUA pengukuran antropometri person lintas admission,
 -- measured_at ASC (kronologis — flag_t bb dan delta bumil butuh urutan naik).
 -- name: ListAnthropometryByPerson :many

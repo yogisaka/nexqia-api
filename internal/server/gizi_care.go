@@ -183,6 +183,12 @@ func persistGiziMnasfResult(c *gin.Context, formID, admissionID, personID pgtype
 			return false
 		}
 	}
+	// Rules snapshot D5 (chunk 3 Task 2): SETELAH hook mnasf tersimpan.
+	if episodeID.Valid {
+		if !refreshGiziRules(c, sqlcgen.New(TxFromContext(c)), AuthCompanyID(c), merchantID, personID, admissionID, episodeID) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -248,6 +254,12 @@ func persistGiziScreeningResult(c *gin.Context, formID, admissionID, personID pg
 			Bands: bands, Payload: pl, CalculatedBy: userID, CreatedBy: userID,
 		}); err != nil {
 			respondInternalError(c, err)
+			return false
+		}
+	}
+	// Rules snapshot D5 (chunk 3 Task 2): SETELAH hook MST tersimpan.
+	if episodeID.Valid {
+		if !refreshGiziRules(c, q, AuthCompanyID(c), merchantID, personID, admissionID, episodeID) {
 			return false
 		}
 	}
@@ -485,6 +497,16 @@ func CreateGiziAnthropometryHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Rules snapshot D5 (chunk 3 Task 2): SETELAH write antropometri sukses,
+	// dalam tx ambient yang sama (tanpa episode aktif → dilewati).
+	if episode, err := q.GetActiveNutritionEpisodeByAdmission(c.Request.Context(), admissionID); err == nil {
+		if !refreshGiziRules(c, q, row.CompanyID, row.MerchantID, admission.PersonID, admissionID, episode.ID) {
+			return
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		respondInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusCreated, gin.H{"data": anthropometryJSON(row), "meta": gin.H{}})
 }
 
@@ -642,19 +664,25 @@ func GetGiziNutritionEpisodeHandler(c *gin.Context) {
 	if !okA {
 		return
 	}
-	resp := gin.H{
-		// Placeholder risiko chunk 3 (rules §6) mengisi nilai ini.
-		"risk": nil,
-	}
+	resp := gin.H{}
 	episode, err := q.GetActiveNutritionEpisodeByAdmission(c.Request.Context(), admissionID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		resp["episode"] = nil
+		resp["risk"] = nil
 	case err != nil:
 		respondInternalError(c, err)
 		return
 	default:
 		resp["episode"] = episodeJSON(episode)
+		// Rules engine D5 (spec §6): level engine + override tampil bersama.
+		risk, _, err := evaluateGiziRisk(c.Request.Context(), q, episode.PersonID, admissionID, episode.Profile)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		risk["override"] = textJSON(episode.RiskOverride)
+		resp["risk"] = risk
 	}
 	screening, err := q.ListLatestNutritionScreeningByAdmission(c.Request.Context(), admissionID)
 	if err != nil {
@@ -796,6 +824,11 @@ func UpdateGiziNutritionEpisodeHandler(c *gin.Context) {
 	}
 	if err != nil {
 		respondInternalError(c, err)
+		return
+	}
+	// Rules snapshot D5: SETELAH PATCH episode sukses (profil/override bisa
+	// mengubah gate rules), tx ambient yang sama.
+	if !refreshGiziRules(c, q, updated.CompanyID, updated.MerchantID, updated.PersonID, updated.AdmissionID, updated.ID) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": episodeJSON(updated), "meta": gin.H{}})
