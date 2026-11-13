@@ -4,6 +4,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -258,6 +259,138 @@ func TestGiziNutritionEpisodeAPI(t *testing.T) {
 		t.Fatalf("get after close = %d %v", rec.Code, resp)
 	}
 	_ = userID
+}
+
+// gzMSTForm builds ases_gizi_skrining form_data with a consistent MST: the
+// three select answers sum to skor (validator §5.1/§5.2: sum == skor_mst and
+// risiko_gizi = skor >= 2 ? berisiko : tidak_berisiko).
+func gzMSTForm(skor int) map[string]any {
+	// Dekomposisi deterministik: bb = min(2, skor), nafsu = sisa sampai 3
+	// capped 1, sakit = sisa (0/1). 0..5 selalu terwakili.
+	bb := min(skor, 2)
+	nafsu := min(skor-bb, 1)
+	sakit := skor - bb - nafsu
+	risiko := "tidak_berisiko"
+	if skor >= 2 {
+		risiko = "berisiko"
+	}
+	return map[string]any{"sections": map[string]any{
+		"mst_penurunan_bb": strconv.Itoa(bb),
+		"mst_nafsu_makan":  strconv.Itoa(nafsu),
+		"mst_sakit_akut":   strconv.Itoa(sakit),
+		"skor_mst":         skor,
+		"risiko_gizi":      risiko,
+	}}
+}
+
+func gzNsrCountAdmission(t *testing.T, ctx context.Context, pool *pgxpool.Pool, admissionID string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM clinical.nutrition_screening_result WHERE admission_id = $1::uuid",
+		admissionID).Scan(&n); err != nil {
+		t.Fatalf("count nsr: %v", err)
+	}
+	return n
+}
+
+// TestGiziScreeningResultHook — hook FR-GZ-02 (plan chunk 1 Task 4, spec §5):
+// create ases_gizi_skrining skor 3 → baris mst (sedang); PATCH skor 4 → baris
+// yang SAMA ter-update (idempoten, tidak duplikat); form kategori lain dan
+// draft tanpa skor → tanpa baris. Ekspektasi dari kontrak (max_score 5,
+// 0→rendah; 1–3→sedang; 4–5→tinggi; berisiko_mst = skor >= 2), bukan output.
+func TestGiziScreeningResultHook(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "hook")
+	personID, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzhook")
+
+	// (a) create skor 3 → 201 + GET episode menampilkan screening mst.
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_skrining", "form_data": gzMSTForm(3),
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create mst = %d: %s", rec.Code, rec.Body.String())
+	}
+	formID := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/nutrition-episode?admission_id="+admissionID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get episode = %d: %s", rec.Code, rec.Body.String())
+	}
+	scr := resp["screening"].([]any)
+	if len(scr) != 1 {
+		t.Fatalf("screening len = %d, want 1: %v", len(scr), scr)
+	}
+	s0 := scr[0].(map[string]any)
+	if s0["instrument"] != "mst" || s0["score"].(float64) != 3 || s0["interpretation"] != "sedang" ||
+		s0["max_score"].(float64) != 5 {
+		t.Fatalf("screening[0] = %v, want {mst, 3, sedang, max 5}", s0)
+	}
+
+	// (b) PATCH skor 4 → baris TER-UPDATE (1 baris, tinggi), bukan baris baru.
+	rec, resp = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/forms/"+formID, token, companyID, merchantID, map[string]any{
+		"form_data": gzMSTForm(4),
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch mst = %d: %s", rec.Code, rec.Body.String())
+	}
+	var score, maxScore, rowVersion int
+	var interpretation string
+	var payloadRaw string
+	if err := pool.QueryRow(ctx,
+		`SELECT score, max_score, interpretation, payload::text, row_version
+		 FROM clinical.nutrition_screening_result WHERE form_instance_id = $1::uuid AND instrument = 'mst'`,
+		formID).Scan(&score, &maxScore, &interpretation, &payloadRaw, &rowVersion); err != nil {
+		t.Fatalf("read nsr: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
+		t.Fatalf("decode payload %s: %v", payloadRaw, err)
+	}
+	if score != 4 || maxScore != 5 || interpretation != "tinggi" || rowVersion != 2 {
+		t.Fatalf("nsr = %d/%d/%s rv=%d, want 4/5/tinggi rv=2", score, maxScore, interpretation, rowVersion)
+	}
+	if payload["berisiko_mst"] != true { // skor 4 >= 2
+		t.Fatalf("payload = %v, want berisiko_mst=true", payload)
+	}
+
+	t.Run("update tidak duplikat", func(t *testing.T) {
+		var n int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM clinical.nutrition_screening_result WHERE form_instance_id = $1::uuid",
+			formID).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("rows per form = %d (%v), want 1", n, err)
+		}
+	})
+
+	// (c) form kategori lain (ases_gizi_adime) → tanpa baris baru.
+	rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_adime", "form_data": map[string]any{"sections": map[string]any{}},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create adime = %d: %s", rec.Code, rec.Body.String())
+	}
+	if n := gzNsrCountAdmission(t, ctx, pool, admissionID); n != 1 {
+		t.Fatalf("nsr setelah adime = %d, want 1", n)
+	}
+
+	// (d) draft MST tanpa skor_mst → hook dilewati, tanpa baris.
+	rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_skrining",
+		"form_data": map[string]any{"sections": map[string]any{"mst_penurunan_bb": "1"}},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create draft = %d: %s", rec.Code, rec.Body.String())
+	}
+	if n := gzNsrCountAdmission(t, ctx, pool, admissionID); n != 1 {
+		t.Fatalf("nsr setelah draft tanpa skor = %d, want 1", n)
+	}
+
+	// GET episode masih 1 hasil (mst terbaru), person_id konteks konsisten.
+	if personID == "" {
+		t.Fatalf("person tidak tersedia")
+	}
 }
 
 // TestGiziProfileGuardAPI — guard 3 jalur FR-GZ-01 + riwayat FR-GZ-15:

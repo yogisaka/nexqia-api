@@ -136,6 +136,24 @@ FROM clinical.nutrition_screening_result
 WHERE admission_id = $1
 ORDER BY instrument, calculated_at DESC;
 
+-- Hook FR-GZ-02 (plan chunk 1 Task 4, spec §5 teknis C): idempoten per
+-- (form_instance_id, instrument) — UPDATE dulu; 0 baris → INSERT (persist).
+-- row_version naik via trg_touch_row (explicit +1 mengikuti pola UpdateNutritionEpisode).
+-- name: UpdateGiziScreeningResultByForm :execrows
+UPDATE clinical.nutrition_screening_result
+SET score = $2, interpretation = $3, bands = $4, payload = $5,
+    episode_id = $6, calculated_at = now(), calculated_by = $7,
+    row_version = row_version + 1
+WHERE form_instance_id = $1 AND instrument = 'mst';
+
+-- name: InsertGiziScreeningResult :one
+INSERT INTO clinical.nutrition_screening_result
+    (company_id, merchant_id, person_id, admission_id, episode_id,
+     form_instance_id, instrument, score, max_score, interpretation,
+     bands, payload, calculated_by, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, 'mst', $7, 5, $8, $9, $10, $11, $12)
+RETURNING id;
+
 -- Pra-000098 template asuhan_gizi belum ada → count 0 sah.
 -- name: CountAsuhanGiziByAdmission :one
 SELECT count(*) FROM clinical_form.form_instance

@@ -45,6 +45,110 @@ func personGenderToGizi(g pgtype.Text) (string, bool) {
 	}
 }
 
+// giziMstScore ekstrak skor_mst dari form_data (hook TIDAK menghitung ulang —
+// validator clinical_form.go §5.1/§5.2 sudah menjamin konsistensi jumlah
+// jawaban). Non-ases_gizi_skrining atau skor kosong/tak-valid → (0, false)
+// = hook dilewati (draft parsial).
+func giziMstScore(formType string, formData json.RawMessage) (int, bool) {
+	if formType != "ases_gizi_skrining" {
+		return 0, false
+	}
+	var payload struct {
+		Sections map[string]json.RawMessage `json:"sections"`
+	}
+	if err := json.Unmarshal(formData, &payload); err != nil {
+		return 0, false
+	}
+	rawVal, ok := payload.Sections["skor_mst"]
+	if !ok || clinicalSectionEmpty(rawVal) {
+		return 0, false
+	}
+	var n json.Number
+	if err := json.Unmarshal(rawVal, &n); err != nil {
+		return 0, false
+	}
+	v, err := n.Int64()
+	if err != nil || v < 0 || v > 5 {
+		return 0, false
+	}
+	return int(v), true
+}
+
+// giziMstInterpretation STD-31 OV000298–300 R:77: 0→rendah; 1–3→sedang; 4–5→tinggi.
+func giziMstInterpretation(score int) string {
+	switch {
+	case score == 0:
+		return "rendah"
+	case score <= 3:
+		return "sedang"
+	default:
+		return "tinggi"
+	}
+}
+
+// persistGiziScreeningResult menulis hasil skrining MST ke
+// clinical.nutrition_screening_result (FR-GZ-02, spec §5 hook teknis C).
+// Dipanggil dari Create/UpdateClinicalFormHandler SETELAH write form sukses,
+// dalam tx ambient RunRequestTx (error hook → respondInternalError → rollback).
+// Idempoten: form di-PATCH berkali → tetap 1 baris per (form_instance, 'mst')
+// (UPDATE dulu; 0 baris → INSERT). Form lain / skor kosong → dilewati.
+func persistGiziScreeningResult(c *gin.Context, formID, admissionID, personID pgtype.UUID) bool {
+	merchantID, okM := requireMerchantHeader(c)
+	if !okM {
+		return false
+	}
+	ctx := c.Request.Context()
+	q := sqlcgen.New(TxFromContext(c))
+	// episode aktif admission bila ada; tidak ada → NULL (bukan error).
+	var episodeID pgtype.UUID
+	episode, err := q.GetActiveNutritionEpisodeByAdmission(ctx, admissionID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		respondInternalError(c, err)
+		return false
+	default:
+		episodeID = episode.ID
+	}
+	// lintas data form terbaru untuk skor (validator existing sudah validasi).
+	entry, err := q.GetClinicalFormInstance(ctx, formID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	score, okS := giziMstScore(entry.FormType, entry.FormData)
+	if !okS {
+		return true // hook dilewati (draft parsial / form lain)
+	}
+	bands := json.RawMessage(`[{"low":0,"high":1,"interpretation":"rendah"},{"low":1,"high":4,"interpretation":"sedang"},{"low":4,"high":6,"interpretation":"tinggi"}]`)
+	pl := json.RawMessage(`{"berisiko_mst":true}`)
+	if score < 2 {
+		pl = json.RawMessage(`{"berisiko_mst":false}`)
+	}
+	userID := AuthUserID(c)
+	n, err := q.UpdateGiziScreeningResultByForm(ctx, sqlcgen.UpdateGiziScreeningResultByFormParams{
+		FormInstanceID: formID, Score: int32(score),
+		Interpretation: giziMstInterpretation(score),
+		Bands:          bands, Payload: pl, EpisodeID: episodeID, CalculatedBy: userID,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	if n == 0 {
+		if _, err := q.InsertGiziScreeningResult(ctx, sqlcgen.InsertGiziScreeningResultParams{
+			CompanyID: AuthCompanyID(c), MerchantID: merchantID, PersonID: personID,
+			AdmissionID: admissionID, EpisodeID: episodeID, FormInstanceID: formID,
+			Score: int32(score), Interpretation: giziMstInterpretation(score),
+			Bands: bands, Payload: pl, CalculatedBy: userID, CreatedBy: userID,
+		}); err != nil {
+			respondInternalError(c, err)
+			return false
+		}
+	}
+	return true
+}
+
 func giziJSONHelperError(c *gin.Context, field string) bool {
 	c.JSON(http.StatusBadRequest, gin.H{"error": "invalid value for " + field})
 	return false

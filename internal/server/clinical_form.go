@@ -741,6 +741,12 @@ func CreateClinicalFormHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Hook hasil skrining MST (FR-GZ-02, spec §5): write form sukses +
+	// ases_gizi_skrining dengan skor_mst terisi → upsert
+	// clinical.nutrition_screening_result (tx ambient; gagal = 500 rollback).
+	if !persistGiziScreeningResult(c, entry.ID, admissionID, admission.PersonID) {
+		return
+	}
 	c.JSON(http.StatusCreated, gin.H{"data": gin.H{"entry": clinicalFormJSON(entry), "warnings": warnings}, "meta": gin.H{}})
 }
 
@@ -938,6 +944,14 @@ func UpdateClinicalFormHandler(c *gin.Context) {
 	}
 	if err != nil {
 		respondInternalError(c, err)
+		return
+	}
+	// Hook hasil skrining MST (FR-GZ-02, spec §5): idempoten per (form,
+	// instrument) — PATCH berulang tetap 1 baris, nilai ter-UPDATE.
+	if admission, err := q.GetAdmissionByID(ctx, updated.AdmissionID); err != nil {
+		respondInternalError(c, err)
+		return
+	} else if !persistGiziScreeningResult(c, updated.ID, updated.AdmissionID, admission.PersonID) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"entry": clinicalFormJSON(updated), "warnings": warnings}, "meta": gin.H{}})
