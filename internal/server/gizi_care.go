@@ -86,6 +86,106 @@ func giziMstInterpretation(score int) string {
 	}
 }
 
+// giziMnasfResult ekstrak skor_mnasf + interpretasi_mnasf dari form_data
+// ases_gizi_mnasf (hook TIDAK menghitung ulang — validator clinical_form.go
+// §5 hook sudah menjamin skor = jumlah jawaban). Skor di luar 0..14 atau
+// section tak-lengkap → (0, "", false) = hook dilewati (draft parsial).
+func giziMnasfResult(formType string, formData json.RawMessage) (int, string, bool) {
+	if formType != "ases_gizi_mnasf" {
+		return 0, "", false
+	}
+	var payload struct {
+		Sections map[string]json.RawMessage `json:"sections"`
+	}
+	if err := json.Unmarshal(formData, &payload); err != nil {
+		return 0, "", false
+	}
+	rawSkor, okS := payload.Sections["skor_mnasf"]
+	rawKat, okK := payload.Sections["interpretasi_mnasf"]
+	if !okS || !okK || clinicalSectionEmpty(rawSkor) || clinicalSectionEmpty(rawKat) {
+		return 0, "", false
+	}
+	var n json.Number
+	if err := json.Unmarshal(rawSkor, &n); err != nil {
+		return 0, "", false
+	}
+	v, err := n.Int64()
+	if err != nil || v < 0 || v > 14 {
+		return 0, "", false
+	}
+	var kategori string
+	if err := json.Unmarshal(rawKat, &kategori); err != nil {
+		return 0, "", false
+	}
+	return int(v), kategori, true
+}
+
+// giziMnasfInterpretation spec §5 hook: >=12 rendah; 8–11 sedang; <8 tinggi.
+func giziMnasfInterpretation(score int) string {
+	switch {
+	case score >= 12:
+		return "rendah"
+	case score >= 8:
+		return "sedang"
+	default:
+		return "tinggi"
+	}
+}
+
+// persistGiziMnasfResult menulis hasil MNA-SF ke
+// clinical.nutrition_screening_result (instrument 'mnasf', max_score 14,
+// spec §5 hook). Query sqlc chunk 1 ter-pin instrument 'mst' (queries/gizi.sql
+// di luar Files task ini) → upsert idempoten per (form_instance_id, instrument)
+// via raw SQL ambient tx, menyalin semantik UpdateGiziScreeningResultByForm +
+// InsertGiziScreeningResult (pola TxFromContext.Exec; conflict target = index
+// partial uq_nsr_form_instrument, migration 000100; row_version naik via
+// trg_touch_row).
+func persistGiziMnasfResult(c *gin.Context, formID, admissionID, personID pgtype.UUID, score int, kategori string, episodeID pgtype.UUID) bool {
+	merchantID, okM := requireMerchantHeader(c)
+	if !okM {
+		return false
+	}
+	interp := giziMnasfInterpretation(score)
+	bands := json.RawMessage(`[{"low":12,"high":15,"interpretation":"rendah"},{"low":8,"high":12,"interpretation":"sedang"},{"low":0,"high":8,"interpretation":"tinggi"}]`)
+	pl, err := json.Marshal(map[string]string{"kategori_mnasf": kategori})
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	userID := AuthUserID(c)
+	ctx := c.Request.Context()
+	tag, err := TxFromContext(c).Exec(ctx, `
+		UPDATE clinical.nutrition_screening_result
+		SET score = $2, max_score = $3, interpretation = $4, bands = $5, payload = $6,
+		    episode_id = $7, calculated_at = now(), calculated_by = $8, row_version = row_version + 1
+		WHERE form_instance_id = $1 AND instrument = 'mnasf'`,
+		formID, score, 14, interp, bands, pl, episodeID, userID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := TxFromContext(c).Exec(ctx, `
+			INSERT INTO clinical.nutrition_screening_result
+				(company_id, merchant_id, person_id, admission_id, episode_id,
+				 form_instance_id, instrument, score, max_score, interpretation,
+				 bands, payload, calculated_by, created_by)
+			VALUES ($1, $2, $3, $4, $5, $6, 'mnasf', $7, 14, $8, $9, $10, $11, $11)
+			ON CONFLICT (form_instance_id, instrument) WHERE form_instance_id IS NOT NULL
+			DO UPDATE SET score = EXCLUDED.score, max_score = EXCLUDED.max_score,
+				interpretation = EXCLUDED.interpretation, bands = EXCLUDED.bands,
+				payload = EXCLUDED.payload, calculated_at = now(),
+				calculated_by = EXCLUDED.calculated_by`,
+			AuthCompanyID(c), merchantID, personID,
+			admissionID, episodeID, formID,
+			score, interp, bands, pl, userID); err != nil {
+			respondInternalError(c, err)
+			return false
+		}
+	}
+	return true
+}
+
 // persistGiziScreeningResult menulis hasil skrining MST ke
 // clinical.nutrition_screening_result (FR-GZ-02, spec §5 hook teknis C).
 // Dipanggil dari Create/UpdateClinicalFormHandler SETELAH write form sukses,
@@ -118,6 +218,11 @@ func persistGiziScreeningResult(c *gin.Context, formID, admissionID, personID pg
 	}
 	score, okS := giziMstScore(entry.FormType, entry.FormData)
 	if !okS {
+		// Hook MNA-SF (spec §5 hook, chunk 2 Task 2): form ases_gizi_mnasf
+		// dengan skor lengkap → baris instrument 'mnasf' (max_score 14).
+		if s, kat, okM := giziMnasfResult(entry.FormType, entry.FormData); okM {
+			return persistGiziMnasfResult(c, formID, admissionID, personID, s, kat, episodeID)
+		}
 		return true // hook dilewati (draft parsial / form lain)
 	}
 	bands := json.RawMessage(`[{"low":0,"high":1,"interpretation":"rendah"},{"low":1,"high":4,"interpretation":"sedang"},{"low":4,"high":6,"interpretation":"tinggi"}]`)

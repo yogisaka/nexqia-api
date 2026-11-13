@@ -296,6 +296,83 @@ func gzNsrCountAdmission(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	return n
 }
 
+// gzMnasfForm builds ases_gizi_mnasf form_data (template migration 000098).
+// Enam jawaban select "<huruf>_<skor>" di-dekomposisi greedy memakai rentang
+// opsi resmi (a 0..2, b 0..3, c 0..2, d 0..2, e 0..2, f 0..3) sehingga jumlah
+// jawaban = skor (konsisten dengan validator §5 hook); interp harus ikut band
+// skor (>=12 normal, 8..11 berisiko, <8 malnutrisi).
+func gzMnasfForm(skor int, interp string) map[string]any {
+	parts := []struct {
+		k   string
+		max int
+	}{{"a", 2}, {"b", 3}, {"c", 2}, {"d", 2}, {"e", 2}, {"f", 3}}
+	secs := map[string]any{}
+	sisa := skor
+	for _, p := range parts {
+		v := min(p.max, sisa)
+		sisa -= v
+		secs["mnasf_"+p.k] = fmt.Sprintf("%s_%d", p.k, v)
+	}
+	secs["skor_mnasf"] = skor
+	secs["interpretasi_mnasf"] = interp
+	return map[string]any{"sections": secs}
+}
+
+// TestGiziMnasfValidation — validator skor MNA-SF (plan chunk 2 Task 2, spec
+// §5 hook, pola test MST existing clinical_form_test.go:452). Skor konsisten
+// lolos; skor ≠ jumlah jawaban → 400 "skor MNA-SF tidak konsisten"; band
+// interpretasi salah → 400; draft parsial tanpa skor → lolos.
+func TestGiziMnasfValidation(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "mnasfval")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzmv")
+	const create = "/api/v1/clinical/forms"
+
+	// (a) skor 9 = 2+3+2+2+0+0, band 8..11 → "berisiko" → lolos.
+	rec, _ := cfDo(t, router, http.MethodPost, create, token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_mnasf", "form_data": gzMnasfForm(9, "berisiko"),
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create konsisten = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// (b) skor ≠ jumlah jawaban (jawaban 2+3+2 = 7, skor ditulis 9) → 400.
+	rec, resp := cfDo(t, router, http.MethodPost, create, token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_mnasf",
+		"form_data": map[string]any{"sections": map[string]any{
+			"mnasf_a": "a_2", "mnasf_b": "b_3", "mnasf_c": "c_2",
+			"skor_mnasf": 9, "interpretasi_mnasf": "berisiko",
+		}},
+	})
+	if rec.Code != http.StatusBadRequest || resp["error"] != "skor MNA-SF tidak konsisten" {
+		t.Fatalf("skor beda jumlah = %d %v", rec.Code, resp)
+	}
+
+	// (c) interpretasi salah band (skor 9 → harus "berisiko", ditulis "normal") → 400.
+	rec, resp = cfDo(t, router, http.MethodPost, create, token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_mnasf", "form_data": gzMnasfForm(9, "normal"),
+	})
+	if rec.Code != http.StatusBadRequest || resp["error"] != "skor MNA-SF tidak konsisten" {
+		t.Fatalf("band salah = %d %v", rec.Code, resp)
+	}
+
+	// (d) draft parsial tanpa skor_mnasf → lolos (pola MST).
+	rec, _ = cfDo(t, router, http.MethodPost, create, token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_mnasf",
+		"form_data": map[string]any{"sections": map[string]any{"mnasf_a": "a_2"}},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("draft parsial = %d: %s", rec.Code, rec.Body.String())
+	}
+	// Form (a) konsisten memicu hook mnasf (create → 1 baris skor 9); kasus
+	// (b)/(c) 400 di-rollback dan (d) draft parsial tanpa baris → tetap 1.
+	if n := gzNsrCountAdmission(t, ctx, pool, admissionID); n != 1 {
+		t.Fatalf("nsr setelah validasi = %d, want 1", n)
+	}
+}
+
 // TestGiziScreeningResultHook — hook FR-GZ-02 (plan chunk 1 Task 4, spec §5):
 // create ases_gizi_skrining skor 3 → baris mst (sedang); PATCH skor 4 → baris
 // yang SAMA ter-update (idempoten, tidak duplikat); form kategori lain dan
@@ -423,6 +500,57 @@ func TestGiziScreeningResultHook(t *testing.T) {
 			"SELECT count(*) FROM clinical.nutrition_screening_result WHERE form_instance_id = $1::uuid",
 			formID).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("rows per form = %d (%v), want 1", n, err)
+		}
+	})
+
+	t.Run("mnasf", func(t *testing.T) {
+		// Hook MNA-SF (plan chunk 2 Task 2, spec §5 hook): create
+		// ases_gizi_mnasf skor 9 → baris {instrument mnasf, score 9,
+		// interpretation "sedang", max_score 14, payload kategori_mnasf}.
+		// PATCH skor 7 → baris yang SAMA ter-update ke "tinggi" (idempoten).
+		// Admission terpisah agar hitungan nsr admission utama tidak bergeser.
+		_, admM := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzmnasf")
+		rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+			"admission_id": admM, "form_type": "ases_gizi_mnasf", "form_data": gzMnasfForm(9, "berisiko"),
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create mnasf = %d: %s", rec.Code, rec.Body.String())
+		}
+		formM := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+		var score, maxScore int
+		var interp, payloadRaw string
+		if err := pool.QueryRow(ctx,
+			`SELECT score, max_score, interpretation, payload::text
+			 FROM clinical.nutrition_screening_result
+			 WHERE form_instance_id = $1::uuid AND instrument = 'mnasf'`,
+			formM).Scan(&score, &maxScore, &interp, &payloadRaw); err != nil {
+			t.Fatalf("read nsr mnasf: %v", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
+			t.Fatalf("decode payload %s: %v", payloadRaw, err)
+		}
+		// Band definisi spec §5 hook: 8–11 → sedang; skor 9 = 2+3+2+2+0+0.
+		if score != 9 || maxScore != 14 || interp != "sedang" || payload["kategori_mnasf"] != "berisiko" {
+			t.Fatalf("nsr mnasf = %d/%d/%s/%v, want 9/14/sedang/berisiko", score, maxScore, interp, payload)
+		}
+		// PATCH skor 7 → baris sama (1 baris), band <8 → "tinggi".
+		rec, resp = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/forms/"+formM, token, companyID, merchantID, map[string]any{
+			"form_data": gzMnasfForm(7, "malnutrisi"),
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("patch mnasf = %d: %s", rec.Code, rec.Body.String())
+		}
+		if err := pool.QueryRow(ctx,
+			`SELECT score, interpretation, (SELECT count(*) FROM clinical.nutrition_screening_result
+			   WHERE form_instance_id = $1::uuid)
+			 FROM clinical.nutrition_screening_result
+			 WHERE form_instance_id = $1::uuid AND instrument = 'mnasf'`,
+			formM).Scan(&score, &interp, &maxScore); err != nil {
+			t.Fatalf("read nsr mnasf pasca-patch: %v", err)
+		}
+		if maxScore != 1 || score != 7 || interp != "tinggi" {
+			t.Fatalf("nsr mnasf pasca-patch = rows %d skor %d %s, want 1 baris 7 tinggi", maxScore, score, interp)
 		}
 	})
 

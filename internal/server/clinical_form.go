@@ -197,6 +197,9 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 		}
 	}
 	mst := map[string]int{}
+	// MNA-SF: skor per pertanyaan diambil dari suffix "<huruf>_<skor>" nilai
+	// select (spec §5 hook, template migration 000098).
+	mnasf := map[string]int{}
 	for _, d := range defs.Sections {
 		rawVal, present := payload.Sections[d.Key]
 		if !present || clinicalSectionEmpty(rawVal) {
@@ -214,15 +217,22 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 			if n, err := strconv.Atoi(s); err == nil {
 				mst[d.Key] = n
 			}
+			// MNA-SF question answers carry their score as the select value
+			// suffix "<huruf>_<skor>" (mnasf_a.."f_3", spec §5 hook).
+			if i := strings.IndexByte(s, '_'); i > 0 {
+				if n, err := strconv.Atoi(s[i+1:]); err == nil {
+					mnasf[s[:i]] = n
+				}
+			}
 		case "number":
 			var n json.Number
 			if err := json.Unmarshal(rawVal, &n); err != nil {
 				clinicalInvalidSection(c, d.Key)
 				return nil, false
 			}
-			if d.Key == "skor_mst" {
+			if d.Key == "skor_mst" || d.Key == "skor_mnasf" {
 				if v, err := n.Float64(); err == nil {
-					mst["skor_mst"] = int(v)
+					mst[d.Key] = int(v)
 				}
 			}
 		case "date":
@@ -323,6 +333,29 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 			}
 			if len(mst) < 4 || sum != skor || risiko != want {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "skor MST tidak konsisten"})
+				return nil, false
+			}
+		}
+	}
+	// MNA-SF consistency (spec §5 hook, pola MST): skor_mnasf must equal the
+	// sum of the six "<huruf>_<skor>" answers (total 0..14) and
+	// interpretasi_mnasf must follow the band of the total. Partial drafts
+	// without skor_mnasf pass (same policy as MST).
+	if formType == "ases_gizi_mnasf" {
+		if skor, ok := mst["skor_mnasf"]; ok {
+			var interp string
+			if r, okR := payload.Sections["interpretasi_mnasf"]; okR && !clinicalSectionEmpty(r) {
+				_ = json.Unmarshal(r, &interp)
+			}
+			sum := mnasf["a"] + mnasf["b"] + mnasf["c"] + mnasf["d"] + mnasf["e"] + mnasf["f"]
+			want := "malnutrisi"
+			if skor >= 12 {
+				want = "normal"
+			} else if skor >= 8 {
+				want = "berisiko"
+			}
+			if len(mnasf) < 6 || sum != skor || sum < 0 || sum > 14 || interp != want {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "skor MNA-SF tidak konsisten"})
 				return nil, false
 			}
 		}
