@@ -163,8 +163,9 @@ func cfRawJSON(t *testing.T, s string) json.RawMessage {
 	return json.RawMessage(s)
 }
 
-// TestClinicalFormTemplateSeed — 7 platform templates resolve and sections
-// arrive as a JSON object (spec §9:178).
+// TestClinicalFormTemplateSeed — 9 platform templates resolve and sections
+// arrive as a JSON object (spec §9:178; gizi templates added by migration
+// 000098, plan 2026-11-13-gizi-nutrition-care-chunk-2).
 func TestClinicalFormTemplateSeed(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
@@ -176,10 +177,10 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		t.Fatalf("form-templates = %d: %s", rec.Code, rec.Body.String())
 	}
 	data, _ := resp["data"].([]any)
-	if len(data) != 7 {
-		t.Fatalf("form-templates: got %d items, want 7", len(data))
+	if len(data) != 9 {
+		t.Fatalf("form-templates: got %d items, want 9", len(data))
 	}
-	var soap map[string]any
+	var soap, asuhan, mnasf map[string]any
 	for _, it := range data {
 		item := it.(map[string]any)
 		sections, ok := item["sections"].(map[string]any)
@@ -190,8 +191,13 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		if len(defs) == 0 {
 			t.Fatalf("%s has no section defs", item["form_type"])
 		}
-		if item["form_type"] == "soap_dokter" {
+		switch item["form_type"] {
+		case "soap_dokter":
 			soap = item
+		case "asuhan_gizi":
+			asuhan = item
+		case "ases_gizi_mnasf":
+			mnasf = item
 		}
 	}
 	if soap == nil {
@@ -228,6 +234,63 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		if got := kindOf[key]; got != want {
 			t.Fatalf("soap_dokter v3 section %s kind = %q, want %q", key, got, want)
 		}
+	}
+
+	// asuhan_gizi (migration 000098): category gizi, 21 sections, key kinds.
+	if asuhan == nil {
+		t.Fatal("asuhan_gizi template missing")
+	}
+	if asuhan["scope"] != "platform" || asuhan["category"] != "gizi" {
+		t.Fatalf("asuhan_gizi = %v", asuhan)
+	}
+	giziDefs, _ := asuhan["sections"].(map[string]any)["sections"].([]any)
+	if len(giziDefs) != 21 {
+		t.Fatalf("asuhan_gizi sections = %d, want 21", len(giziDefs))
+	}
+	giziKind := map[string]string{}
+	for _, d := range giziDefs {
+		def := d.(map[string]any)
+		key, _ := def["key"].(string)
+		kind, _ := def["kind"].(string)
+		giziKind[key] = kind
+	}
+	for key, want := range map[string]string{
+		"biokimia": "repeatable", "pes": "repeatable",
+		"me_frekuensi": "select", "ttd": "repeatable",
+	} {
+		if got := giziKind[key]; got != want {
+			t.Fatalf("asuhan_gizi section %s kind = %q, want %q", key, got, want)
+		}
+	}
+
+	// ases_gizi_mnasf (migration 000098): skor_mnasf + interpretasi_mnasf +
+	// atribusi footer verbatim Nestlé (NFR-GZ-07).
+	if mnasf == nil {
+		t.Fatal("ases_gizi_mnasf template missing")
+	}
+	if mnasf["category"] != "gizi" {
+		t.Fatalf("ases_gizi_mnasf = %v", mnasf)
+	}
+	mnasfDefs, _ := mnasf["sections"].(map[string]any)["sections"].([]any)
+	mnasfKey := map[string]map[string]any{}
+	for _, d := range mnasfDefs {
+		def := d.(map[string]any)
+		key, _ := def["key"].(string)
+		mnasfKey[key] = def
+	}
+	for _, key := range []string{"mnasf_a", "mnasf_b", "mnasf_c", "mnasf_d", "mnasf_e", "mnasf_f", "skor_mnasf", "interpretasi_mnasf", "atribusi"} {
+		if mnasfKey[key] == nil {
+			t.Fatalf("ases_gizi_mnasf missing section %s", key)
+		}
+	}
+	if k, _ := mnasfKey["skor_mnasf"]["kind"].(string); k != "number" {
+		t.Fatalf("skor_mnasf kind = %q, want number", k)
+	}
+	if k, _ := mnasfKey["interpretasi_mnasf"]["kind"].(string); k != "select" {
+		t.Fatalf("interpretasi_mnasf kind = %q, want select", k)
+	}
+	if label, _ := mnasfKey["atribusi"]["value"].(string); !strings.Contains(label, "Société des Produits Nestlé SA") {
+		t.Fatalf("atribusi = %v, want Nestlé footer", mnasfKey["atribusi"])
 	}
 }
 
