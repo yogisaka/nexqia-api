@@ -200,10 +200,11 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 	if soap["scope"] != "platform" || soap["category"] != "soap" {
 		t.Fatalf("soap_dokter = %v", soap)
 	}
-	if v, _ := soap["version"].(float64); v != 3 {
-		t.Fatalf("soap_dokter version = %v, want 3", soap["version"])
+	if v, _ := soap["version"].(float64); v != 4 {
+		t.Fatalf("soap_dokter version = %v, want 4", soap["version"])
 	}
-	// soap_dokter v3 = 22 sections (migration 000095, spec §Kontrak data).
+	// soap_dokter v4 = 22 sections (migration 000096; v3 000095 spec §Kontrak
+	// data) — v4 hanya menambah field waktu pada section alergi.
 	defs, _ := soap["sections"].(map[string]any)["sections"].([]any)
 	if len(defs) != 22 {
 		t.Fatalf("soap_dokter sections = %d, want 22", len(defs))
@@ -511,6 +512,16 @@ func TestClinicalFormValidation(t *testing.T) {
 		rec, resp = post("soap_dokter", sections(`"alergi":[{"tanggal":"10/03/2024"}]`))
 		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'alergi'" {
 			t.Fatalf("tanggal bad = %d %v", rec.Code, resp)
+		}
+		// (k) waktu kejadian HH:MM (template v4, 000096): valid → lolos;
+		// di luar rentang → 400 (clinicalTimeRe).
+		rec, _ = post("soap_dokter", sections(`"alergi":[{"tanggal":"2024-03-10","waktu":"14:30"}]`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("waktu ok = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, resp = post("soap_dokter", sections(`"alergi":[{"waktu":"25:00"}]`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'alergi'" {
+			t.Fatalf("waktu bad = %d %v", rec.Code, resp)
 		}
 	})
 	t.Run("suspect", func(t *testing.T) {
