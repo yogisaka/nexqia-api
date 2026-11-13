@@ -49,6 +49,8 @@ func RegisterClinicalRoutes(rg *gin.RouterGroup) {
 	rg.GET("/admissions/:id/clinical-preview", AccessLog("clinical_form", "view", "id"), GetClinicalBoardPreviewHandler)
 	// Daily completeness board (plan B Task 3, spec §11) — pure read.
 	rg.GET("/clinical/completeness", AccessLog("clinical_form", "view", ""), GetClinicalCompletenessHandler)
+	// Gizi: antropometri + episode + guard profil (plan 2026-11-13-gizi chunk 1 Task 3).
+	RegisterGiziCareRoutes(rg)
 }
 
 type clinicalSectionOption struct {
