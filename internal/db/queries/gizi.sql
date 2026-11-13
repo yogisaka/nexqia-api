@@ -212,3 +212,28 @@ SELECT measured_at, age_days, bb_kg, tb_cm, extras,
 FROM clinical.anthropometry
 WHERE person_id = $1
 ORDER BY measured_at ASC;
+
+-- Timeline gizi (chunk 5 Task 1, spec §7): hasil skrining SEMUA instrument
+-- (bukan DISTINCT ON per instrument seperti ListLatest… di atas) — feed
+-- longitudinal read-only FR-GZ-10, calculated_at DESC.
+-- name: ListNutritionScreeningResultsByAdmission :many
+SELECT id, instrument, score, max_score, interpretation, bands, payload, calculated_at
+FROM clinical.nutrition_screening_result
+WHERE admission_id = $1
+ORDER BY calculated_at DESC;
+
+-- Timeline gizi: audit perubahan profil episode admission ini (FR-GZ-15),
+-- changed_at DESC; reverted_at menyertai baris yang dibatalkan.
+-- name: ListProfileChangesByAdmission :many
+SELECT c.id, c.from_profile, c.to_profile, c.changed_at, c.reverted_at
+FROM clinical.nutrition_profile_change c
+JOIN clinical.nutrition_episode e ON e.id = c.episode_id
+WHERE e.admission_id = $1
+ORDER BY c.changed_at DESC;
+
+-- Timeline gizi: episode yang sudah ditutup pada admission ini (FR-GZ-15).
+-- name: ListClosedEpisodesByAdmission :many
+SELECT id, profile, started_at, closed_at
+FROM clinical.nutrition_episode
+WHERE admission_id = $1 AND closed_at IS NOT NULL
+ORDER BY closed_at DESC;

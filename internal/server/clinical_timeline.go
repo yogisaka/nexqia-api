@@ -185,6 +185,73 @@ func GetClinicalTimelineHandler(c *gin.Context) {
 			"created_at":         tsJSON(d.CreatedAt),
 		}})
 	}
+	// Gizi visibility (spec §7): badge & Tinjau baca hasil terstruktur, bukan JSON form.
+	screenings, err := q.ListNutritionScreeningResultsByAdmission(ctx, id)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	for _, s := range screenings {
+		items = append(items, timelineItem{at: s.CalculatedAt.Time, data: gin.H{
+			"kind":           "nutrition_screening",
+			"id":             uuidJSON(s.ID),
+			"status":         "final",
+			"instrument":     s.Instrument,
+			"score":          s.Score,
+			"max_score":      s.MaxScore,
+			"interpretation": s.Interpretation,
+			"payload":        rawJSONOrNil(s.Payload),
+			"calculated_at":  tsJSON(s.CalculatedAt),
+		}})
+	}
+	anthro, err := q.ListAnthropometryByAdmission(ctx, id)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	for _, a := range anthro {
+		items = append(items, timelineItem{at: a.MeasuredAt.Time, data: gin.H{
+			"kind":        "anthropometry",
+			"id":          uuidJSON(a.ID),
+			"status":      "final",
+			"bb_kg":       numericJSON(a.BbKg),
+			"tb_cm":       numericJSON(a.TbCm),
+			"imt":         numericJSON(a.Imt),
+			"zscore_bbu":  numericJSON(a.ZscoreBbu),
+			"measured_at": tsJSON(a.MeasuredAt),
+		}})
+	}
+	changes, err := q.ListProfileChangesByAdmission(ctx, id)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	for _, ch := range changes {
+		items = append(items, timelineItem{at: ch.ChangedAt.Time, data: gin.H{
+			"kind":         "nutrition_profile_change",
+			"id":           uuidJSON(ch.ID),
+			"status":       "final",
+			"from_profile": ch.FromProfile,
+			"to_profile":   ch.ToProfile,
+			"changed_at":   tsJSON(ch.ChangedAt),
+			"reverted_at":  tsJSON(ch.RevertedAt),
+		}})
+	}
+	closed, err := q.ListClosedEpisodesByAdmission(ctx, id)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	for _, e := range closed {
+		items = append(items, timelineItem{at: e.ClosedAt.Time, data: gin.H{
+			"kind":       "nutrition_episode_closed",
+			"id":         uuidJSON(e.ID),
+			"status":     "final",
+			"profile":    e.Profile,
+			"started_at": tsJSON(e.StartedAt),
+			"closed_at":  tsJSON(e.ClosedAt),
+		}})
+	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].at.After(items[j].at) })
 	feed := make([]gin.H, 0, len(items))
 	for _, it := range items {

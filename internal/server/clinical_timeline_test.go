@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/yogisaka/nexqia-api/internal/server"
 )
@@ -238,5 +239,147 @@ func TestClinicalTimeline(t *testing.T) {
 	companyB, merchantB, _, tokenB := cfSeedEnv(t, ctx, pool, router, "tlb")
 	if rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/admissions/"+admissionID+"/clinical-timeline", tokenB, companyB, merchantB, nil); rec.Code != http.StatusNotFound || resp["error"] != "admission tidak ditemukan" {
 		t.Fatalf("cross-merchant timeline = %d %v, want 404", rec.Code, resp)
+	}
+}
+
+// Timeline kinds gizi (plan 2026-11-13-gizi-nutrition-care chunk 5 Task 1,
+// spec §7): hasil skrining, antropometri, perubahan profil (audit FR-GZ-15)
+// dan episode ditutup masuk feed clinical-timeline yang sama, urut kronologis
+// desc campur antar kind. Fixture langsung SQL (pola gizi_care_test.go /
+// gizi_anthropometry_db_test.go): ref kurva SINTETIS — z dihitung tangan dari
+// rumus LMS: z(7.8) = (7.8/10 − 1)/0.0916666667 = −2.40 (round 2 desimal
+// trigger 000097). Admission kedua tanpa data gizi → items tidak berubah.
+func TestGiziTimelineKinds(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := newTestRouter(t, ctx, pool)
+	companyID, merchantID, userID, token := cfSeedEnv(t, ctx, pool, router, "tlgz")
+	personID, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "tlgz")
+
+	base := time.Now().UTC().Truncate(time.Second)
+	// Ref sintetis bbu laki_laki @548 hari: l=1, m=10, s=0.0916666667 →
+	// z(7.8) = (0.78 − 1)/0.0916666667 = −2.40.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ref.growth_curve (indicator, gender, x_kind, x, l, m, s, source_name, source_version, source_url, downloaded_at)
+		VALUES ('bbu', 'laki_laki', 'age_days', 548, 1, 10, 0.0916666667, 'sintetis', 'tl-gz-test', 'http://test.local/sintetis', now())`); err != nil {
+		t.Fatalf("seed ref bbu: %v", err)
+	}
+
+	// Episode closed (langsung SQL): started base−6h, closed base−1h.
+	var episodeID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO clinical.nutrition_episode
+			(company_id, merchant_id, person_id, admission_id, profile, status, started_at, closed_at, created_by)
+		VALUES ($1, $2, $3, $4, 'balita', 'closed', $5, $6, $7)
+		RETURNING id::text`,
+		companyID, merchantID, personID, admissionID,
+		base.Add(-6*time.Hour), base.Add(-1*time.Hour), userID).Scan(&episodeID); err != nil {
+		t.Fatalf("seed closed episode: %v", err)
+	}
+	_ = episodeID
+
+	// Dua perubahan profil episode tsb: satu unreverted (changed base−4h,
+	// PALING LAMA) dan satu reverted (changed base, PALING BARU).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO clinical.nutrition_profile_change
+			(company_id, merchant_id, person_id, episode_id, from_profile, to_profile, changed_at, changed_by)
+		VALUES ($1, $2, $3, (SELECT id FROM clinical.nutrition_episode WHERE admission_id = $4::uuid), 'dewasa', 'balita', $5, $6)`,
+		companyID, merchantID, personID, admissionID, base.Add(-4*time.Hour), userID); err != nil {
+		t.Fatalf("seed unreverted change: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO clinical.nutrition_profile_change
+			(company_id, merchant_id, person_id, episode_id, from_profile, to_profile, changed_at, changed_by, reverted_at, reverted_by)
+		VALUES ($1, $2, $3, (SELECT id FROM clinical.nutrition_episode WHERE admission_id = $4::uuid), 'balita', 'dewasa', $5, $6, $5, $6)`,
+		companyID, merchantID, personID, admissionID, base, userID); err != nil {
+		t.Fatalf("seed reverted change: %v", err)
+	}
+
+	// Hasil skrining MST skor 3 → interpretasi 'sedang' (calculated base−3h).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO clinical.nutrition_screening_result
+			(company_id, merchant_id, person_id, admission_id, instrument, score, max_score,
+			 interpretation, bands, payload, calculated_at, calculated_by, created_by)
+		VALUES ($1, $2, $3, $4, 'mst', 3, 5, 'sedang', '[]'::jsonb, '{"berisiko_mst":true}'::jsonb, $5, $6, $6)`,
+		companyID, merchantID, personID, admissionID, base.Add(-3*time.Hour), userID); err != nil {
+		t.Fatalf("seed nsr: %v", err)
+	}
+
+	// Antropometri balita: bb 7.8, tb 75 → imt = round(7.8/0.75², 1) = 13.9;
+	// zscore_bbu = −2.40 via trigger (measured base−2h).
+	var anthroID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO clinical.anthropometry
+			(company_id, merchant_id, person_id, admission_id, measured_at, gender, age_days, bb_kg, tb_cm, created_by)
+		VALUES ($1, $2, $3, $4, $5, 'laki_laki', 548, 7.8, 75.0, $6)
+		RETURNING id::text`,
+		companyID, merchantID, personID, admissionID, base.Add(-2*time.Hour), userID).Scan(&anthroID); err != nil {
+		t.Fatalf("seed anthropometry: %v", err)
+	}
+
+	rec, resp := cfDo(t, router, http.MethodGet, "/api/v1/admissions/"+admissionID+"/clinical-timeline", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("timeline = %d: %s", rec.Code, rec.Body.String())
+	}
+	items := resp["data"].(map[string]any)["items"].([]any)
+	// Urutan desc campur: reverted change (base) > episode closed (−1h) >
+	// anthropometry (−2h) > nsr (−3h) > unreverted change (−4h).
+	wantOrder := []string{
+		"nutrition_profile_change", "nutrition_episode_closed", "anthropometry",
+		"nutrition_screening", "nutrition_profile_change",
+	}
+	if len(items) != len(wantOrder) {
+		t.Fatalf("items = %v, want %d gizi entries", items, len(wantOrder))
+	}
+	for i, kind := range wantOrder {
+		if got := items[i].(map[string]any)["kind"]; got != kind {
+			t.Fatalf("items[%d].kind = %v, want %s (order %v)", i, got, kind, wantOrder)
+		}
+	}
+
+	// nsr: skor 3 / max 5 / sedang / status final / payload terstruktur.
+	nsr := items[3].(map[string]any)
+	if nsr["instrument"] != "mst" || nsr["score"] != float64(3) || nsr["max_score"] != float64(5) ||
+		nsr["interpretation"] != "sedang" || nsr["status"] != "final" ||
+		nsr["payload"] == nil || nsr["calculated_at"] == nil {
+		t.Fatalf("nsr item = %v", nsr)
+	}
+	// antropometri: bb 7.8, tb 75, imt 13.9, zscore_bbu −2.4 (ref sintetis).
+	anth := items[2].(map[string]any)
+	if anth["status"] != "final" || gzNum(t, anth["bb_kg"]) != 7.8 || gzNum(t, anth["tb_cm"]) != 75 ||
+		gzNum(t, anth["imt"]) != 13.9 || gzNum(t, anth["zscore_bbu"]) != -2.4 || anth["measured_at"] == nil {
+		t.Fatalf("anthropometry item = %v", anth)
+	}
+	// perubahan profil: baru = reverted (reverted_at terisi), lama = tidak.
+	chNew := items[0].(map[string]any)
+	if chNew["from_profile"] != "balita" || chNew["to_profile"] != "dewasa" ||
+		chNew["status"] != "final" || chNew["changed_at"] == nil || chNew["reverted_at"] == nil {
+		t.Fatalf("reverted change item = %v", chNew)
+	}
+	chOld := items[4].(map[string]any)
+	if chOld["from_profile"] != "dewasa" || chOld["to_profile"] != "balita" ||
+		chOld["reverted_at"] != nil || chOld["changed_at"] == nil {
+		t.Fatalf("unreverted change item = %v", chOld)
+	}
+	// episode closed: profil balita + periode.
+	ep := items[1].(map[string]any)
+	if ep["profile"] != "balita" || ep["status"] != "final" ||
+		ep["started_at"] == nil || ep["closed_at"] == nil {
+		t.Fatalf("closed episode item = %v", ep)
+	}
+
+	// Sub: admission lain TANPA data gizi → items hanya non-gizi (tidak ada
+	// kind gizi yang bocor antar admission).
+	admissionBID, _ := seedAuditPersonAdmission(t, ctx, pool, router, token, companyID, merchantID, personID, "tlgz-b")
+	if rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/admissions/"+admissionBID+"/clinical-timeline", token, companyID, merchantID, nil); rec.Code != http.StatusOK {
+		t.Fatalf("timeline B = %d: %s", rec.Code, rec.Body.String())
+	}
+	itemsB := resp["data"].(map[string]any)["items"].([]any)
+	for _, it := range itemsB {
+		kind := it.(map[string]any)["kind"].(string)
+		switch kind {
+		case "nutrition_screening", "anthropometry", "nutrition_profile_change", "nutrition_episode_closed":
+			t.Fatalf("admission B leaked gizi kind %s: %v", kind, itemsB)
+		}
 	}
 }
