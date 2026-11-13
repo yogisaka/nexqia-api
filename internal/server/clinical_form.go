@@ -51,6 +51,8 @@ func RegisterClinicalRoutes(rg *gin.RouterGroup) {
 	rg.GET("/clinical/completeness", AccessLog("clinical_form", "view", ""), GetClinicalCompletenessHandler)
 	// Gizi: antropometri + episode + guard profil (plan 2026-11-13-gizi chunk 1 Task 3).
 	RegisterGiziCareRoutes(rg)
+	// Gizi: series growth KMS + band bumil (plan 2026-11-13-gizi chunk 3 Task 1).
+	RegisterGrowthSeriesRoutes(rg)
 }
 
 type clinicalSectionOption struct {

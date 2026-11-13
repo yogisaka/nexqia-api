@@ -168,3 +168,21 @@ RETURNING id;
 -- name: CountAsuhanGiziByAdmission :one
 SELECT count(*) FROM clinical_form.form_instance
 WHERE admission_id = $1 AND form_type = 'asuhan_gizi';
+
+-- Series kurva pertumbuhan (chunk 3 Task 1, FR-GZ-14): baris ref per
+-- indikator+gender, x ASC — interpolasi DILARANG, hanya baris tabel.
+-- name: ListGrowthCurveByIndicatorGender :many
+SELECT x, l, m, s, source_version, source_url
+FROM ref.growth_curve
+WHERE indicator = $1 AND gender = $2
+ORDER BY x ASC;
+
+-- Titik pasien: SEMUA pengukuran antropometri person lintas admission,
+-- measured_at ASC (kronologis — flag_t bb dan delta bumil butuh urutan naik).
+-- name: ListAnthropometryByPerson :many
+SELECT measured_at, age_days, bb_kg, tb_cm, extras,
+       zscore_bbu, zscore_tbu, zscore_bbtb, zscore_imtu, zscore_lku, zscore_lila,
+       imt, imt_kategori, status, curve_version
+FROM clinical.anthropometry
+WHERE person_id = $1
+ORDER BY measured_at ASC;
