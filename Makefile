@@ -1,4 +1,4 @@
-.PHONY: migrate-up migrate-down migrate-force sync-runtime-password seed seed-legacy-terminology import-terminology import-masterdata bootstrap-platform-admin test test-integration lint fmt run dev sqlc-generate swag-generate
+.PHONY: migrate-up migrate-down migrate-force sync-runtime-password seed seed-legacy-terminology import-terminology import-masterdata import-growth-curve bootstrap-platform-admin test test-integration lint fmt run dev sqlc-generate swag-generate
 
 migrate-up:
 	set -a && . ./.env && set +a && $$(go env GOPATH)/bin/migrate -path migrations -database "$$DATABASE_URL" up
@@ -26,6 +26,11 @@ seed-legacy-terminology:
 
 import-masterdata:
 	set -a && . ./.env && set +a && go run ./cmd/import-masterdata $(ARGS)
+
+# CSV kurva WHO (data-import/growth-curve/*.csv) -> ref.growth_curve.
+# Validasi tanpa DB: make import-growth-curve ARGS="--dry-run"
+import-growth-curve:
+	set -a && . ./.env && set +a && go run ./cmd/import-growth-curve --dir data-import/growth-curve $(ARGS)
 
 bootstrap-platform-admin:
 	set -a && . ./.env && set +a && go run ./cmd/bootstrap-platform-admin
