@@ -451,6 +451,10 @@ definitions:
       name:
         type: string
     type: object
+  server.createGiziAnthropometryRequest:
+    type: object
+  server.createGiziNutritionEpisodeRequest:
+    type: object
   server.createIncidentRequest:
     properties:
       admission_id:
@@ -2574,6 +2578,8 @@ definitions:
         type: boolean
       row_version:
         type: integer
+    type: object
+  server.updateGiziNutritionEpisodeRequest:
     type: object
   server.updateIncidentStatusRequest:
     properties:
@@ -4971,6 +4977,70 @@ paths:
       summary: Submit a draft claim batch (spec §4.2.4)
       tags:
       - claim-batch
+  /clinical/anthropometry:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Admission UUID
+        in: query
+        name: admission_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List anthropometry measurements of an admission (measured_at DESC)
+      tags:
+      - clinical
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Measurement data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createGiziAnthropometryRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Record an anthropometry measurement (snapshot via trigger)
+      tags:
+      - clinical
   /clinical/completeness:
     get:
       description: Per-outpatient-visit soft completeness checks (nurse assessment,
@@ -5490,6 +5560,219 @@ paths:
       security:
       - BearerAuth: []
       summary: Sign (TTE) a draft clinical form entry; locks it
+      tags:
+      - clinical
+  /clinical/growth-series:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Person UUID
+        in: query
+        name: person_id
+        required: true
+        type: string
+      - description: bbu|tbu|bbtb|imtu|lku|lila|bumil_bb
+        in: query
+        name: indicator
+        required: true
+        type: string
+      - description: kurus|normal|gemuk|obes (bumil_bb; default normal)
+        in: query
+        name: imt_pra_hamil
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 'Growth series: WHO LMS curve + patient points, or bumil weight bands'
+      tags:
+      - clinical
+  /clinical/nutrition-episode:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Admission UUID
+        in: query
+        name: admission_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Current nutrition episode of an admission + screening summary
+      tags:
+      - clinical
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Episode data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createGiziNutritionEpisodeRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Open a nutrition episode for an admission (guard close_active)
+      tags:
+      - clinical
+  /clinical/nutrition-episode/{id}:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Episode UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Patch data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateGiziNutritionEpisodeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Patch a nutrition episode (optimistic lock; profile change audited)
+      tags:
+      - clinical
+  /clinical/nutrition-episode/{id}/revert-profile:
+    post:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Episode UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Undo the last unreverted profile change of an episode (FR-GZ-01)
+      tags:
+      - clinical
+  /clinical/nutrition-episodes:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Person UUID
+        in: query
+        name: person_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+      security:
+      - BearerAuth: []
+      summary: List a person's nutrition episodes + profile changes (FR-GZ-15)
       tags:
       - clinical
   /clinical/nutrition-orders:
@@ -10542,6 +10825,31 @@ paths:
       summary: List service items under a merchant
       tags:
       - tariff
+  /merchants/{id}/staff:
+    get:
+      description: 'Minimal read-only directory for clinical pickers: id, username,'
+      parameters:
+      - description: Merchant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List active staff of a merchant (read-only directory)
+      tags:
+      - rbac
   /merchants/{id}/stock:
     get:
       parameters:

@@ -351,15 +351,24 @@ func TestGiziTimelineKinds(t *testing.T) {
 		t.Fatalf("anthropometry item = %v", anth)
 	}
 	// perubahan profil: baru = reverted (reverted_at terisi), lama = tidak.
+	// Nama pengubah diambil dari DB (fixture seed kedua perubahan oleh user
+	// yang sama) — assert bukan fabricated.
+	var changerName string
+	if err := pool.QueryRow(ctx,
+		`SELECT username FROM core.app_user WHERE id = $1::uuid`, userID).Scan(&changerName); err != nil {
+		t.Fatalf("lookup changer username: %v", err)
+	}
 	chNew := items[0].(map[string]any)
 	if chNew["from_profile"] != "balita" || chNew["to_profile"] != "dewasa" ||
-		chNew["status"] != "final" || chNew["changed_at"] == nil || chNew["reverted_at"] == nil {
-		t.Fatalf("reverted change item = %v", chNew)
+		chNew["status"] != "final" || chNew["changed_at"] == nil || chNew["reverted_at"] == nil ||
+		chNew["changed_by_name"] != changerName || chNew["reverted_by_name"] != changerName {
+		t.Fatalf("reverted change item = %v, want changed_by_name=%q", chNew, changerName)
 	}
 	chOld := items[4].(map[string]any)
 	if chOld["from_profile"] != "dewasa" || chOld["to_profile"] != "balita" ||
-		chOld["reverted_at"] != nil || chOld["changed_at"] == nil {
-		t.Fatalf("unreverted change item = %v", chOld)
+		chOld["reverted_at"] != nil || chOld["changed_at"] == nil ||
+		chOld["changed_by_name"] != changerName || chOld["reverted_by_name"] != nil {
+		t.Fatalf("unreverted change item = %v, want changed_by_name=%q, reverted_by_name=nil", chOld, changerName)
 	}
 	// episode closed: profil balita + periode.
 	ep := items[1].(map[string]any)

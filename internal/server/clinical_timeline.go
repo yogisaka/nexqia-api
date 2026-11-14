@@ -228,13 +228,15 @@ func GetClinicalTimelineHandler(c *gin.Context) {
 	}
 	for _, ch := range changes {
 		items = append(items, timelineItem{at: ch.ChangedAt.Time, data: gin.H{
-			"kind":         "nutrition_profile_change",
-			"id":           uuidJSON(ch.ID),
-			"status":       "final",
-			"from_profile": ch.FromProfile,
-			"to_profile":   ch.ToProfile,
-			"changed_at":   tsJSON(ch.ChangedAt),
-			"reverted_at":  tsJSON(ch.RevertedAt),
+			"kind":             "nutrition_profile_change",
+			"id":               uuidJSON(ch.ID),
+			"status":           "final",
+			"from_profile":     ch.FromProfile,
+			"to_profile":       ch.ToProfile,
+			"changed_at":       tsJSON(ch.ChangedAt),
+			"changed_by_name":  textJSON(ch.ChangedByName),
+			"reverted_at":      tsJSON(ch.RevertedAt),
+			"reverted_by_name": textJSON(ch.RevertedByName),
 		}})
 	}
 	closed, err := q.ListClosedEpisodesByAdmission(ctx, id)

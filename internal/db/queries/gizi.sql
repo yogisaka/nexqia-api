@@ -225,9 +225,12 @@ ORDER BY calculated_at DESC;
 -- Timeline gizi: audit perubahan profil episode admission ini (FR-GZ-15),
 -- changed_at DESC; reverted_at menyertai baris yang dibatalkan.
 -- name: ListProfileChangesByAdmission :many
-SELECT c.id, c.from_profile, c.to_profile, c.changed_at, c.reverted_at
+SELECT c.id, c.from_profile, c.to_profile, c.changed_at, c.reverted_at,
+       cu.username AS changed_by_name, ru.username AS reverted_by_name
 FROM clinical.nutrition_profile_change c
 JOIN clinical.nutrition_episode e ON e.id = c.episode_id
+LEFT JOIN core.app_user cu ON cu.id = c.changed_by
+LEFT JOIN core.app_user ru ON ru.id = c.reverted_by
 WHERE e.admission_id = $1
 ORDER BY c.changed_at DESC;
 
