@@ -240,3 +240,18 @@ SELECT id, profile, started_at, closed_at
 FROM clinical.nutrition_episode
 WHERE admission_id = $1 AND closed_at IS NOT NULL
 ORDER BY closed_at DESC;
+
+-- Riwayat revisi order diet (plan 2026-11-15-gizi-dewasa-1-be-data Task 2,
+-- spec 2026-11-15-gizi-dewasa-revisi-design §4.2/§5; tabel migration 000101).
+-- name: InsertNutritionOrderRevision :exec
+INSERT INTO clinical.nutrition_order_revision
+    (company_id, merchant_id, order_id, row_version, action, note, changed_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: ListNutritionOrderRevisions :many
+SELECT r.row_version, r.action, r.note, u.username AS changed_by_name, r.changed_at
+FROM clinical.nutrition_order_revision r
+JOIN clinical.nutrition_order o ON o.id = r.order_id
+JOIN core.app_user u ON u.id = r.changed_by
+WHERE o.admission_id = $1
+ORDER BY r.changed_at DESC;

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -21,6 +22,7 @@ func RegisterClinicalNutritionRoutes(rg *gin.RouterGroup) {
 	rg.POST("/clinical/diet-types", CreateDietTypeHandler)
 	rg.POST("/clinical/nutrition-orders", CreateNutritionOrderHandler)
 	rg.GET("/clinical/nutrition-orders", AccessLog("nutrition_order", "view", "admission_id"), ListNutritionOrdersHandler)
+	rg.GET("/clinical/nutrition-order-revisions", AccessLog("nutrition_order", "view", "admission_id"), ListNutritionOrderRevisionsHandler)
 	rg.PATCH("/clinical/nutrition-orders/:id", UpdateNutritionOrderHandler)
 }
 
@@ -273,6 +275,17 @@ func CreateNutritionOrderHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Riwayat revisi (spec 2026-11-15-gizi-dewasa-revisi §4.2): baris create
+	// DALAM tx ambient yang sama — error insert → respondInternalError (≥400)
+	// → rollback ikut membatalkan order.
+	if err := q.InsertNutritionOrderRevision(ctx, sqlcgen.InsertNutritionOrderRevisionParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID, OrderID: created.ID,
+		RowVersion: created.RowVersion, Action: "create", Note: pgtype.Text{},
+		ChangedBy: AuthUserID(c),
+	}); err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	withDiet, okJSON := nutritionOrderWithDiet(c, q, created.ID)
 	if !okJSON {
 		return
@@ -333,6 +346,8 @@ type updateNutritionOrderRequest struct {
 	RestrictionNote     *string  `json:"restriction_note"`
 	OrderingPhysicianID *string  `json:"ordering_physician_id"`
 	Status              *string  `json:"status"`
+	// Catatan revisi opsional (spec §4.2): masuk baris riwayat, bukan order.
+	Note *string `json:"note"`
 	// No binding: a missing row_version must yield the 409 below, not a 400.
 	RowVersion *int64 `json:"row_version"`
 }
@@ -372,6 +387,15 @@ func UpdateNutritionOrderHandler(c *gin.Context) {
 		// row_version is mandatory and must match the stored value.
 		c.JSON(http.StatusConflict, gin.H{"error": "data sudah berubah"})
 		return
+	}
+	// Catatan revisi opsional, maks 200 rune (kontrak Task 2).
+	var revNote pgtype.Text
+	if req.Note != nil {
+		if utf8.RuneCountInString(*req.Note) > 200 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "note maksimal 200 karakter"})
+			return
+		}
+		revNote = pgtype.Text{String: *req.Note, Valid: true}
 	}
 	q := sqlcgen.New(TxFromContext(c))
 	ctx := c.Request.Context()
@@ -461,15 +485,30 @@ func UpdateNutritionOrderHandler(c *gin.Context) {
 	if status == "completed" || status == "cancelled" {
 		endedAt = pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
 	}
-	if _, err := q.UpdateNutritionOrder(ctx, sqlcgen.UpdateNutritionOrderParams{
+	updated, err := q.UpdateNutritionOrder(ctx, sqlcgen.UpdateNutritionOrderParams{
 		ID: id, OrderingPhysicianID: physicianID, DietTypeID: dietTypeID,
 		Texture: texture, Route: route, CalorieTarget: calorieTarget,
 		RestrictionNote: restrictionNote, Status: status, EndedAt: endedAt,
 		UpdatedBy: AuthUserID(c), RowVersion: int32(*req.RowVersion),
-	}); errors.Is(err, pgx.ErrNoRows) {
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
 		c.JSON(http.StatusConflict, gin.H{"error": "data sudah berubah"})
 		return
 	} else if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	// Riwayat revisi (spec §4.2): baris revise/stop DALAM tx yang sama dengan
+	// write order; transisi ke status terminal → action 'stop'.
+	action := "revise"
+	if status == "completed" || status == "cancelled" {
+		action = "stop"
+	}
+	if err := q.InsertNutritionOrderRevision(ctx, sqlcgen.InsertNutritionOrderRevisionParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID, OrderID: id,
+		RowVersion: updated.RowVersion, Action: action, Note: revNote,
+		ChangedBy: AuthUserID(c),
+	}); err != nil {
 		respondInternalError(c, err)
 		return
 	}
@@ -478,4 +517,62 @@ func UpdateNutritionOrderHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": nutritionOrderJSON(sqlcgen.ListNutritionOrdersByAdmissionWithDietRow(withDiet)), "meta": gin.H{}})
+}
+
+// ListNutritionOrderRevisionsHandler godoc
+// @Summary List revision history rows of the nutrition orders of an admission
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param admission_id query string true "Admission UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /clinical/nutrition-order-revisions [get]
+func ListNutritionOrderRevisionsHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalRecordView, merchantID) {
+		return
+	}
+	raw := c.Query("admission_id")
+	if raw == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "admission_id wajib diisi"})
+		return
+	}
+	admissionID, okID := parseUUID(raw)
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid admission_id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	ctx := c.Request.Context()
+	// Cross-merchant admission → 404, same pattern as ListNutritionOrdersHandler.
+	admission, err := q.GetAdmissionByID(ctx, admissionID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && admission.MerchantID != merchantID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "admission tidak ditemukan"})
+		return
+	} else if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	rows, err := q.ListNutritionOrderRevisions(ctx, admissionID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, gin.H{
+			"row_version":     r.RowVersion,
+			"action":          r.Action,
+			"note":            textJSON(r.Note),
+			"changed_by_name": r.ChangedByName,
+			"changed_at":      tsJSON(r.ChangedAt),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items, "meta": gin.H{}})
 }

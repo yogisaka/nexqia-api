@@ -2718,6 +2718,10 @@ definitions:
         type: number
       diet_type_id:
         type: string
+      note:
+        description: 'Catatan revisi opsional (spec §4.2): masuk baris riwayat, bukan
+          order.'
+        type: string
       ordering_physician_id:
         type: string
       restriction_note:
@@ -5773,6 +5777,39 @@ paths:
       security:
       - BearerAuth: []
       summary: List a person's nutrition episodes + profile changes (FR-GZ-15)
+      tags:
+      - clinical
+  /clinical/nutrition-order-revisions:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Admission UUID
+        in: query
+        name: admission_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List revision history rows of the nutrition orders of an admission
       tags:
       - clinical
   /clinical/nutrition-orders:
