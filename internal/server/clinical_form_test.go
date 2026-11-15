@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -236,7 +237,8 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		}
 	}
 
-	// asuhan_gizi (migration 000098): category gizi, 21 sections, key kinds.
+	// asuhan_gizi (migration 000098; 000102 tambah diagnosis_terkait):
+	// category gizi, 22 sections, key kinds.
 	if asuhan == nil {
 		t.Fatal("asuhan_gizi template missing")
 	}
@@ -244,8 +246,8 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		t.Fatalf("asuhan_gizi = %v", asuhan)
 	}
 	giziDefs, _ := asuhan["sections"].(map[string]any)["sections"].([]any)
-	if len(giziDefs) != 21 {
-		t.Fatalf("asuhan_gizi sections = %d, want 21", len(giziDefs))
+	if len(giziDefs) != 22 {
+		t.Fatalf("asuhan_gizi sections = %d, want 22", len(giziDefs))
 	}
 	giziKind := map[string]string{}
 	for _, d := range giziDefs {
@@ -257,6 +259,7 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 	for key, want := range map[string]string{
 		"biokimia": "repeatable", "pes": "repeatable",
 		"me_frekuensi": "select", "ttd": "repeatable",
+		"diagnosis_terkait": "multiselect",
 	} {
 		if got := giziKind[key]; got != want {
 			t.Fatalf("asuhan_gizi section %s kind = %q, want %q", key, got, want)
@@ -469,6 +472,36 @@ func TestClinicalFormValidation(t *testing.T) {
 		`"skor_mst":2`, `"risiko_gizi":"berisiko"`))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("mst konsisten = %d: %s", rec.Code, rec.Body.String())
+	}
+	// MST skor 5 (opsi 0–5, regresi plan 1): 2+1+2 = 5 konsisten → 201.
+	rec, _ = post("ases_gizi_skrining", sections(
+		`"mst_penurunan_bb":"2"`, `"mst_nafsu_makan":"1"`, `"mst_sakit_akut":"2"`,
+		`"skor_mst":5`, `"risiko_gizi":"berisiko"`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("mst skor 5 = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// ── asuhan_gizi PES NI + multiselect (plan 2026-11-15-gizi-dewasa-
+	// 4-adime-pes Task 2, migration 000102) ──
+	// problem = kode NI pertama Lampiran A → diterima.
+	rec, _ = post("asuhan_gizi", sections(`"pes":[{"problem":"NI-1.1"}]`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("pes NI-1.1 = %d: %s", rec.Code, rec.Body.String())
+	}
+	// Kode GD- legacy ditolak (enum berganti ke NI, value set Lampiran A).
+	rec, resp = post("asuhan_gizi", sections(`"pes":[{"problem":"GD-01"}]`))
+	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'pes'" {
+		t.Fatalf("pes GD-01 = %d %v", rec.Code, resp)
+	}
+	// diagnosis_terkait multiselect: options [] → kode episode bebas.
+	rec, _ = post("asuhan_gizi", sections(`"diagnosis_terkait":["E11.9","I10"]`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("diagnosis_terkait array = %d: %s", rec.Code, rec.Body.String())
+	}
+	// Bukan array → ditolak.
+	rec, resp = post("asuhan_gizi", sections(`"diagnosis_terkait":"E11.9"`))
+	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'diagnosis_terkait'" {
+		t.Fatalf("diagnosis_terkait string = %d %v", rec.Code, resp)
 	}
 	// Unsupported kind in template data → 400 (merchant sees the platform row).
 	if _, err := pool.Exec(ctx,
@@ -1073,5 +1106,87 @@ func TestTerminologyAPILookupPermission(t *testing.T) {
 	none := cfSeedUserWithPerms(t, ctx, pool, router, companyID, merchantID, "cf.term.none")
 	if rec, _ := cfDo(t, router, http.MethodGet, "/api/v1/terminology/search?system=SRC&q=One", none, companyID, merchantID, nil); rec.Code != http.StatusForbidden {
 		t.Fatalf("no-perm search = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestClinicalFormAsuhanGiziPesOptionsDiff — diff mekanis sections
+// asuhan_gizi post-migration 000102 vs baseline 000098:15-88 (melindungi 21
+// section lain dari typo): semua key baseline tetap ada, delta hanya
+// +diagnosis_terkait, opsi `problem` seluruhnya ^NI-, dan tidak ada "GD-"
+// di opsi manapun (plan 2026-11-15-gizi-dewasa-4-adime-pes Task 2).
+func TestClinicalFormAsuhanGiziPesOptionsDiff(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	var raw string
+	if err := pool.QueryRow(ctx,
+		`SELECT sections::text FROM core.template_clinical_form WHERE form_type = 'asuhan_gizi'`,
+	).Scan(&raw); err != nil {
+		t.Fatalf("load asuhan_gizi sections: %v", err)
+	}
+	var defs struct {
+		Sections []struct {
+			Key     string `json:"key"`
+			Options []struct {
+				Value string `json:"value"`
+			} `json:"options"`
+			Fields []struct {
+				Key     string `json:"key"`
+				Options []struct {
+					Value string `json:"value"`
+				} `json:"options"`
+			} `json:"fields"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal([]byte(raw), &defs); err != nil {
+		t.Fatalf("decode sections: %v", err)
+	}
+	// 21 key baseline 000098:15-88, urutan definisi.
+	baseline := []string{
+		"biokimia", "diet_history", "asupan", "lingkungan", "pes",
+		"diet_jenis", "diet_porsi_hari", "preskripsi", "preskripsi_catatan",
+		"suplementasi", "pangan_lokal", "edukasi", "edukasi_catatan",
+		"me_indikator", "me_rentang", "me_frekuensi", "me_reassessment",
+		"me_evaluasi", "me_status", "ttd", "tinja",
+	}
+	got := make(map[string]bool, len(defs.Sections))
+	for _, d := range defs.Sections {
+		got[d.Key] = true
+	}
+	if len(defs.Sections) != len(baseline)+1 {
+		t.Fatalf("sections = %d, want %d (21 baseline + diagnosis_terkait)", len(defs.Sections), len(baseline)+1)
+	}
+	for _, k := range baseline {
+		if !got[k] {
+			t.Fatalf("section baseline 000098 hilang: %s", k)
+		}
+	}
+	if !got["diagnosis_terkait"] {
+		t.Fatal("delta sections bukan hanya +diagnosis_terkait: key itu tidak ada")
+	}
+	niRe := regexp.MustCompile(`^NI-`)
+	for _, d := range defs.Sections {
+		for _, o := range d.Options {
+			if strings.Contains(o.Value, "GD-") {
+				t.Fatalf("section %s: opsi %q masih memakai kode GD-", d.Key, o.Value)
+			}
+		}
+		for _, f := range d.Fields {
+			for _, o := range f.Options {
+				if strings.Contains(o.Value, "GD-") {
+					t.Fatalf("section %s field %s: opsi %q masih memakai kode GD-", d.Key, f.Key, o.Value)
+				}
+			}
+			// Lampiran A: seluruh opsi problem cocok pola ^NI-.
+			if d.Key == "pes" && f.Key == "problem" {
+				if len(f.Options) != 42 {
+					t.Fatalf("pes problem options = %d, want 42 (Lampiran A)", len(f.Options))
+				}
+				for _, o := range f.Options {
+					if !niRe.MatchString(o.Value) {
+						t.Fatalf("pes problem opsi %q tidak cocok pola ^NI-", o.Value)
+					}
+				}
+			}
+		}
 	}
 }

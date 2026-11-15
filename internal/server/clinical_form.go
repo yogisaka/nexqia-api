@@ -99,6 +99,10 @@ var clinicalSectionKinds = map[string]bool{
 	"textarea": true, "text": true, "number": true, "select": true,
 	"vitals": true, "diagnosis": true, "date": true,
 	"repeatable": true, "calc": true,
+	// Gizi ADIME (plan 2026-11-15-gizi-dewasa-4-adime-pes Task 2):
+	// multiselect = JSON array of non-empty strings; dengan options di
+	// template → tiap string wajib anggota options, tanpa options → bebas.
+	"multiselect": true,
 	// SOAP v3 kinds (spec 2026-11-10-cppt-pemeriksaan-v3 §Kontrak data).
 	"radio_conditional": true, "antropometri": true, "physical_exam": true,
 	"consciousness": true, "rtl": true, "rekomendasi": true,
@@ -224,6 +228,28 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 			if i := strings.IndexByte(s, '_'); i > 0 {
 				if n, err := strconv.Atoi(s[i+1:]); err == nil {
 					mnasf[s[:i]] = n
+				}
+			}
+		case "multiselect":
+			var vs []string
+			if err := json.Unmarshal(rawVal, &vs); err != nil {
+				clinicalInvalidSection(c, d.Key)
+				return nil, false
+			}
+			allowed := make(map[string]bool, len(d.Options))
+			for _, o := range d.Options {
+				allowed[o.Value] = true
+			}
+			for _, v := range vs {
+				if v == "" {
+					clinicalInvalidSection(c, d.Key)
+					return nil, false
+				}
+				// options [] (mis. diagnosis_terkait, kode episode dinamis)
+				// → string bebas (kosong di template tidak membatasi).
+				if len(allowed) > 0 && !allowed[v] {
+					clinicalInvalidSection(c, d.Key)
+					return nil, false
 				}
 			}
 		case "number":
