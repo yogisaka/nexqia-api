@@ -132,6 +132,187 @@ func giziMnasfInterpretation(score int) string {
 	}
 }
 
+// giziPemicuBumilResult hasil parse form ases_gizi_pemicu_bumil (spec
+// 2026-11-16-gizi-maternal-revisi §4.3/§5). Score/Interpretation diisi di
+// persist (butuh mst_berisiko dari nsr episode).
+type giziPemicuBumilResult struct {
+	Lila, Hb, Mgg  *float64
+	Kek, Anemia    bool
+	Gradasi        string // "" | ringan | sedang | berat (WHO ambang kehamilan)
+	Trimester      string // "" | t1 | t2 | t3
+	Score          int
+	Interpretation string
+}
+
+// giziPemicuBumilSectionNum ekstrak satu angka dari sections key (pola
+// giziMstScore: json.Number → Float64); key tak-ada/kosong/tak-valid → nil.
+func giziPemicuBumilSectionNum(sections map[string]json.RawMessage, key string) *float64 {
+	rawVal, ok := sections[key]
+	if !ok || clinicalSectionEmpty(rawVal) {
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(rawVal, &n); err != nil {
+		return nil
+	}
+	v, err := n.Float64()
+	if err != nil {
+		return nil
+	}
+	return &v
+}
+
+// giziPemicuBumilResult ekstrak pemicu risiko bumil dari form_data
+// ases_gizi_pemicu_bumil (spec §5): kek = lila < 23,5; trimester mgg 1–13 t1,
+// 14–27 t2, ≥28 t3; anemia = hb < 10,5 (t2) | < 11 (t1/t3) bila trimester
+// diketahui; gradasi WHO: ringan ≥10, sedang 7–9,9, berat <7. Semua section
+// kosong → ok=false (draft parsial, hook dilewati).
+func parseGiziPemicuBumilResult(formType string, formData json.RawMessage) (giziPemicuBumilResult, bool) {
+	var res giziPemicuBumilResult
+	if formType != "ases_gizi_pemicu_bumil" {
+		return res, false
+	}
+	var payload struct {
+		Sections map[string]json.RawMessage `json:"sections"`
+	}
+	if err := json.Unmarshal(formData, &payload); err != nil {
+		return res, false
+	}
+	res.Lila = giziPemicuBumilSectionNum(payload.Sections, "lila_cm")
+	res.Hb = giziPemicuBumilSectionNum(payload.Sections, "hb_gdl")
+	res.Mgg = giziPemicuBumilSectionNum(payload.Sections, "mgg")
+	if res.Lila == nil && res.Hb == nil && res.Mgg == nil {
+		return res, false
+	}
+	res.Kek = res.Lila != nil && *res.Lila < 23.5
+	switch {
+	case res.Mgg != nil && *res.Mgg >= 28:
+		res.Trimester = "t3"
+	case res.Mgg != nil && *res.Mgg >= 14:
+		res.Trimester = "t2"
+	case res.Mgg != nil && *res.Mgg >= 1:
+		res.Trimester = "t1"
+	}
+	cutoff := 11.0
+	if res.Trimester == "t2" {
+		cutoff = 10.5
+	}
+	res.Anemia = res.Hb != nil && res.Trimester != "" && *res.Hb < cutoff
+	if res.Anemia {
+		switch {
+		case *res.Hb >= 10:
+			res.Gradasi = "ringan"
+		case *res.Hb >= 7:
+			res.Gradasi = "sedang"
+		default:
+			res.Gradasi = "berat"
+		}
+	}
+	return res, true
+}
+
+// b2i konversi bool → 0/1 (hitungan pemicu).
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// persistGiziPemicuBumilResult menulis hasil pemicu bumil ke
+// clinical.nutrition_screening_result (instrument 'pemicu_bumil', max_score 3,
+// spec §4.3): score = jumlah pemicu positif (kek + anemia + mst_berisiko);
+// mst_berisiko = skor nsr instrument 'mst' terbaru admission ≥ 2 (query sama
+// dengan evaluateGiziRisk). Idempoten UPDATE-then-INSERT pola mnasf (raw SQL
+// ambient tx; conflict target = index partial uq_nsr_form_instrument).
+func persistGiziPemicuBumilResult(c *gin.Context, formID, admissionID, personID pgtype.UUID, res giziPemicuBumilResult, episodeID pgtype.UUID) bool {
+	merchantID, okM := requireMerchantHeader(c)
+	if !okM {
+		return false
+	}
+	ctx := c.Request.Context()
+	q := sqlcgen.New(TxFromContext(c))
+	// mst_berisiko: skor MST ter-persist terbaru episode ≥ 2 (pola rules).
+	mstBerisiko := false
+	screen, err := q.ListLatestNutritionScreeningByAdmission(ctx, admissionID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	for _, r := range screen {
+		if r.Instrument == "mst" && r.Score >= 2 {
+			mstBerisiko = true
+		}
+	}
+	res.Score = b2i(res.Kek) + b2i(res.Anemia) + b2i(mstBerisiko)
+	switch {
+	case res.Score >= 2 || res.Gradasi == "sedang" || res.Gradasi == "berat" || (res.Kek && res.Anemia):
+		res.Interpretation = "tinggi"
+	case res.Score == 1:
+		res.Interpretation = "sedang"
+	default:
+		res.Interpretation = "rendah"
+	}
+	var gradasi, trimester any
+	if res.Gradasi != "" {
+		gradasi = res.Gradasi
+	}
+	if res.Trimester != "" {
+		trimester = res.Trimester
+	}
+	var mgg any
+	if res.Mgg != nil {
+		mgg = *res.Mgg
+	}
+	pl, err := json.Marshal(map[string]any{
+		"kek": res.Kek, "anemia": res.Anemia, "anemia_gradasi": gradasi,
+		"mst_berisiko": mstBerisiko, "trimester": trimester, "mgg": mgg,
+		"hb_band_dihitung": res.Hb != nil && res.Trimester != "",
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	bands := json.RawMessage(`[{"low":0},{"low":1},{"low":2}]`)
+	userID := AuthUserID(c)
+	tag, err := TxFromContext(c).Exec(ctx, `
+		UPDATE clinical.nutrition_screening_result
+		SET score = $2, max_score = $3, interpretation = $4, bands = $5, payload = $6,
+		    episode_id = $7, calculated_at = now(), calculated_by = $8, row_version = row_version + 1
+		WHERE form_instance_id = $1 AND instrument = 'pemicu_bumil'`,
+		formID, res.Score, 3, res.Interpretation, bands, pl, episodeID, userID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := TxFromContext(c).Exec(ctx, `
+			INSERT INTO clinical.nutrition_screening_result
+				(company_id, merchant_id, person_id, admission_id, episode_id,
+				 form_instance_id, instrument, score, max_score, interpretation,
+				 bands, payload, calculated_by, created_by)
+			VALUES ($1, $2, $3, $4, $5, $6, 'pemicu_bumil', $7, 3, $8, $9, $10, $11, $11)
+			ON CONFLICT (form_instance_id, instrument) WHERE form_instance_id IS NOT NULL
+			DO UPDATE SET score = EXCLUDED.score, max_score = EXCLUDED.max_score,
+				interpretation = EXCLUDED.interpretation, bands = EXCLUDED.bands,
+				payload = EXCLUDED.payload, calculated_at = now(),
+				calculated_by = EXCLUDED.calculated_by`,
+			AuthCompanyID(c), merchantID, personID,
+			admissionID, episodeID, formID,
+			res.Score, res.Interpretation, bands, pl, userID); err != nil {
+			respondInternalError(c, err)
+			return false
+		}
+	}
+	// Rules snapshot D5: SETELAH hook pemicu tersimpan.
+	if episodeID.Valid {
+		if !refreshGiziRules(c, q, AuthCompanyID(c), merchantID, personID, admissionID, episodeID) {
+			return false
+		}
+	}
+	return true
+}
+
 // persistGiziMnasfResult menulis hasil MNA-SF ke
 // clinical.nutrition_screening_result (instrument 'mnasf', max_score 14,
 // spec §5 hook). Query sqlc chunk 1 ter-pin instrument 'mst' (queries/gizi.sql
@@ -228,6 +409,12 @@ func persistGiziScreeningResult(c *gin.Context, formID, admissionID, personID pg
 		// dengan skor lengkap → baris instrument 'mnasf' (max_score 14).
 		if s, kat, okM := giziMnasfResult(entry.FormType, entry.FormData); okM {
 			return persistGiziMnasfResult(c, formID, admissionID, personID, s, kat, episodeID)
+		}
+		// Hook pemicu bumil (spec 2026-11-16-gizi-maternal-revisi §4.3/§5):
+		// form ases_gizi_pemicu_bumil → baris instrument 'pemicu_bumil'
+		// (max_score 3, stratifikasi server).
+		if res, okP := parseGiziPemicuBumilResult(entry.FormType, entry.FormData); okP {
+			return persistGiziPemicuBumilResult(c, formID, admissionID, personID, res, episodeID)
 		}
 		return true // hook dilewati (draft parsial / form lain)
 	}

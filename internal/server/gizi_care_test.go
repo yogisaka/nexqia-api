@@ -754,3 +754,152 @@ func TestGiziProfileGuardAPI(t *testing.T) {
 		}
 	})
 }
+
+// gzPemicuBumilForm builds ases_gizi_pemicu_bumil form_data (template
+// migration 000104): sections lila_cm/hb_gdl/mgg (kind number, opsional).
+// Nil arg → key tidak dikirim (edge mgg/hb kosong).
+func gzPemicuBumilForm(lila, hb, mgg *float64) map[string]any {
+	secs := map[string]any{}
+	if lila != nil {
+		secs["lila_cm"] = *lila
+	}
+	if hb != nil {
+		secs["hb_gdl"] = *hb
+	}
+	if mgg != nil {
+		secs["mgg"] = *mgg
+	}
+	return map[string]any{"sections": secs}
+}
+
+// gzPemicuBumilNsr reads the pemicu_bumil nsr row for a form instance and
+// decodes its payload.
+func gzPemicuBumilNsr(t *testing.T, ctx context.Context, pool *pgxpool.Pool, formID string) (int, string, map[string]any) {
+	t.Helper()
+	var score int
+	var interp, payloadRaw string
+	if err := pool.QueryRow(ctx,
+		`SELECT score, interpretation, payload::text
+		 FROM clinical.nutrition_screening_result
+		 WHERE form_instance_id = $1::uuid AND instrument = 'pemicu_bumil'`,
+		formID).Scan(&score, &interp, &payloadRaw); err != nil {
+		t.Fatalf("read nsr pemicu_bumil: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
+		t.Fatalf("decode payload %s: %v", payloadRaw, err)
+	}
+	return score, interp, payload
+}
+
+// TestGiziPemicuBumilPersistAndBands — hook pemicu bumil (plan Task 2, spec
+// §4.3/§5): lila 22,8/hb 10,2/mgg 26 → score 2 (kek + anemia, tanpa MST),
+// interpretation "tinggi", payload gradasi "ringan" (Hb ≥ 10), trimester "t2".
+// Sub-case gradasi: hb 8,5 → "sedang", hb 6 → "berat". Idempoten: kirim ulang
+// form yang sama (PATCH create-ulang nilai) → tetap 1 baris per form, nilai
+// ter-update.
+func TestGiziPemicuBumilPersistAndBands(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "pemicu")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzpemicu")
+	const create = "/api/v1/clinical/forms"
+
+	// (a) create: Kek (22,8 < 23,5) + Anemia (hb 10,2 < 10,5 t2) → score 2.
+	lila, mgg := 22.8, 26.0
+	hb := 10.2
+	rec, resp := cfDo(t, router, http.MethodPost, create, token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_pemicu_bumil",
+		"form_data": gzPemicuBumilForm(&lila, &hb, &mgg),
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create pemicu = %d: %s", rec.Code, rec.Body.String())
+	}
+	formID := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+	score, interp, payload := gzPemicuBumilNsr(t, ctx, pool, formID)
+	// Hitungan kontrak: b2i(kek)+b2i(anemia)+b2i(mst) = 1+1+0 = 2; score ≥ 2 → tinggi;
+	// hb 10,2 ≥ 10 → ringan; mgg 26 → t2.
+	if score != 2 || interp != "tinggi" {
+		t.Fatalf("nsr pemicu = %d/%s, want 2/tinggi", score, interp)
+	}
+	if payload["kek"] != true || payload["anemia"] != true || payload["mst_berisiko"] != false ||
+		payload["anemia_gradasi"] != "ringan" || payload["trimester"] != "t2" ||
+		payload["hb_band_dihitung"] != true || payload["mgg"] != 26.0 {
+		t.Fatalf("payload = %v", payload)
+	}
+
+	// (b) PATCH hb 8,5 → gradasi "sedang" (7–9,9); score tetap 2 → tinggi.
+	hb = 8.5
+	if rec, _ = cfDo(t, router, http.MethodPatch, create+"/"+formID, token, companyID, merchantID, map[string]any{
+		"form_data": gzPemicuBumilForm(&lila, &hb, &mgg),
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("patch 8.5 = %d: %s", rec.Code, rec.Body.String())
+	}
+	score, interp, payload = gzPemicuBumilNsr(t, ctx, pool, formID)
+	if score != 2 || interp != "tinggi" || payload["anemia_gradasi"] != "sedang" {
+		t.Fatalf("nsr 8.5 = %d/%s/%v, want 2/tinggi/sedang", score, interp, payload["anemia_gradasi"])
+	}
+
+	// (c) PATCH hb 6 → gradasi "berat" (<7) → interpretation tetap "tinggi".
+	hb = 6.0
+	if rec, _ = cfDo(t, router, http.MethodPatch, create+"/"+formID, token, companyID, merchantID, map[string]any{
+		"form_data": gzPemicuBumilForm(&lila, &hb, &mgg),
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("patch 6 = %d: %s", rec.Code, rec.Body.String())
+	}
+	score, interp, payload = gzPemicuBumilNsr(t, ctx, pool, formID)
+	if score != 2 || interp != "tinggi" || payload["anemia_gradasi"] != "berat" {
+		t.Fatalf("nsr 6 = %d/%s/%v, want 2/tinggi/berat", score, interp, payload["anemia_gradasi"])
+	}
+
+	// (d) kirim ulang form sama (nilai awal) → tetap 1 baris, nilai ter-update
+	// balik ke ringan (idempoten UPDATE-then-INSERT).
+	hb = 10.2
+	if rec, _ = cfDo(t, router, http.MethodPatch, create+"/"+formID, token, companyID, merchantID, map[string]any{
+		"form_data": gzPemicuBumilForm(&lila, &hb, &mgg),
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("patch ulang = %d: %s", rec.Code, rec.Body.String())
+	}
+	score, interp, payload = gzPemicuBumilNsr(t, ctx, pool, formID)
+	if score != 2 || interp != "tinggi" || payload["anemia_gradasi"] != "ringan" {
+		t.Fatalf("nsr ulang = %d/%s/%v, want 2/tinggi/ringan", score, interp, payload["anemia_gradasi"])
+	}
+	if n := gzNsrCountAdmission(t, ctx, pool, admissionID); n != 1 {
+		t.Fatalf("nsr pasca kirim ulang = %d, want 1 (idempoten)", n)
+	}
+}
+
+// TestGiziPemicuBumilEdgeMggKosong — edge mgg kosong (spec §5): Trimester "",
+// band Hb TIDAK dihitung → anemia=false, hb_band_dihitung=false,
+// trimester=null; hanya kek (lila 22) → score 1 → interpretation "sedang".
+func TestGiziPemicuBumilEdgeMggKosong(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "pemicuedge")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzpemicuedge")
+
+	lila, hb := 22.0, 8.0
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+		"admission_id": admissionID, "form_type": "ases_gizi_pemicu_bumil",
+		"form_data": gzPemicuBumilForm(&lila, &hb, nil),
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create edge = %d: %s", rec.Code, rec.Body.String())
+	}
+	formID := resp["data"].(map[string]any)["entry"].(map[string]any)["id"].(string)
+	score, interp, payload := gzPemicuBumilNsr(t, ctx, pool, formID)
+	// Hitungan kontrak: trimester kosong → anemia=false walau hb 8 < 11; score
+	// = b2i(kek)+0+0 = 1 → "sedang".
+	if score != 1 || interp != "sedang" {
+		t.Fatalf("nsr edge = %d/%s, want 1/sedang", score, interp)
+	}
+	if payload["kek"] != true || payload["anemia"] != false || payload["anemia_gradasi"] != nil ||
+		payload["trimester"] != nil || payload["hb_band_dihitung"] != false {
+		t.Fatalf("payload edge = %v", payload)
+	}
+	if n := gzNsrCountAdmission(t, ctx, pool, admissionID); n != 1 {
+		t.Fatalf("nsr edge = %d, want 1", n)
+	}
+}
