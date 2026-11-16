@@ -503,6 +503,16 @@ func TestClinicalFormValidation(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'diagnosis_terkait'" {
 		t.Fatalf("diagnosis_terkait string = %d %v", rec.Code, resp)
 	}
+	// me_reassessment multiselect (migration 000103): FE DlgJadwal menulis
+	// array → diterima; string tunggal ditolak.
+	rec, _ = post("asuhan_gizi", sections(`"me_reassessment":["ranap_h3","saat_pulang"]`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("me_reassessment array = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec, resp = post("asuhan_gizi", sections(`"me_reassessment":"ranap_h3"`))
+	if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'me_reassessment'" {
+		t.Fatalf("me_reassessment string = %d %v", rec.Code, resp)
+	}
 	// Unsupported kind in template data → 400 (merchant sees the platform row).
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO core.template (kind, code, name, scope, usage) VALUES ('clinical_form','cf_bad_form','Bad Form','platform','insert')`); err != nil {
