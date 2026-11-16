@@ -1200,3 +1200,58 @@ func TestClinicalFormAsuhanGiziPesOptionsDiff(t *testing.T) {
 		}
 	}
 }
+
+// TestClinicalFormPemicuValidation — validator rentang/konsistensi form
+// ases_gizi_pemicu_bumil (plan 2026-11-16-gizi-maternal-1-be-hook Task 3,
+// spec §5): lila 61 di luar (0;60] → 400 rentang; hb 0,5 di luar [1;25] →
+// 400 rentang; interpretasi_pemicu "rendah" padahal hitungan server "tinggi"
+// (kek 22,8<23,5 + anemia 10,2<10,5 t2, score 2, tanpa MST episode) → 400
+// konsistensi; payload valid tanpa interpretasi → 201.
+func TestClinicalFormPemicuValidation(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "pemicuval")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzpemicuval")
+	const create = "/api/v1/clinical/forms"
+	post := func(form map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		rec, _ := cfDo(t, router, http.MethodPost, create, token, companyID, merchantID, map[string]any{
+			"admission_id": admissionID, "form_type": "ases_gizi_pemicu_bumil",
+			"form_data": form,
+		})
+		return rec
+	}
+
+	// (a) lila 61 → 400 "nilai pemicu di luar rentang wajar (cek satuan)".
+	lila, hb, mgg := 61.0, 10.2, 26.0
+	if rec := post(gzPemicuBumilForm(&lila, &hb, &mgg)); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "nilai pemicu di luar rentang wajar (cek satuan)") {
+		t.Fatalf("lila 61 = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// (b) hb 0,5 → 400 rentang yang sama.
+	lila, hb = 22.0, 0.5
+	if rec := post(gzPemicuBumilForm(&lila, &hb, &mgg)); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "nilai pemicu di luar rentang wajar (cek satuan)") {
+		t.Fatalf("hb 0.5 = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// (c) interpretasi_pemicu "rendah" vs hitungan server "tinggi" → 400
+	// "stratifikasi pemicu tidak konsisten".
+	lila, hb = 22.8, 10.2
+	rec := post(map[string]any{
+		"sections": map[string]any{
+			"lila_cm": lila, "hb_gdl": hb, "mgg": mgg, "interpretasi_pemicu": "rendah",
+		},
+	})
+	if rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "stratifikasi pemicu tidak konsisten") {
+		t.Fatalf("interp rendah = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// (d) payload valid (tanpa interpretasi) → 201.
+	if rec = post(gzPemicuBumilForm(&lila, &hb, &mgg)); rec.Code != http.StatusCreated {
+		t.Fatalf("valid = %d: %s", rec.Code, rec.Body.String())
+	}
+}

@@ -78,14 +78,14 @@ func evaluateGiziRisk(ctx context.Context, q *sqlcgen.Queries, personID, admissi
 		return nil, nil, err
 	}
 	type giziMeas struct {
-		at            time.Time
-		ageDays       int
-		hasAge        bool
-		bb, imt, lila float64
-		hasBB, hasIMT bool
-		hasLila       bool
-		z             map[string]float64
-		bands         map[string]giziBandStatus
+		at                 time.Time
+		ageDays            int
+		hasAge             bool
+		bb, imt, lila, mgg float64
+		hasBB, hasIMT      bool
+		hasLila, hasMgg    bool
+		z                  map[string]float64
+		bands              map[string]giziBandStatus
 	}
 	meas := make([]giziMeas, 0, len(rows))
 	for i := len(rows) - 1; i >= 0; i-- { // query DESC → kronologis ASC
@@ -107,6 +107,12 @@ func evaluateGiziRisk(ctx context.Context, q *sqlcgen.Queries, personID, admissi
 					var v float64
 					if json.Unmarshal(raw, &v) == nil {
 						m.lila, m.hasLila = v, true
+					}
+				}
+				if raw, ok := ex["mgg"]; ok {
+					var v float64
+					if json.Unmarshal(raw, &v) == nil {
+						m.mgg, m.hasMgg = v, true
 					}
 				}
 			}
@@ -231,7 +237,8 @@ func evaluateGiziRisk(ctx context.Context, q *sqlcgen.Queries, personID, admissi
 			}
 		}
 	}
-	// lila_kek (bumil, lila terakhir < 23,5) + hb_rendah (bumil, Hb < 11).
+	// lila_kek (bumil, lila terakhir < 23,5) + hb_rendah (bumil, Hb < cutoff
+	// trimester — lihat blok hb_rendah di bawah).
 	var lastLila float64
 	var hasLilaAny bool
 	for i := len(meas) - 1; i >= 0; i-- {
@@ -246,8 +253,23 @@ func evaluateGiziRisk(ctx context.Context, q *sqlcgen.Queries, personID, admissi
 		triggers = append(triggers, gin.H{"code": "lila_kek", "risk": "sedang",
 			"label": "LiLA " + giziFmtNum(lastLila, 1) + " cm"})
 	}
+	// hb_rendah (bumil) trimester-aware (plan Task 3, spec §5): cutoff
+	// <10,5 bila mgg antropometri terbaru 14–27 (trimester t2), tetap <11
+	// bila t1/t3/tanpa mgg.
+	var lastMgg float64
+	var hasMggAny bool
+	for i := len(meas) - 1; i >= 0; i-- {
+		if meas[i].hasMgg {
+			lastMgg, hasMggAny = meas[i].mgg, true
+			break
+		}
+	}
+	hbCutoff := 11.0
+	if hasMggAny && lastMgg >= 14 && lastMgg <= 27 {
+		hbCutoff = 10.5
+	}
 	hbRendah := false
-	if profile == "bumil" && hasHb && hb < 11 {
+	if profile == "bumil" && hasHb && hb < hbCutoff {
 		hbRendah = true
 		triggers = append(triggers, gin.H{"code": "hb_rendah", "risk": "sedang",
 			"label": "Hb " + giziFmtNum(hb, 1)})

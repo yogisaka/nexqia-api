@@ -269,3 +269,89 @@ func personOfAdmission(t *testing.T, ctx context.Context, pool *pgxpool.Pool, ad
 	}
 	return personID
 }
+
+// TestEvaluateGiziRiskHbTrimester — hb_rendah trimester-aware (plan
+// 2026-11-16-gizi-maternal-1-be-hook Task 3, spec §5): cutoff <10,5 bila mgg
+// extras antropometri terbaru 14–27 (t2), tetap <11 bila mgg 8 (t1).
+// Ekspektasi: hb 10,8+mgg 20 → tanpa hb_rendah (10,8 ≥ 10,5); hb 10,8+mgg 8
+// → hb_rendah (10,8 < 11); hb 10,2+mgg 20 → hb_rendah (10,2 < 10,5).
+func TestEvaluateGiziRiskHbTrimester(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "riskhb")
+
+	newBumilEpisode := func(t *testing.T, label string) string {
+		t.Helper()
+		_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzrh-"+label)
+		rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-episode", token, companyID, merchantID, map[string]any{
+			"admission_id": admissionID, "profile": "bumil",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("episode %s = %d: %s", label, rec.Code, rec.Body.String())
+		}
+		return admissionID
+	}
+	postAnthroMgg := func(t *testing.T, admissionID string, mgg float64) {
+		t.Helper()
+		body := map[string]any{
+			"admission_id": admissionID,
+			"measured_at":  time.Now().Format(time.RFC3339),
+			"bb_kg":        60.0, "tb_cm": 158.0,
+			"extras": map[string]any{"mgg": mgg},
+		}
+		if rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/anthropometry", token, companyID, merchantID, body); rec.Code != http.StatusCreated {
+			t.Fatalf("anthro mgg %.0f = %d: %s", mgg, rec.Code, rec.Body.String())
+		}
+	}
+	postHb := func(t *testing.T, admissionID string, hb float64) {
+		t.Helper()
+		rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+			"admission_id": admissionID, "form_type": "asuhan_gizi",
+			"form_data": map[string]any{"sections": map[string]any{
+				"biokimia": []map[string]any{{"item": "hb", "nilai": hb}},
+			}},
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("form asuhan_gizi hb %.1f = %d: %s", hb, rec.Code, rec.Body.String())
+		}
+	}
+	hasHbRendah := func(t *testing.T, admissionID string) bool {
+		t.Helper()
+		rec, resp := cfDo(t, router, http.MethodGet, "/api/v1/clinical/nutrition-episode?admission_id="+admissionID, token, companyID, merchantID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get episode = %d: %s", rec.Code, rec.Body.String())
+		}
+		risk, _ := resp["risk"].(map[string]any)
+		for _, raw := range risk["triggers"].([]any) {
+			if tr := raw.(map[string]any); tr["code"] == "hb_rendah" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// (a) hb 10,8 + mgg 20 (t2, cutoff 10,5) → TANPA hb_rendah.
+	a := newBumilEpisode(t, "a")
+	postAnthroMgg(t, a, 20)
+	postHb(t, a, 10.8)
+	if hasHbRendah(t, a) {
+		t.Fatalf("(a) hb 10.8 mgg 20 = ada hb_rendah, want tidak ada")
+	}
+
+	// (b) hb 10,8 + mgg 8 (t1, cutoff 11) → hb_rendah.
+	b := newBumilEpisode(t, "b")
+	postAnthroMgg(t, b, 8)
+	postHb(t, b, 10.8)
+	if !hasHbRendah(t, b) {
+		t.Fatalf("(b) hb 10.8 mgg 8 = tanpa hb_rendah, want ada")
+	}
+
+	// (c) hb 10,2 + mgg 20 (t2) → hb_rendah.
+	c := newBumilEpisode(t, "c")
+	postAnthroMgg(t, c, 20)
+	postHb(t, c, 10.2)
+	if !hasHbRendah(t, c) {
+		t.Fatalf("(c) hb 10.2 mgg 20 = tanpa hb_rendah, want ada")
+	}
+}

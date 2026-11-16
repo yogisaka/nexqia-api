@@ -160,6 +160,69 @@ func clinicalInvalidSection(c *gin.Context, key string) {
 	c.JSON(http.StatusBadRequest, gin.H{"error": "invalid value for section '" + key + "'"})
 }
 
+// clinicalValidateGiziPemicuBumil — validator rentang/konsistensi form
+// ases_gizi_pemicu_bumil (plan 2026-11-16-gizi-maternal-1-be-hook Task 3,
+// spec §5): minimal 1 dari lila_cm/hb_gdl wajib; rentang lila (0;60],
+// hb [1;25], mgg [1;45]; interpretasi_pemicu HANYA bila dikirim harus
+// ∈ {rendah,sedang,tinggi} dan sama dengan hitungan server (rule Task 2,
+// parseGiziPemicuBumilResult + mst_berisiko episode nsr terbaru — pola
+// persistGiziPemicuBumilResult). Form lain lolos tanpa cek.
+func clinicalValidateGiziPemicuBumil(c *gin.Context, formType string, admissionID pgtype.UUID, formData json.RawMessage) bool {
+	if formType != "ases_gizi_pemicu_bumil" {
+		return true
+	}
+	var payload struct {
+		Sections map[string]json.RawMessage `json:"sections"`
+	}
+	_ = json.Unmarshal(formData, &payload) // bentuk sudah lolos validateClinicalFormData
+	lila := giziPemicuBumilSectionNum(payload.Sections, "lila_cm")
+	hb := giziPemicuBumilSectionNum(payload.Sections, "hb_gdl")
+	mgg := giziPemicuBumilSectionNum(payload.Sections, "mgg")
+	if lila == nil && hb == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "lengkapi indikator yang belum ada sebelum menyimpan"})
+		return false
+	}
+	if (lila != nil && (*lila <= 0 || *lila > 60)) ||
+		(hb != nil && (*hb < 1 || *hb > 25)) ||
+		(mgg != nil && (*mgg < 1 || *mgg > 45)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nilai pemicu di luar rentang wajar (cek satuan)"})
+		return false
+	}
+	var interp string
+	if raw, ok := payload.Sections["interpretasi_pemicu"]; ok && !clinicalSectionEmpty(raw) {
+		_ = json.Unmarshal(raw, &interp)
+	}
+	if interp == "" {
+		return true
+	}
+	res, _ := parseGiziPemicuBumilResult(formType, formData)
+	q := sqlcgen.New(TxFromContext(c))
+	screen, err := q.ListLatestNutritionScreeningByAdmission(c.Request.Context(), admissionID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	mstBerisiko := false
+	for _, r := range screen {
+		if r.Instrument == "mst" && r.Score >= 2 {
+			mstBerisiko = true
+		}
+	}
+	score := b2i(res.Kek) + b2i(res.Anemia) + b2i(mstBerisiko)
+	want := "rendah"
+	switch {
+	case score >= 2 || res.Gradasi == "sedang" || res.Gradasi == "berat" || (res.Kek && res.Anemia):
+		want = "tinggi"
+	case score == 1:
+		want = "sedang"
+	}
+	if want != interp {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stratifikasi pemicu tidak konsisten"})
+		return false
+	}
+	return true
+}
+
 // clinicalSectionEmpty reports a JSON value as "kosong" (null, empty string,
 // empty object/array) — empty sections never block saving (user decision 7).
 func clinicalSectionEmpty(raw json.RawMessage) bool {
@@ -783,6 +846,11 @@ func CreateClinicalFormHandler(c *gin.Context) {
 	if !okV {
 		return
 	}
+	// Validator rentang/konsistensi pemicu bumil (plan 2026-11-16-gizi-
+	// maternal-1-be-hook Task 3, spec §5).
+	if !clinicalValidateGiziPemicuBumil(c, req.FormType, admissionID, req.FormData) {
+		return
+	}
 	formData := req.FormData
 	if len(formData) == 0 {
 		formData = json.RawMessage(`{"sections":{}}`)
@@ -988,6 +1056,10 @@ func UpdateClinicalFormHandler(c *gin.Context) {
 	}
 	warnings, okV := validateClinicalFormData(c, entry.FormType, defs, req.FormData)
 	if !okV {
+		return
+	}
+	// Validator rentang/konsistensi pemicu bumil (Task 3, spec §5).
+	if !clinicalValidateGiziPemicuBumil(c, entry.FormType, entry.AdmissionID, req.FormData) {
 		return
 	}
 	if err := validateTindakanConcepts(c, req.FormData); err != nil && !c.Writer.Written() {
