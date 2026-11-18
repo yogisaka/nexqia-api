@@ -4,7 +4,8 @@
 // GET /clinical/growth-series — series kurva LMS z=-3..+3 dari ref.growth_curve
 // + titik pasien dari snapshot antropometri (FR-GZ-14) + band berat badan ibu
 // hamil ICM/IOM 2009 (FR-GZ-08b). Kurva LMS di-cache in-proc 5 menit per
-// (indicator, gender, source_version) / band; titik pasien TIDAK di-cache.
+// (indicator, gender, source_version, usia person) / band; titik pasien
+// TIDAK di-cache.
 // Semua handler jalan di tx ambient RunRequestTx (500 → rollback otomatis).
 package server
 
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -43,6 +45,43 @@ var growthCurveZKeys = []string{"-3", "-2", "-1", "0", "+1", "+2", "+3"}
 
 // growthCacheTTL kontrak: cache in-proc 5 menit.
 const growthCacheTTL = 5 * time.Minute
+
+// Domain usia kurva gabungan (plan 2026-11-18-anak-a1-1-be Task 4, spec §5):
+// who-cgs-2006 = domain balita (≤60 bln), who-gr-2007 = 61 bln s.d. batas
+// per indikator (bbu 120 bln = WHO WFA 5–10 th; tbu/imtu 228 bln).
+// Konversi bulan→hari mengikuti D-KA-14: am = floor(x_days/30.4375).
+const (
+	growthCGSMaxMonths = 60
+	growthGRMinMonths  = 61
+	growthMonthToDays  = 30.4375
+)
+
+// growthGRDomainMaxMonths batas atas usia (bln) baris who-gr-2007 per
+// indikator; indikator di luar map (bbtb/lku/lila) tetap domain lama.
+var growthGRDomainMaxMonths = map[string]int{"bbu": 120, "tbu": 228, "imtu": 228}
+
+// growthDomainRows menyaring baris ref gabungan per indikator + usia person:
+// baris selain who-gr-2007 (who-cgs-2006) tetap lolos (perilaku lama);
+// baris who-gr-2007 hanya bila indikator ber-domain anak, age_months baris
+// dalam 61..min(cap indikator, usia person) — usia person dari DOB
+// (clinicalAgeMonths, pola query existing); DOB kosong → tanpa baris GR.
+func growthDomainRows(indicator string, rows []sqlcgen.ListGrowthCurveByIndicatorGenderRow, personAgeMonths int, hasAge bool) []sqlcgen.ListGrowthCurveByIndicatorGenderRow {
+	capM, isAnakDomain := growthGRDomainMaxMonths[indicator]
+	out := make([]sqlcgen.ListGrowthCurveByIndicatorGenderRow, 0, len(rows))
+	for _, r := range rows {
+		if r.SourceVersion == "who-gr-2007" {
+			if !isAnakDomain || !hasAge {
+				continue
+			}
+			am := math.Floor(numericFloat(r.X) / growthMonthToDays)
+			if am < growthGRMinMonths || am > float64(capM) || am > float64(personAgeMonths) {
+				continue
+			}
+		}
+		out = append(out, r)
+	}
+	return out
+}
 
 // growthCacheEntry menyimpan kurva LMS terkomputasi (+ sumber) atau band
 // bumil. Titik pasien tidak pernah masuk cache.
@@ -128,7 +167,9 @@ func buildGrowthCurve(rows []sqlcgen.ListGrowthCurveByIndicatorGenderRow) ([]gin
 // maxX+step] dengan step = selisih x terkecil antar baris ref (1 bila < 2
 // baris). Titik di luar rentang ini TAMPIL zscore:null (aturan tampilan
 // spec §4 (g): endpoint MENYALIN z snapshot tanpa menghitung ulang).
-func growthRefRange(rows []sqlcgen.ListGrowthCurveByIndicatorGenderRow) (low, high float64, ok bool) {
+// Diperluas per indikator (plan 2026-11-18-anak-a1-1-be Task 4): high
+// dibatasi domain usia indikator (bbu 120 bln; tbu/imtu 228 bln).
+func growthRefRange(indicator string, rows []sqlcgen.ListGrowthCurveByIndicatorGenderRow) (low, high float64, ok bool) {
 	if len(rows) == 0 {
 		return 0, 0, false
 	}
@@ -139,6 +180,12 @@ func growthRefRange(rows []sqlcgen.ListGrowthCurveByIndicatorGenderRow) (low, hi
 		d := numericFloat(rows[i].X) - numericFloat(rows[i-1].X)
 		if d > 0 && d < step {
 			step = d
+		}
+	}
+	if capM, isAnak := growthGRDomainMaxMonths[indicator]; isAnak {
+		capDays := float64(capM) * growthMonthToDays
+		if high > capDays {
+			high = capDays
 		}
 	}
 	return low - step, high + step, true
@@ -351,8 +398,11 @@ func GetGrowthSeriesHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	// Kurva gabungan dua sumber sesuai usia person (DOB, clinicalAgeMonths).
+	personAM, hasAM := clinicalAgeMonths(person.BirthDate)
+	curveRows = growthDomainRows(indicator, curveRows, personAM, hasAM)
 	_, version, url := buildGrowthCurve(curveRows)
-	cacheKey := indicator + "|" + gender + "|" + version
+	cacheKey := indicator + "|" + gender + "|" + version + "|" + strconv.Itoa(personAM)
 	var curve []gin.H
 	growthCacheMu.RLock()
 	ent, hit := growthCache[cacheKey]
@@ -365,7 +415,7 @@ func GetGrowthSeriesHandler(c *gin.Context) {
 		growthCache[cacheKey] = growthCacheEntry{at: time.Now(), curve: curve, version: version, url: url}
 		growthCacheMu.Unlock()
 	}
-	low, high, hasRef := growthRefRange(curveRows)
+	low, high, hasRef := growthRefRange(indicator, curveRows)
 	var source any
 	if hasRef {
 		source = gin.H{"version": version, "url": url}

@@ -1,8 +1,12 @@
-// Command import-growth-curve loads local WHO Child Growth Standards CSV
-// dumps (data-import/growth-curve/*.csv) into ref.growth_curve without any
-// network access. CSV preparation is an operator task: download the expanded
-// WHO tables per indicator x gender and save them as deterministic CSV files
-// with the literal header indicator,gender,x_kind,x,l,m,s.
+// Command import-growth-curve loads local WHO growth curve CSV dumps
+// (data-import/growth-curve/*.csv = Child Growth Standards 2006, 0–60 bln;
+// --gr-dir = Growth Reference 2007, 61 bln s.d. domain anak) into
+// ref.growth_curve without any network access. CSV preparation is an
+// operator task: download the expanded WHO tables per indicator x gender and
+// save them as deterministic CSV files with the literal header
+// indicator,gender,x_kind,x,l,m,s. File GR 2007 memakai x dalam BULAN —
+// loader mengonversi x_days = round(x_bulan × 30.4375) sebelum insert
+// (D-KA-14, plan 2026-11-18-anak-a1-1-be Task 4).
 package main
 
 import (
@@ -12,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,12 +27,32 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var (
-	sourceName    = "WHO Child Growth Standards"
-	sourceVersion = "who-cgs-2006"
-)
+// datasetGroup — konstanta satu sumber kurva (grup kedua who-gr-2007:
+// lampiran masterdata M2, plan 2026-11-18-anak-a1-1-be Task 4).
+type datasetGroup struct {
+	dir           string
+	sourceName    string
+	sourceVersion string
+	sourceURL     map[string]string
+	validIndic    map[string]bool
+	xInMonths     bool // file GR memakai x bulan → konversi ke age_days
+}
 
-// sourceURL maps each indicator to its WHO standards page (spec R:44).
+var validIndicators = map[string]bool{"bbu": true, "tbu": true, "bbtb": true, "imtu": true, "lku": true, "lila": true}
+var grValidIndicators = map[string]bool{"bbu": true, "tbu": true, "imtu": true}
+var validGenders = map[string]bool{"laki_laki": true, "perempuan": true}
+var validXKinds = map[string]bool{"age_days": true, "height_cm": true}
+
+// grSourceURL — halaman databases WHO GR 2007 per indikator, URL dari
+// lampiran masterdata M2 (jangan menebak path file di bawahnya).
+var grSourceURL = map[string]string{
+	"bbu":  "https://www.who.int/tools/growth-reference-data-for-5to19-years/databases",
+	"tbu":  "https://www.who.int/tools/growth-reference-data-for-5to19-years/databases",
+	"imtu": "https://www.who.int/tools/growth-reference-data-for-5to19-years/databases",
+}
+
+// sourceURL maps each indicator to its WHO standards page (spec R:44) —
+// konstanta grup CGS 2006 (dirujuk unit test existing).
 var sourceURL = map[string]string{
 	"bbu":  "https://www.who.int/tools/child-growth-standards/standards/bbu",
 	"tbu":  "https://www.who.int/tools/child-growth-standards/standards/tbu",
@@ -37,13 +62,26 @@ var sourceURL = map[string]string{
 	"lila": "https://www.who.int/tools/child-growth-standards/standards/lila",
 }
 
-var (
-	validIndicators = map[string]bool{"bbu": true, "tbu": true, "bbtb": true, "imtu": true, "lku": true, "lila": true}
-	validGenders    = map[string]bool{"laki_laki": true, "perempuan": true}
-	validXKinds     = map[string]bool{"age_days": true, "height_cm": true}
-)
+// datasetGroups: grup 1 = WHO CGS 2006 (spec R:44), grup 2 = WHO GR 2007 (M2).
+func datasetGroups(cgsDir, grDir string) []datasetGroup {
+	return []datasetGroup{
+		{
+			dir: cgsDir, sourceName: "WHO Child Growth Standards", sourceVersion: "who-cgs-2006",
+			sourceURL:  sourceURL,
+			validIndic: validIndicators,
+		},
+		{
+			dir: grDir, sourceName: "WHO Growth Reference 2007", sourceVersion: "who-gr-2007",
+			sourceURL: grSourceURL, validIndic: grValidIndicators, xInMonths: true,
+		},
+	}
+}
 
 const csvHeader = "indicator,gender,x_kind,x,l,m,s"
+
+// growthMonthDays — konversi bulan→hari D-KA-14 (sinkron server:
+// age_months = floor(age_days/30.4375)).
+const growthMonthDays = 30.4375
 
 // insertSQL orders the parameters to match the ref.growth_curve columns.
 const insertSQL = `INSERT INTO ref.growth_curve ` +
@@ -54,18 +92,21 @@ const insertSQL = `INSERT INTO ref.growth_curve ` +
 const countSQL = `SELECT count(*) FROM ref.growth_curve WHERE indicator = $1 AND gender = $2`
 
 type curveRow struct {
-	Indicator string
-	Gender    string
-	XKind     string
-	X         string
-	L         string
-	M         string
-	S         string
+	Indicator     string
+	Gender        string
+	XKind         string
+	X             string
+	L             string
+	M             string
+	S             string
+	SourceName    string
+	SourceVersion string
+	SourceURL     string
 }
 
 func usage(fs *flag.FlagSet) {
-	fmt.Fprintln(os.Stderr, "usage: import-growth-curve --dir data-import/growth-curve [--dsn <DATABASE_URL>] [--dry-run] [--downloaded-at RFC3339]")
-	fmt.Fprintln(os.Stderr, "persiapan CSV = operator: unduh tabel expanded WHO per indikator x gender, simpan sebagai CSV deterministik dengan header indicator,gender,x_kind,x,l,m,s")
+	fmt.Fprintln(os.Stderr, "usage: import-growth-curve [--dir data-import/growth-curve] [--gr-dir data-import/growth-curve/gr-2007] [--dsn <DATABASE_URL>] [--dry-run] [--downloaded-at RFC3339]")
+	fmt.Fprintln(os.Stderr, "persiapan CSV = operator: unduh tabel expanded WHO per indikator x gender, simpan sebagai CSV deterministik dengan header indicator,gender,x_kind,x,l,m,s (GR 2007: x dalam BULAN, dikonversi ke age_days)")
 	if fs != nil {
 		fs.PrintDefaults()
 	}
@@ -80,7 +121,8 @@ func main() {
 
 func run() error {
 	fs := flag.NewFlagSet("import-growth-curve", flag.ContinueOnError)
-	dir := fs.String("dir", "data-import/growth-curve", "directory containing the WHO CSV dumps (one CSV per indicator x gender)")
+	dir := fs.String("dir", "data-import/growth-curve", "directory containing the WHO CGS 2006 CSV dumps (one CSV per indicator x gender)")
+	grDir := fs.String("gr-dir", "data-import/growth-curve/gr-2007", "directory containing the WHO GR 2007 CSV dumps (x in months; empty string skips the group)")
 	dsn := fs.String("dsn", os.Getenv("DATABASE_URL"), "Postgres DSN (default: env DATABASE_URL)")
 	dryRun := fs.Bool("dry-run", false, "parse the CSVs and report only, no database access")
 	downloadedAt := fs.String("downloaded-at", "", "RFC3339 timestamp recorded as downloaded_at (default: time of run)")
@@ -100,11 +142,12 @@ func run() error {
 		dl = t
 	}
 
-	rows, groups, err := loadDir(*dir)
+	groups := datasetGroups(*dir, *grDir)
+	rows, covered, err := loadGroups(groups)
 	if err != nil {
 		return err
 	}
-	report(rows, groups, *dir)
+	report(rows, covered, groups)
 
 	if *dryRun {
 		fmt.Println("dry-run: tidak ada data yang ditulis")
@@ -124,15 +167,45 @@ func run() error {
 	if err := insertRows(ctx, pool, rows, dl); err != nil {
 		return err
 	}
-	return verifyGroups(ctx, pool, groups)
+	return verifyGroups(ctx, pool, covered)
 }
 
-// loadDir parses every *.csv file in dir (sorted for deterministic errors) and
-// returns the rows plus the set of (indicator, gender) groups the files cover.
-func loadDir(dir string) ([]curveRow, map[[2]string]bool, error) {
-	entries, err := os.ReadDir(dir)
+// loadGroups parses the CSV dumps of every dataset group (dirs may overlap or
+// be absent — a missing CGS dir with a filled GR dir is valid) and returns
+// the rows plus the (indicator, gender) groups covered by the inputs.
+func loadGroups(groups []datasetGroup) ([]curveRow, map[[2]string]bool, error) {
+	var rows []curveRow
+	covered := map[[2]string]bool{}
+	loaded := 0
+	for _, g := range groups {
+		if g.dir == "" {
+			continue
+		}
+		parsed, err := loadDir(g)
+		if err != nil {
+			if os.IsNotExist(err) && loaded > 0 {
+				continue // grup kedua opsional
+			}
+			return nil, nil, err
+		}
+		loaded++
+		for _, r := range parsed {
+			covered[[2]string{r.Indicator, r.Gender}] = true
+		}
+		rows = append(rows, parsed...)
+	}
+	if loaded == 0 {
+		return nil, nil, fmt.Errorf("tidak ada CSV yang ditemukan — unduh tabel expanded WHO (spec §4.3)")
+	}
+	return rows, covered, nil
+}
+
+// loadDir parses every *.csv file in the group's dir (sorted for
+// deterministic errors) and stamps each row with the group's source constants.
+func loadDir(g datasetGroup) ([]curveRow, error) {
+	entries, err := os.ReadDir(g.dir)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var names []string
 	for _, e := range entries {
@@ -142,34 +215,38 @@ func loadDir(dir string) ([]curveRow, map[[2]string]bool, error) {
 		names = append(names, e.Name())
 	}
 	if len(names) == 0 {
-		return nil, nil, fmt.Errorf("tidak ada CSV di %s — unduh tabel expanded WHO (spec §4.3)", dir)
+		return nil, fmt.Errorf("tidak ada CSV di %s — unduh tabel expanded WHO (spec §4.3)", g.dir)
 	}
 	sort.Strings(names)
 
 	var rows []curveRow
-	groups := map[[2]string]bool{}
 	for _, name := range names {
-		path := filepath.Join(dir, name)
+		path := filepath.Join(g.dir, name)
 		f, err := os.Open(path)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		parsed, err := parseCSV(f, name)
+		parsed, err := parseCSVGroup(f, name, g)
 		f.Close()
 		if err != nil {
-			return nil, nil, err
-		}
-		for _, r := range parsed {
-			groups[[2]string{r.Indicator, r.Gender}] = true
+			return nil, err
 		}
 		rows = append(rows, parsed...)
 	}
-	return rows, groups, nil
+	return rows, nil
 }
 
-// parseCSV validates the literal header and each data row against the spec
-// §4.1(a) enums; errors name the file and the 1-based CSV record line.
+// parseCSV mem-parsing CSV grup CGS 2006 (bentuk pemanggil lama — dipakai
+// unit test existing); grup eksplisit lewat parseCSVGroup.
 func parseCSV(r io.Reader, name string) ([]curveRow, error) {
+	return parseCSVGroup(r, name, datasetGroups("", "")[0])
+}
+
+// parseCSVGroup validates the literal header and each data row against the spec
+// §4.1(a) enums; errors name the file and the 1-based CSV record line. File
+// grup GR 2007 memakai x dalam BULAN → x_days = round(x_bulan × 30.4375)
+// (D-KA-14) sebelum baris distamp source grup.
+func parseCSVGroup(r io.Reader, name string, g datasetGroup) ([]curveRow, error) {
 	cr := csv.NewReader(r)
 	cr.FieldsPerRecord = -1
 	var rows []curveRow
@@ -193,8 +270,8 @@ func parseCSV(r io.Reader, name string) ([]curveRow, error) {
 			return nil, fmt.Errorf("%s: baris %d: butuh 7 kolom, dapat %d", name, line, len(rec))
 		}
 		ind, gen, xk := rec[0], rec[1], rec[2]
-		if !validIndicators[ind] {
-			return nil, fmt.Errorf("%s: baris %d: indicator %q di luar enum (bbu,tbu,bbtb,imtu,lku,lila)", name, line, ind)
+		if !g.validIndic[ind] {
+			return nil, fmt.Errorf("%s: baris %d: indicator %q di luar enum grup %s (bbu,tbu,bbtb,imtu,lku,lila)", name, line, ind, g.sourceVersion)
 		}
 		if !validGenders[gen] {
 			return nil, fmt.Errorf("%s: baris %d: gender %q di luar enum (laki_laki,perempuan)", name, line, gen)
@@ -202,19 +279,31 @@ func parseCSV(r io.Reader, name string) ([]curveRow, error) {
 		if !validXKinds[xk] {
 			return nil, fmt.Errorf("%s: baris %d: x_kind %q di luar enum (age_days,height_cm)", name, line, xk)
 		}
-		for i, col := range []string{"x", "l", "m", "s"} {
-			v, err := strconv.ParseFloat(rec[3+i], 64)
+		xv, err := strconv.ParseFloat(rec[3], 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: baris %d: kolom x: bukan angka: %q", name, line, rec[3])
+		}
+		if xv <= 0 {
+			return nil, fmt.Errorf("%s: baris %d: x harus > 0, dapat %s", name, line, rec[3])
+		}
+		for i, col := range []string{"l", "m", "s"} {
+			v, err := strconv.ParseFloat(rec[4+i], 64)
 			if err != nil {
-				return nil, fmt.Errorf("%s: baris %d: kolom %s: bukan angka: %q", name, line, col, rec[3+i])
-			}
-			if col == "x" && v <= 0 {
-				return nil, fmt.Errorf("%s: baris %d: x harus > 0, dapat %s", name, line, rec[3])
+				return nil, fmt.Errorf("%s: baris %d: kolom %s: bukan angka: %q", name, line, col, rec[4+i])
 			}
 			if col == "s" && v <= 0 {
 				return nil, fmt.Errorf("%s: baris %d: s harus > 0, dapat %s", name, line, rec[6])
 			}
 		}
-		rows = append(rows, curveRow{Indicator: ind, Gender: gen, XKind: xk, X: rec[3], L: rec[4], M: rec[5], S: rec[6]})
+		x := rec[3]
+		if g.xInMonths {
+			// x CSV = bulan → age_days = round(bulan × 30.4375) (D-KA-14).
+			x = strconv.FormatFloat(math.Round(xv*growthMonthDays), 'f', -1, 64)
+		}
+		rows = append(rows, curveRow{
+			Indicator: ind, Gender: gen, XKind: xk, X: x, L: rec[4], M: rec[5], S: rec[6],
+			SourceName: g.sourceName, SourceVersion: g.sourceVersion, SourceURL: g.sourceURL[ind],
+		})
 	}
 	if line == 0 {
 		return nil, fmt.Errorf("%s: kosong (tanpa header)", name)
@@ -223,17 +312,24 @@ func parseCSV(r io.Reader, name string) ([]curveRow, error) {
 }
 
 // report prints per-group counts before any database access.
-func report(rows []curveRow, groups map[[2]string]bool, dir string) {
-	keys := sortedGroups(groups)
-	fmt.Printf("dir=%s baris=%d kelompok=%d\n", dir, len(rows), len(keys))
-	for _, g := range keys {
-		n := 0
-		for _, r := range rows {
-			if r.Indicator == g[0] && r.Gender == g[1] {
-				n++
+func report(rows []curveRow, covered map[[2]string]bool, groups []datasetGroup) {
+	keys := sortedGroups(covered)
+	fmt.Printf("baris=%d kelompok=%d\n", len(rows), len(keys))
+	for _, g := range groups {
+		for _, k := range keys {
+			if g.sourceURL[k[0]] == "" {
+				continue
+			}
+			n := 0
+			for _, r := range rows {
+				if r.Indicator == k[0] && r.Gender == k[1] && r.SourceVersion == g.sourceVersion {
+					n++
+				}
+			}
+			if n > 0 {
+				fmt.Printf("  %s/%s (%s): %d baris\n", k[0], k[1], g.sourceVersion, n)
 			}
 		}
-		fmt.Printf("  %s/%s: %d baris\n", g[0], g[1], n)
 	}
 }
 
@@ -264,7 +360,7 @@ func insertRows(ctx context.Context, pool *pgxpool.Pool, rows []curveRow, dl tim
 	for _, r := range rows {
 		ct, err := tx.Exec(ctx, insertSQL,
 			r.Indicator, r.Gender, r.XKind, r.X, r.L, r.M, r.S,
-			sourceName, sourceVersion, sourceURL[r.Indicator], dl)
+			r.SourceName, r.SourceVersion, r.SourceURL, dl)
 		if err != nil {
 			return err
 		}

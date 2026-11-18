@@ -226,3 +226,128 @@ func TestGiziGrowthSeries(t *testing.T) {
 		}
 	})
 }
+
+// TestGrowthSeriesMergedSources — kurva referensi gabungan dua sumber (plan
+// 2026-11-18-anak-a1-1-be Task 4, spec §5): who-cgs-2006 (balita) + who-gr-
+// 2007 (61 bln s.d. cap per indikator: tbu/imtu 228, bbu 120) sesuai usia
+// person dari DOB; z titik pasien tetap salin snapshot. Nilai ekspektasi
+// dihitung dari DEFINISI kontrak (rumus LMS), bukan dari output handler.
+func TestGrowthSeriesMergedSources(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "gsm")
+
+	// Ref sintetis dua sumber laki_laki (BUKAN WHO). am = floor(x/30.4375):
+	// 913→29; 2557→84; 3653→120; 3683→121; 6940→228.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ref.growth_curve (indicator, gender, x_kind, x, l, m, s, source_name, source_version, source_url, downloaded_at) VALUES
+			('tbu', 'laki_laki', 'age_days',  913, 1,  80, 0.1, 'sintetis', 'who-cgs-2006', 'http://test.local/cgs', now()),
+			('bbu', 'laki_laki', 'age_days',  913, 1,   9, 0.1, 'sintetis', 'who-cgs-2006', 'http://test.local/cgs', now()),
+			('tbu', 'laki_laki', 'age_days', 2557, 1, 120, 0.1, 'sintetis', 'who-gr-2007',  'http://test.local/gr',  now()),
+			('tbu', 'laki_laki', 'age_days', 6940, 1, 160, 0.1, 'sintetis', 'who-gr-2007',  'http://test.local/gr',  now()),
+			('bbu', 'laki_laki', 'age_days', 2557, 1,  25, 0.1, 'sintetis', 'who-gr-2007',  'http://test.local/gr',  now()),
+			('bbu', 'laki_laki', 'age_days', 3653, 1,  35, 0.1, 'sintetis', 'who-gr-2007',  'http://test.local/gr',  now()),
+			('bbu', 'laki_laki', 'age_days', 3683, 1,  36, 0.1, 'sintetis', 'who-gr-2007',  'http://test.local/gr',  now())`); err != nil {
+		t.Fatalf("seed ref dua sumber: %v", err)
+	}
+
+	seedPerson := func(t *testing.T, label, gender string, birthDate any) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx,
+			"INSERT INTO core.person (company_id, full_name, gender, birth_date) VALUES ($1, $2, $3, $4) RETURNING id::text",
+			companyID, "Gizi GSM "+label, gender, birthDate).Scan(&id); err != nil {
+			t.Fatalf("seed person %s: %v", label, err)
+		}
+		return id
+	}
+
+	growthSeries := func(t *testing.T, personID, indicator string) map[string]any {
+		t.Helper()
+		rec, resp := cfDo(t, router, http.MethodGet,
+			"/api/v1/clinical/growth-series?person_id="+personID+"&indicator="+indicator,
+			token, companyID, merchantID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d: %v", indicator, rec.Code, resp)
+		}
+		return resp["data"].(map[string]any)
+	}
+
+	curveXs := func(t *testing.T, data map[string]any) []float64 {
+		t.Helper()
+		rows := data["curve"].([]any)
+		xs := make([]float64, 0, len(rows))
+		for _, r := range rows {
+			xs = append(xs, gzNum(t, r.(map[string]any)["x"]))
+		}
+		return xs
+	}
+
+	t.Run("anak: gabungan tbu s.d. 228 bln", func(t *testing.T) {
+		// DOB 20 th → am ±240 ≥ 228 → gabungan penuh: cgs 913 + gr 2557,6940.
+		person := seedPerson(t, "anak-tbu", "male", time.Now().AddDate(-20, 0, 0).Format("2006-01-02"))
+		data := growthSeries(t, person, "tbu")
+		xs := curveXs(t, data)
+		if len(xs) != 3 || xs[0] != 913 || xs[1] != 2557 || xs[2] != 6940 {
+			t.Fatalf("tbu curve x = %v, want [913 2557 6940]", xs)
+		}
+		src := data["source"].(map[string]any)
+		if src["version"] != "who-gr-2007" {
+			t.Fatalf("source = %v, want who-gr-2007", src)
+		}
+		// L=1, M=120, S=0.1, z=+2 → v = round(120·(1+0.1·2)^1, 3) = 144.
+		row := data["curve"].([]any)[1].(map[string]any)
+		if v := gzNum(t, row["lines"].(map[string]any)["+2"]); v != 144 {
+			t.Fatalf("gr lines[+2] = %v, want 144", v)
+		}
+		// z titik pasien salin snapshot: tb 144 di age_days 2557 →
+		// z = ((144/120)^1 − 1)/(1·0.1) = 2.00 (trigger 000105, ref yang sama).
+		now := time.Now()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO clinical.anthropometry
+				(company_id, merchant_id, person_id, admission_id, measured_at, gender, age_days, bb_kg, tb_cm, extras)
+			VALUES ($1, $2, $3, NULL, $4, 'laki_laki', 2557, 30, 144, '{}'::jsonb)`,
+			companyID, merchantID, person, now); err != nil {
+			t.Fatalf("insert anthropometry: %v", err)
+		}
+		data = growthSeries(t, person, "tbu")
+		pts := data["points"].([]any)
+		if len(pts) != 1 {
+			t.Fatalf("points len = %d, want 1", len(pts))
+		}
+		p := pts[0].(map[string]any)
+		if gzNum(t, p["zscore"]) != 2.0 {
+			t.Fatalf("zscore = %v, want 2.0 (salin snapshot)", p["zscore"])
+		}
+	})
+
+	t.Run("anak: bbu ter-cutoff 120 bln", func(t *testing.T) {
+		// Baris gr am 121 (x 3683) DI LUAR domain bbu (cap 120 bln) → tidak
+		// pernah tampil walau usia person ≥ 228.
+		person := seedPerson(t, "anak-bbu", "male", time.Now().AddDate(-20, 0, 0).Format("2006-01-02"))
+		data := growthSeries(t, person, "bbu")
+		xs := curveXs(t, data)
+		if len(xs) != 3 || xs[0] != 913 || xs[1] != 2557 || xs[2] != 3653 {
+			t.Fatalf("bbu curve x = %v, want [913 2557 3653]", xs)
+		}
+		if data["source"].(map[string]any)["version"] != "who-gr-2007" {
+			t.Fatalf("source = %v, want who-gr-2007", data["source"])
+		}
+	})
+
+	t.Run("balita: domain lama tetap hijau", func(t *testing.T) {
+		// DOB 548 hari (am 18) → tanpa baris who-gr-2007; hanya cgs.
+		person := seedPerson(t, "balita", "male", time.Now().AddDate(0, 0, -548).Format("2006-01-02"))
+		for _, ind := range []string{"tbu", "bbu"} {
+			data := growthSeries(t, person, ind)
+			xs := curveXs(t, data)
+			if len(xs) != 1 || xs[0] != 913 {
+				t.Fatalf("%s curve x = %v, want [913]", ind, xs)
+			}
+			if data["source"].(map[string]any)["version"] != "who-cgs-2006" {
+				t.Fatalf("%s source = %v, want who-cgs-2006", ind, data["source"])
+			}
+		}
+	})
+}
