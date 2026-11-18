@@ -7,7 +7,7 @@
 DELETE FROM core.template_clinical_form WHERE form_type='ases_gizi_stamp';
 DELETE FROM core.template WHERE kind='clinical_form' AND code='ases_gizi_stamp';
 
--- Band anak 5–18: hapus SATU baris per tuple anak. Tiga tuple identik dengan
+-- Band anak 5–18: hapus SATU baris per tuple anak. Dua tuple identik dengan
 -- baris balita ('Gizi baik' bbu -2/+1, 'Sangat pendek (stunting berat)' tbu
 -- NULL/-3, 'Tinggi' tbu +2/NULL) — hapus satu instance (ctid), bukan semua,
 -- agar baris balita tetap utuh.
@@ -68,3 +68,8 @@ ALTER TABLE clinical.nutrition_profile_change
 ALTER TABLE clinical.nutrition_profile_change
   ADD CONSTRAINT nutrition_profile_change_to_profile_check
   CHECK (to_profile IN ('dewasa','lansia','bumil','menyusui','balita'));
+
+-- Kolom domain (up.sql ADD COLUMN IF NOT EXISTS): drop tanpa guard data karena
+-- baris 'anak' sudah dihapus di atas — tidak ada UNIQUE yang mengikat kolom ini.
+ALTER TABLE ref.growth_status_band
+  DROP COLUMN IF EXISTS domain;

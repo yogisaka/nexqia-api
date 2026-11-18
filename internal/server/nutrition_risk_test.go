@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -107,8 +108,9 @@ func TestGiziRiskRules(t *testing.T) {
 		}
 		// Hook skrining menulis snapshot rules dalam tx yang sama.
 		score, maxScore, interp, payload := rulesSnapshot(t, admissionID)
-		if score != 1 || maxScore != 8 || interp != "sedang" {
-			t.Fatalf("(a) snapshot = %d/%d/%s, want 1/8/sedang", score, maxScore, interp)
+		// max_score 10 sejak rules anak (plan 2026-11-18-anak-a1-1-be Task 3).
+		if score != 1 || maxScore != 10 || interp != "sedang" {
+			t.Fatalf("(a) snapshot = %d/%d/%s, want 1/10/sedang", score, maxScore, interp)
 		}
 		if payload["reason"] == "" || payload["triggers"] == nil {
 			t.Fatalf("(a) payload = %v, want triggers+reason", payload)
@@ -256,6 +258,160 @@ func TestGiziRiskRules(t *testing.T) {
 			t.Fatalf("risk terisi = %v, want sedang", risk)
 		}
 	})
+}
+
+// gzSeedAnakCurve inserts ONE synthetic growth_curve row (l=1) for the anak
+// rules tests — z = (val/m - 1)/s by the LMS definition (gender laki_laki).
+func gzSeedAnakCurve(t *testing.T, ctx context.Context, pool *pgxpool.Pool, indicator string, x int64, m, s float64) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ref.growth_curve (indicator, gender, x_kind, x, l, m, s, source_name, source_version, source_url, downloaded_at)
+		VALUES ($1, 'laki_laki', 'age_days', $2, 1, $3, $4, 'sintetis', 'gz-anak-test', 'http://test.local/sintetis', now())`,
+		indicator, x, m, s); err != nil {
+		t.Fatalf("seed ref %s: %v", indicator, err)
+	}
+}
+
+// gzSeedAnakAge inserts a male person with birth_date = today-ageDays days
+// and an outpatient admission (pola gzSeedBalita dengan usia param).
+func gzSeedAnakAge(t *testing.T, ctx context.Context, pool *pgxpool.Pool, router *gin.Engine, token, companyID, merchantID, label string, ageDays int) (string, string) {
+	t.Helper()
+	birth := time.Now().AddDate(0, 0, -ageDays).Format("2006-01-02")
+	var personID string
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO core.person (company_id, full_name, gender, birth_date) VALUES ($1, $2, 'male', $3) RETURNING id::text",
+		companyID, "Gizi Anak "+label, birth).Scan(&personID); err != nil {
+		t.Fatalf("seed anak person: %v", err)
+	}
+	admissionID, _ := seedAuditPersonAdmission(t, ctx, pool, router, token, companyID, merchantID, personID, "gza-"+label)
+	return personID, admissionID
+}
+
+// TestNutritionRiskAnak — rules anak (plan 2026-11-18-anak-a1-1-be Task 3,
+// D-KA-12; ekspektasi z dihitung dari rumus LMS fixture, bukan output kode).
+// Fixture anak 84 bln (age_days 2557, sinkron am = floor/30.4375): tbu ref
+// m=120 s=0.02 (z(120)=0.00, z(118.8)=-0.50 → Δ=-0.50 ≤ tbuMenurunDelta);
+// imtu ref m=16 s=0.1 (z(12.5)=-2.19 <-2, z(12.8)=-0.20). Gate: balita
+// <61 bln & dewasa TIDAK memicu; snapshot 'rules' max_score 10.
+func TestNutritionRiskAnak(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "riskanak")
+
+	newAnakEpisode := func(t *testing.T, label string) string {
+		t.Helper()
+		_, admissionID := gzSeedAnakAge(t, ctx, pool, router, token, companyID, merchantID, label, 2557)
+		rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-episode", token, companyID, merchantID, map[string]any{
+			"admission_id": admissionID, "profile": "anak",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("episode anak %s = %d: %s", label, rec.Code, rec.Body.String())
+		}
+		return admissionID
+	}
+	postAnthro := func(t *testing.T, admissionID string, offset time.Duration, bb, tb float64) {
+		t.Helper()
+		body := map[string]any{
+			"admission_id": admissionID,
+			"measured_at":  time.Now().Add(-offset).Format(time.RFC3339),
+			"bb_kg":        bb, "tb_cm": tb,
+		}
+		if rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/anthropometry", token, companyID, merchantID, body); rec.Code != http.StatusCreated {
+			t.Fatalf("anthro = %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	getRisk := func(t *testing.T, admissionID string) map[string]any {
+		t.Helper()
+		rec, resp := cfDo(t, router, http.MethodGet, "/api/v1/clinical/nutrition-episode?admission_id="+admissionID, token, companyID, merchantID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get episode = %d: %s", rec.Code, rec.Body.String())
+		}
+		risk, _ := resp["risk"].(map[string]any)
+		return risk
+	}
+	hasTrigger := func(t *testing.T, risk map[string]any, code string) bool {
+		t.Helper()
+		for _, raw := range risk["triggers"].([]any) {
+			if tr := raw.(map[string]any); tr["code"] == code {
+				return true
+			}
+		}
+		return false
+	}
+	rulesRow := func(t *testing.T, admissionID string) (int, int, string) {
+		t.Helper()
+		var score, maxScore int
+		var interp string
+		if err := pool.QueryRow(ctx,
+			`SELECT score, max_score, interpretation FROM clinical.nutrition_screening_result
+			 WHERE admission_id = $1::uuid AND instrument = 'rules'`,
+			admissionID).Scan(&score, &maxScore, &interp); err != nil {
+			t.Fatalf("rules snapshot: %v", err)
+		}
+		return score, maxScore, interp
+	}
+
+	// (a) anak 84 bln: tbu 120→118.8 → Δ z = -0.50 ≤ -0.5 → tbu_menurun;
+	// imtu 12.5→12.8 → Δ +1.99 & terakhir -0.20 → TANPA imtu_buruk.
+	gzSeedAnakCurve(t, ctx, pool, "tbu", 2557, 120, 0.02)
+	gzSeedAnakCurve(t, ctx, pool, "imtu", 2557, 16, 0.1)
+	a := newAnakEpisode(t, "a")
+	postAnthro(t, a, 24*time.Hour, 18.0, 120.0)
+	postAnthro(t, a, 0, 18.0, 118.8)
+	risk := getRisk(t, a)
+	if !hasTrigger(t, risk, "tbu_menurun") {
+		t.Fatalf("(a) risk = %v, want tbu_menurun", risk)
+	}
+	if hasTrigger(t, risk, "imtu_buruk") {
+		t.Fatalf("(a) risk = %v, want tanpa imtu_buruk", risk)
+	}
+	score, maxScore, interp := rulesRow(t, a)
+	if maxScore != 10 || interp != "sedang" {
+		t.Fatalf("(a) rules = %d/%d/%s, want max 10 sedang", score, maxScore, interp)
+	}
+
+	// (b) imtu_buruk via z IMT/U terbaru < -2 (ATAU-branch): imt 12.5 dua
+	// kali → z -2.19 < -2 (Δ 0 tak memicu delta-branch).
+	b := newAnakEpisode(t, "b")
+	postAnthro(t, b, 24*time.Hour, 18.0, 120.0)
+	postAnthro(t, b, 0, 18.0, 120.0)
+	risk = getRisk(t, b)
+	if !hasTrigger(t, risk, "imtu_buruk") || hasTrigger(t, risk, "tbu_menurun") {
+		t.Fatalf("(b) risk = %v, want imtu_buruk tanpa tbu_menurun", risk)
+	}
+
+	// (c) gate balita <61 bln: tbu ref di x=548 (m=75 s=0.02), z 0→-0.67
+	// (Δ ≤ -0.5) TAPI usia 18 bln < 61 → TANPA tbu_menurun.
+	gzSeedAnakCurve(t, ctx, pool, "tbu", 548, 75, 0.02)
+	_, cAdm := gzSeedBalita(t, ctx, pool, router, token, companyID, merchantID, "gate")
+	rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-episode", token, companyID, merchantID, map[string]any{
+		"admission_id": cAdm, "profile": "balita",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("episode balita = %d: %s", rec.Code, rec.Body.String())
+	}
+	postAnthro(t, cAdm, 24*time.Hour, 9.0, 75.0)
+	postAnthro(t, cAdm, 0, 9.2, 74.0)
+	risk = getRisk(t, cAdm)
+	if hasTrigger(t, risk, "tbu_menurun") || hasTrigger(t, risk, "imtu_buruk") {
+		t.Fatalf("(c) balita <61 bln risk = %v, want tanpa rules anak", risk)
+	}
+
+	// (d) dewasa: tanpa age_days (DOB NULL) → seri z anak tak pernah ada.
+	_, dAdm := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzkad")
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-episode", token, companyID, merchantID, map[string]any{
+		"admission_id": dAdm, "profile": "dewasa",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("episode dewasa = %d: %s", rec.Code, rec.Body.String())
+	}
+	postAnthro(t, dAdm, 24*time.Hour, 62.0, 158.0)
+	postAnthro(t, dAdm, 0, 60.0, 157.0)
+	risk = getRisk(t, dAdm)
+	if hasTrigger(t, risk, "tbu_menurun") || hasTrigger(t, risk, "zscore_anak") {
+		t.Fatalf("(d) dewasa risk = %v, want tanpa rules anak", risk)
+	}
 }
 
 // personOfAdmission membaca person_id admission untuk fixture SQL langsung.

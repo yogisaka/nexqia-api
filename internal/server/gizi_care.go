@@ -9,7 +9,9 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -313,6 +315,186 @@ func persistGiziPemicuBumilResult(c *gin.Context, formID, admissionID, personID 
 	return true
 }
 
+// Konstanta hook STAMP (plan 2026-11-18-anak-a1-1-be Task 3, D-KA-10):
+// usia resmi STAMP s.d. 16 th → gate server 61–192 bln (193–228 = hint
+// z-murni di FE, hook skip); max skor 9 = s1(0..3) + s2(0..3) + s3(0..3);
+// ambang z_bb < −2,05 (2nd centile, D-KA-09 non-redundan).
+const (
+	giziStampMinAgeMonths = 61
+	giziStampMaxAgeMonths = 192
+	giziStampMaxScore     = 9
+	giziStampZbbAmbang    = -2.05
+)
+
+// giziStampResult hasil parse langkah 1–2 form ases_gizi_stamp (spec §5):
+// dua section radio stamp_diagnosis/stamp_asupan, nilai "3"/"2"/"0" (string
+// opsi template 000105 atau angka). Step3 TIDAK PERNAH dibaca dari form —
+// dihitung server di persist (dari antropometri terakhir). Salah satu
+// section kosong/tak-valid → ok=false = hook dilewati (draft parsial).
+// giziStampSectionScore ekstrak satu skor radio 0..3 dari sections key.
+func giziStampSectionScore(sections map[string]json.RawMessage, key string) (int, bool) {
+	rawVal, ok := sections[key]
+	if !ok || clinicalSectionEmpty(rawVal) {
+		return 0, false
+	}
+	var v any
+	if err := json.Unmarshal(rawVal, &v); err != nil {
+		return 0, false
+	}
+	var n int
+	switch x := v.(type) {
+	case float64:
+		n = int(x)
+	case string:
+		parsed, err := strconv.Atoi(x)
+		if err != nil {
+			return 0, false
+		}
+		n = parsed
+	default:
+		return 0, false
+	}
+	if n < 0 || n > 3 {
+		return 0, false
+	}
+	return n, true
+}
+
+// giziStampResult ekstrak s1+s2 form ases_gizi_stamp (pola giziMstScore).
+func giziStampResult(formType string, formData json.RawMessage) (int, int, bool) {
+	if formType != "ases_gizi_stamp" {
+		return 0, 0, false
+	}
+	var payload struct {
+		Sections map[string]json.RawMessage `json:"sections"`
+	}
+	if err := json.Unmarshal(formData, &payload); err != nil {
+		return 0, 0, false
+	}
+	s1, ok1 := giziStampSectionScore(payload.Sections, "stamp_diagnosis")
+	s2, ok2 := giziStampSectionScore(payload.Sections, "stamp_asupan")
+	if !ok1 || !ok2 {
+		return 0, 0, false
+	}
+	return s1, s2, true
+}
+
+// giziStampInterpretation band literal (M4): >=4 tinggi · 2–3 sedang · 0–1
+// rendah.
+func giziStampInterpretation(score int) string {
+	switch {
+	case score >= 4:
+		return "tinggi"
+	case score >= 2:
+		return "sedang"
+	default:
+		return "rendah"
+	}
+}
+
+// persistGiziStampResult menulis hasil STAMP ke
+// clinical.nutrition_screening_result (instrument 'stamp', max_score 9,
+// spec §5): score = s1 + s2 + s3; s3 dihitung SERVER dari antropometri
+// terakhir person — dz = |z_tb − z_bb| (dz > 3 → 3; dz > 2 → 1; else 0),
+// z_bb < −2,05 → 3; tanpa z → s3 = 0 + sumber hint. Gate usia server
+// (D-KA-10): hanya persist bila age_months 61–192 (age_days baris terbaru,
+// am = floor(age_days/30.4375)); 193–228 → hook skip (FE hint D-KA-10).
+// Idempoten UPDATE-then-INSERT pola pemicu_bumil (partial ON CONFLICT
+// uq_nsr_form_instrument); refreshGiziRules setelahnya.
+func persistGiziStampResult(c *gin.Context, formID, admissionID, personID pgtype.UUID, s1, s2 int, episodeID pgtype.UUID) bool {
+	merchantID, okM := requireMerchantHeader(c)
+	if !okM {
+		return false
+	}
+	ctx := c.Request.Context()
+	q := sqlcgen.New(TxFromContext(c))
+	var zTb, zBb *float64
+	ageMonths := -1
+	latest, err := q.GetLatestAnthropometryByPerson(ctx, personID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		respondInternalError(c, err)
+		return false
+	default:
+		if latest.AgeDays.Valid {
+			ageMonths = int(math.Floor(float64(latest.AgeDays.Int32) / 30.4375))
+		}
+		if v, ok := giziNumVal(latest.ZscoreTbu); ok {
+			zTb = &v
+		}
+		if v, ok := giziNumVal(latest.ZscoreBbu); ok {
+			zBb = &v
+		}
+	}
+	if ageMonths != -1 && (ageMonths < giziStampMinAgeMonths || ageMonths > giziStampMaxAgeMonths) {
+		return true // di luar 61–192 bln (mis. 17 th) → hook skip
+	}
+	s3 := 0
+	sumber := "hint"
+	var dz *float64
+	if zTb != nil && zBb != nil {
+		sumber = "antropometri"
+		d := math.Abs(*zTb - *zBb)
+		dz = &d
+		switch {
+		case *zBb < giziStampZbbAmbang:
+			s3 = 3
+		case d > 3:
+			s3 = 3
+		case d > 2:
+			s3 = 1
+		}
+	}
+	score := s1 + s2 + s3
+	pl, err := json.Marshal(map[string]any{
+		"stamp_diagnosis": s1, "stamp_asupan": s2, "stamp_step3": s3,
+		"sumber_step3": sumber, "z_tb": zTb, "z_bb": zBb, "dz": dz,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	bands := json.RawMessage(`[{"low":4,"interpretation":"tinggi"},{"low":2,"high":4,"interpretation":"sedang"},{"low":0,"high":2,"interpretation":"rendah"}]`)
+	userID := AuthUserID(c)
+	tag, err := TxFromContext(c).Exec(ctx, `
+		UPDATE clinical.nutrition_screening_result
+		SET score = $2, max_score = $3, interpretation = $4, bands = $5, payload = $6,
+		    episode_id = $7, calculated_at = now(), calculated_by = $8, row_version = row_version + 1
+		WHERE form_instance_id = $1 AND instrument = 'stamp'`,
+		formID, score, giziStampMaxScore, giziStampInterpretation(score), bands, pl, episodeID, userID)
+	if err != nil {
+		respondInternalError(c, err)
+		return false
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := TxFromContext(c).Exec(ctx, `
+			INSERT INTO clinical.nutrition_screening_result
+				(company_id, merchant_id, person_id, admission_id, episode_id,
+				 form_instance_id, instrument, score, max_score, interpretation,
+				 bands, payload, calculated_by, created_by)
+			VALUES ($1, $2, $3, $4, $5, $6, 'stamp', $7, $8, $9, $10, $11, $12, $12)
+			ON CONFLICT (form_instance_id, instrument) WHERE form_instance_id IS NOT NULL
+			DO UPDATE SET score = EXCLUDED.score, max_score = EXCLUDED.max_score,
+				interpretation = EXCLUDED.interpretation, bands = EXCLUDED.bands,
+				payload = EXCLUDED.payload, calculated_at = now(),
+				calculated_by = EXCLUDED.calculated_by`,
+			AuthCompanyID(c), merchantID, personID,
+			admissionID, episodeID, formID,
+			score, giziStampMaxScore, giziStampInterpretation(score), bands, pl, userID); err != nil {
+			respondInternalError(c, err)
+			return false
+		}
+	}
+	// Rules snapshot: SETELAH hook STAMP tersimpan.
+	if episodeID.Valid {
+		if !refreshGiziRules(c, q, AuthCompanyID(c), merchantID, personID, admissionID, episodeID) {
+			return false
+		}
+	}
+	return true
+}
+
 // persistGiziMnasfResult menulis hasil MNA-SF ke
 // clinical.nutrition_screening_result (instrument 'mnasf', max_score 14,
 // spec §5 hook). Query sqlc chunk 1 ter-pin instrument 'mst' (queries/gizi.sql
@@ -415,6 +597,12 @@ func persistGiziScreeningResult(c *gin.Context, formID, admissionID, personID pg
 		// (max_score 3, stratifikasi server).
 		if res, okP := parseGiziPemicuBumilResult(entry.FormType, entry.FormData); okP {
 			return persistGiziPemicuBumilResult(c, formID, admissionID, personID, res, episodeID)
+		}
+		// Hook STAMP (plan 2026-11-18-anak-a1-1-be Task 3, spec §5): form
+		// ases_gizi_stamp → instrument 'stamp' (max_score 9; step3 server,
+		// gate usia 61–192 bln di dalam persist).
+		if s1, s2, okSt := giziStampResult(entry.FormType, entry.FormData); okSt {
+			return persistGiziStampResult(c, formID, admissionID, personID, s1, s2, episodeID)
 		}
 		return true // hook dilewati (draft parsial / form lain)
 	}

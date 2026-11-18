@@ -106,6 +106,10 @@ var clinicalSectionKinds = map[string]bool{
 	// SOAP v3 kinds (spec 2026-11-10-cppt-pemeriksaan-v3 §Kontrak data).
 	"radio_conditional": true, "antropometri": true, "physical_exam": true,
 	"consciousness": true, "rtl": true, "rekomendasi": true,
+	// readonly = BUKAN input user (revisi plan 2026-11-18-anak-a1-1-be
+	// titik 4): FE merender read-only; nilai dari server/template — template
+	// ases_gizi_stamp (000105) memuat stamp_step3_sumber/stamp_total.
+	"readonly": true,
 }
 
 // resolveClinicalFormTemplate picks the active clinical_form template for
@@ -272,6 +276,12 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 	// select (spec §5 hook, template migration 000098).
 	mnasf := map[string]int{}
 	for _, d := range defs.Sections {
+		// Kind readonly bukan input user (revisi plan 2026-11-18-anak-a1-1-be
+		// titik 4): nilai selalu dari server/template → validasi jawaban/opsi
+		// DILEWATI, apa pun yang dikirim klien untuk key itu tidak divalidasi.
+		if d.Kind == "readonly" {
+			continue
+		}
 		rawVal, present := payload.Sections[d.Key]
 		if !present || clinicalSectionEmpty(rawVal) {
 			warnings = append(warnings, "section '"+d.Key+"' kosong")

@@ -2,14 +2,16 @@
 // Rules engine risiko gizi D5 — plan 2026-11-13-gizi-nutrition-care chunk 3
 // Task 2 (spec 2026-11-13-gizi-nutrition-care-spec §6, FR-GZ-08c): trigger
 // fase 1 → level rendah/sedang/tinggi, snapshot instrument 'rules'
-// (score = jumlah pemicu, max_score 8) ditulis SETELAH write utama sukses
+// (score = jumlah pemicu, max_score 10 — 10 pemicu sejak rules anak plan
+// 2026-11-18-anak-a1-1-be Task 3) ditulis SETELAH write utama sukses
 // dalam tx ambient yang sama (POST antropometri, PATCH episode, hook
-// skrining MST/MNA-SF).
+// skrining MST/MNA-SF/STAMP).
 package server
 
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +51,18 @@ var giziAnakIndLabel = map[string]string{
 
 // giziAnakIndZ urutan prioritas band anak: BB/U dulu (spec §6).
 var giziAnakIndZ = []string{"bbu", "bbtb", "imtu", "tbu", "lku"}
+
+// Konstanta rules anak (plan 2026-11-18-anak-a1-1-be Task 3, D-KA-12) —
+// nilai klinis tunable via konstanta (bukan env — bukan ops deployment):
+// tbu_menurun / imtu_buruk pakai delta z dua pengukuran terakhir; domain
+// usia anak = 61–228 bln (floor(age_days/30.4375), sinkron trigger 000105).
+const (
+	tbuMenurunDelta      = -0.5
+	imtuBurukDelta       = -0.5
+	imtuBurukZ           = -2.0
+	giziAnakMinAgeMonths = 61
+	giziAnakMaxAgeMonths = 228
+)
 
 // evaluateGiziRisk menghitung rules fase 1 spec §6 untuk episode dengan
 // profil `profile`: (a) seri antropometri admission (bb/imt, extras lila,
@@ -274,10 +288,12 @@ func evaluateGiziRisk(ctx context.Context, q *sqlcgen.Queries, personID, admissi
 		triggers = append(triggers, gin.H{"code": "hb_rendah", "risk": "sedang",
 			"label": "Hb " + giziFmtNum(hb, 1)})
 	}
-	// zscore_anak — GATE profil balita (review fix #1): band risk
-	// sedang/tinggi, prioritas BB/U, baris antropometri terbaru dulu.
+	// zscore_anak — GATE profil balita|anak (plan 2026-11-18-anak-a1-1-be
+	// Task 3: profil 'anak' ikut; review fix #1 tetap: dewasa/lansia/bumil/
+	// menyusui TIDAK PERNAH dipicu rules anak): band risk sedang/tinggi,
+	// prioritas BB/U, baris antropometri terbaru dulu.
 	zscoreAnakTinggi := false
-	if profile == "balita" {
+	if profile == "balita" || profile == "anak" {
 	out:
 		for i := len(meas) - 1; i >= 0; i-- {
 			for _, ind := range giziAnakIndZ {
@@ -295,6 +311,41 @@ func evaluateGiziRisk(ctx context.Context, q *sqlcgen.Queries, personID, admissi
 				}
 				break out
 			}
+		}
+	}
+	// tbu_menurun (D-KA-12) & imtu_buruk (plan 2026-11-18-anak-a1-1-be
+	// Task 3): rules anak usia 61–228 bln dari seri z snapshot, level
+	// sedang. tbu_menurun: Δ zscore_tbu ≤ −0,5 dua pengukuran terakhir.
+	// imtu_buruk: Δ zscore_imtu ≤ −0,5 ATAU z IMT/U terbaru < −2.
+	anakZSeries := func(ind string) []float64 {
+		zs := make([]float64, 0, 2)
+		for _, m := range meas {
+			if !m.hasAge {
+				continue
+			}
+			am := math.Floor(float64(m.ageDays) / 30.4375)
+			if am < giziAnakMinAgeMonths || am > giziAnakMaxAgeMonths {
+				continue
+			}
+			if z, ok := m.z[ind]; ok {
+				zs = append(zs, z)
+			}
+		}
+		return zs
+	}
+	if tbu := anakZSeries("tbu"); len(tbu) >= 2 {
+		if delta := tbu[len(tbu)-1] - tbu[len(tbu)-2]; delta <= tbuMenurunDelta {
+			triggers = append(triggers, gin.H{"code": "tbu_menurun", "risk": "sedang",
+				"label": "TB/U menurun " + giziFmtNum(delta, 2)})
+		}
+	}
+	if imtu := anakZSeries("imtu"); len(imtu) >= 1 && imtu[len(imtu)-1] < imtuBurukZ {
+		triggers = append(triggers, gin.H{"code": "imtu_buruk", "risk": "sedang",
+			"label": "IMT/U " + giziFmtNum(imtu[len(imtu)-1], 2)})
+	} else if len(imtu) >= 2 {
+		if delta := imtu[len(imtu)-1] - imtu[len(imtu)-2]; delta <= imtuBurukDelta {
+			triggers = append(triggers, gin.H{"code": "imtu_buruk", "risk": "sedang",
+				"label": "IMT/U menurun " + giziFmtNum(delta, 2)})
 		}
 	}
 	// tinja_pucat: display-only warna 1–3 (tidak memengaruhi level).
@@ -324,8 +375,9 @@ func evaluateGiziRisk(ctx context.Context, q *sqlcgen.Queries, personID, admissi
 }
 
 // upsertGiziRulesSnapshot menulis hasil rules ke
-// clinical.nutrition_screening_result (instrument 'rules', max_score 8,
-// score = jumlah pemicu, payload {triggers, reason}). Idempoten per
+// clinical.nutrition_screening_result (instrument 'rules', max_score 10 —
+// literal SQL queries/gizi.sql ikut 8→10, plan 2026-11-18-anak-a1-1-be
+// Task 3; score = jumlah pemicu, payload {triggers, reason}). Idempoten per
 // admission: UPDATE dulu; 0 baris → INSERT (tanpa form_instance — di luar
 // index partial uq_nsr_form_instrument).
 func upsertGiziRulesSnapshot(ctx context.Context, q *sqlcgen.Queries, companyID, merchantID, personID, admissionID, episodeID pgtype.UUID, risk gin.H, triggers []gin.H, userID pgtype.UUID) error {
