@@ -381,7 +381,11 @@ func AddendumClinicalFormHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	warnings, okV := validateClinicalFormData(c, target.FormType, defs, req.FormData)
+	birth, okBirth := clinicalAdmissionBirthDate(c, q, target.AdmissionID)
+	if !okBirth {
+		return
+	}
+	warnings, okV := validateClinicalFormData(c, target.FormType, defs, req.FormData, birth)
 	if !okV {
 		return
 	}

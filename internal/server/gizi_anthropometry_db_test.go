@@ -5,6 +5,7 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -272,6 +273,194 @@ func TestGiziAnthropometrySnapshot(t *testing.T) {
 		expectVal(t, "zscore_lila", s.lila, -0.80)
 		if _, ok := s.status["lila_cm"]; ok {
 			t.Fatalf("status[lila_cm] tidak boleh diisi di luar 6-59 bulan: %v", s.status)
+		}
+	})
+
+	// seedRef sintetis per-subtest: baris ref dihapus lagi saat subtest selesai
+	// (defer) supaya nearest-x subtest lain tidak terganggu.
+	seedRef := func(t *testing.T, indicator, gender, xKind, sourceVersion string, x int, l, m, s float64) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO ref.growth_curve (indicator, gender, x_kind, x, l, m, s, source_name, source_version, source_url, downloaded_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'sintetis', $8, 'http://test.local/sintetis', now())`,
+			indicator, gender, xKind, x, l, m, s, sourceVersion); err != nil {
+			t.Fatalf("seed ref %s x=%d: %v", indicator, x, err)
+		}
+	}
+	cleanupRef := func(t *testing.T, indicator, gender, sourceVersion string, x int) {
+		t.Helper()
+		t.Cleanup(func() {
+			if _, err := pool.Exec(ctx,
+				"DELETE FROM ref.growth_curve WHERE indicator=$1 AND gender=$2 AND source_version=$3 AND x=$4",
+				indicator, gender, sourceVersion, x); err != nil {
+				t.Fatalf("cleanup ref %s x=%d: %v", indicator, x, err)
+			}
+		})
+	}
+
+	// (a) anak 84 bln (2557 hari; floor(2557/30.4375)=84): z bbu/tbu/imtu
+	// terisi dari sumber who-gr-2007, band domain ANAK (bbu z=1.2 → anak
+	// 'gizi_lebih'; balita di rentang sama = 'risiko_gizi_lebih').
+	t.Run("anak 84 bln sumber gr + band anak", func(t *testing.T) {
+		for _, rc := range []struct {
+			ind, xk string
+			x       int
+			l, m, s float64
+		}{
+			{"bbu", "age_days", 2557, 1, 20, 0.1},
+			{"tbu", "age_days", 2557, 1, 100, 0.1},
+			{"imtu", "age_days", 2557, 1, 20, 0.05},
+		} {
+			seedRef(t, rc.ind, "laki_laki", rc.xk, "who-gr-2007", rc.x, rc.l, rc.m, rc.s)
+			cleanupRef(t, rc.ind, "laki_laki", "who-gr-2007", rc.x)
+		}
+		person := seedPerson(t, "anak84", "male", nil)
+		tx := runtimeTenantTx(t, ctx, pool, companyID, merchantID)
+		// bbu: (22.4/20-1)/0.1 = 1.20; tbu: (100/100-1)/0.1 = 0;
+		// imt = round(22.4/1^2,1) = 22.4; imtu: (22.4/20-1)/0.05 = 2.40.
+		s := insertAnthro(t, tx, person, "laki_laki", 2557, 22.4, 100, "{}")
+		expectVal(t, "zscore_bbu", s.bbu, 1.20)
+		expectVal(t, "zscore_tbu", s.tbu, 0)
+		expectVal(t, "zscore_imtu", s.imtu, 2.40)
+		for _, key := range []string{"bbu", "tbu", "imtu"} {
+			band, ok := s.status[key].(map[string]any)
+			if !ok {
+				t.Fatalf("status[%s] hilang: %v", key, s.status)
+			}
+			code, _ := band["code"].(string)
+			want := map[string]string{"bbu": "gizi_lebih", "tbu": "normal", "imtu": "obesitas"}[key]
+			if code != want {
+				t.Fatalf("status[%s].code: expected %s (band anak), got %s", key, want, code)
+			}
+		}
+		if s.curveVersion == nil || *s.curveVersion != "who-gr-2007" {
+			t.Fatalf("curve_version: expected who-gr-2007, got %v", s.curveVersion)
+		}
+	})
+
+	// (b) 121 bln (3683 hari) & 130 bln (3957 hari): bbu NULL (batas 120 bln),
+	// tbu/imtu tetap terisi (batas 228 bln).
+	t.Run("anak 121 dan 130 bln bbu null", func(t *testing.T) {
+		for _, rc := range []struct {
+			ind     string
+			x       int
+			l, m, s float64
+		}{
+			{"tbu", 3683, 1, 120, 0.1},
+			{"imtu", 3683, 1, 20, 0.05},
+		} {
+			seedRef(t, rc.ind, "laki_laki", "age_days", "who-gr-2007", rc.x, rc.l, rc.m, rc.s)
+			cleanupRef(t, rc.ind, "laki_laki", "who-gr-2007", rc.x)
+		}
+		person := seedPerson(t, "anak121", "male", nil)
+		tx := runtimeTenantTx(t, ctx, pool, companyID, merchantID)
+		// tbu: (120/120-1)/0.1 = 0; imt = round(20/1.2^2,1) = 13.9;
+		// imtu: (13.9/20-1)/0.05 = -6.10.
+		s := insertAnthro(t, tx, person, "laki_laki", 3683, 20, 120, "{}")
+		expectNil(t, "zscore_bbu@121bln", s.bbu)
+		expectVal(t, "zscore_tbu@121bln", s.tbu, 0)
+		expectVal(t, "zscore_imtu@121bln", s.imtu, -6.10)
+		if s.curveVersion == nil || *s.curveVersion != "who-gr-2007" {
+			t.Fatalf("curve_version 121: expected who-gr-2007, got %v", s.curveVersion)
+		}
+		// 130 bln: baris ref terdekat tetap x=3683 → nilai z sama.
+		s = insertAnthro(t, tx, person, "laki_laki", 3957, 20, 120, "{}")
+		expectNil(t, "zscore_bbu@130bln", s.bbu)
+		expectVal(t, "zscore_tbu@130bln", s.tbu, 0)
+		expectVal(t, "zscore_imtu@130bln", s.imtu, -6.10)
+	})
+
+	// (c) anak → imt_kategori NULL, imt tetap dihitung (D-KA-04); sudah
+	// dicek di subtest 84/121/130; di sini eksplisit bersama (d).
+	t.Run("imt kategori per usia", func(t *testing.T) {
+		person := seedPerson(t, "kat84", "male", nil)
+		tx := runtimeTenantTx(t, ctx, pool, companyID, merchantID)
+		s := insertAnthro(t, tx, person, "laki_laki", 2557, 22.4, 100, "{}")
+		if s.imt == nil || *s.imt != 22.4 {
+			t.Fatalf("imt anak: expected 22.4, got %v", s.imt)
+		}
+		if s.imtKategori != nil {
+			t.Fatalf("imt_kategori anak: expected NULL, got %v", *s.imtKategori)
+		}
+		// (d) dewasa 30 th (11000 hari; 361 bln > 228): kategori terisi (regresi).
+		personD := seedPerson(t, "katdewasa", "male", "1974-06-15")
+		// imt = round(62/1.58^2,1) = 24.8 → bb_lebih.
+		s2 := insertAnthro(t, tx, personD, "laki_laki", 11000, 62, 158, "{}")
+		if s2.imtKategori == nil || *s2.imtKategori != "bb_lebih" {
+			t.Fatalf("imt_kategori dewasa: expected bb_lebih, got %v", s2.imtKategori)
+		}
+	})
+
+	// (e) balita 30 bln (913 hari; <= 60 bln): sumber who-cgs-2006 (regresi).
+	t.Run("balita 30 bln sumber cgs", func(t *testing.T) {
+		seedRef(t, "bbu", "laki_laki", "age_days", "who-cgs-2006", 913, 1, 10, 0.1)
+		cleanupRef(t, "bbu", "laki_laki", "who-cgs-2006", 913)
+		seedRef(t, "imtu", "laki_laki", "age_days", "who-cgs-2006", 913, 1, 15, 0.05)
+		cleanupRef(t, "imtu", "laki_laki", "who-cgs-2006", 913)
+		person := seedPerson(t, "balita30", "male", nil)
+		tx := runtimeTenantTx(t, ctx, pool, companyID, merchantID)
+		// bbu: (10/10-1)/0.1 = 0; imt = round(10/0.75^2,1) = 17.8;
+		// imtu: (17.8/15-1)/0.05 = 3.73 (blok terakhir → curve_version cgs).
+		s := insertAnthro(t, tx, person, "laki_laki", 913, 10, 75, "{}")
+		expectVal(t, "zscore_bbu", s.bbu, 0)
+		expectVal(t, "zscore_imtu", s.imtu, 3.73)
+		if s.imtKategori != nil {
+			t.Fatalf("imt_kategori balita: expected NULL, got %v", *s.imtKategori)
+		}
+		if s.curveVersion == nil || *s.curveVersion != "who-cgs-2006" {
+			t.Fatalf("curve_version: expected who-cgs-2006, got %v", s.curveVersion)
+		}
+	})
+
+	// (f) extras lk_cm tersimpan tanpa z/band (D-KA-13).
+	t.Run("extras lk_cm tanpa z", func(t *testing.T) {
+		person := seedPerson(t, "lkcm", "male", nil)
+		tx := runtimeTenantTx(t, ctx, pool, companyID, merchantID)
+		s := insertAnthro(t, tx, person, "laki_laki", 2000, 12, 82, `{"lk_cm":45.5}`)
+		expectNil(t, "zscore_lku", s.lku) // tidak ada baris ref lku
+		if _, ok := s.status["lku"]; ok {
+			t.Fatalf("status[lku] tidak boleh ada tanpa ref: %v", s.status)
+		}
+		var lk string
+		if err := tx.QueryRow(ctx,
+			"SELECT extras->>'lk_cm' FROM clinical.anthropometry WHERE person_id=$1::uuid ORDER BY created_at DESC LIMIT 1",
+			person).Scan(&lk); err != nil || lk != "45.5" {
+			t.Fatalf("extras lk_cm tersimpan = %q (%v), want 45.5", lk, err)
+		}
+	})
+
+	// (g) guard lama 2192 hari tetap untuk bbtb/lku/lila: 2200 hari
+	// (72 bln, <= 228) → tbu/imtu masih bisa terisi, tapi bbtb/lila NULL.
+	t.Run("guard 2192 bbtb lila", func(t *testing.T) {
+		person := seedPerson(t, "guard2200", "male", nil)
+		tx := runtimeTenantTx(t, ctx, pool, companyID, merchantID)
+		s := insertAnthro(t, tx, person, "laki_laki", 2200, 20, 120, `{"lila_cm":25.0}`)
+		expectNil(t, "zscore_bbtb", s.bbtb)
+		expectNil(t, "zscore_lku", s.lku)
+		expectNil(t, "zscore_lila", s.lila)
+		if _, ok := s.status["lila_cm"]; ok {
+			t.Fatalf("status[lila_cm] tidak boleh diisi > 1795 hari: %v", s.status)
+		}
+	})
+
+	// (h) POST episode profile 'anak' via handler + PATCH anak→dewasa
+	// (validGiziProfiles dipakai Create/Update handler).
+	t.Run("episode profile anak via handler", func(t *testing.T) {
+		router := gzNewRouter(t, ctx, pool)
+		envCompany, envMerchant, _, token := gzSeedEnv(t, ctx, pool, router, "anthroanak")
+		_, adm := cfSeedAdmission(t, ctx, pool, router, token, envCompany, envMerchant, "gzanthroanak")
+		rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-episode", token, envCompany, envMerchant, map[string]any{
+			"admission_id": adm, "profile": "anak",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST episode anak = %d: %s", rec.Code, rec.Body.String())
+		}
+		epID := resp["data"].(map[string]any)["id"].(string)
+		rec, resp = cfDo(t, router, http.MethodPatch, "/api/v1/clinical/nutrition-episode/"+epID, token, envCompany, envMerchant, map[string]any{
+			"row_version": 1, "profile": "dewasa",
+		})
+		if rec.Code != http.StatusOK || resp["data"].(map[string]any)["profile"] != "dewasa" {
+			t.Fatalf("PATCH anak→dewasa = %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }

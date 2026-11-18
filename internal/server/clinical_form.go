@@ -233,8 +233,10 @@ func clinicalSectionEmpty(raw json.RawMessage) bool {
 // validateClinicalFormData enforces spec §5.2 against the pinned template
 // sections: exact key set, per-kind value types, physiological vitals range,
 // MST score consistency. Soft warnings (empty sections) are returned without
-// failing; validation failures write the 400 and return false.
-func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSectionsDef, raw json.RawMessage) ([]string, bool) {
+// failing; validation failures write the 400 and return false. birthDate
+// (DOB person dari admission) dibawa untuk gate imt_kategori per usia —
+// invalid (DOB kosong) = gate di-skip (plan 2026-11-18-anak-a1-1-be Task 2).
+func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSectionsDef, raw json.RawMessage, birthDate pgtype.Date) ([]string, bool) {
 	warnings := []string{}
 	byKey := make(map[string]clinicalSectionDef, len(defs.Sections))
 	for _, d := range defs.Sections {
@@ -521,7 +523,7 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 	// SOAP v3 calc consistency (spec 2026-11-10-cppt-pemeriksaan-v3 §Validasi
 	// server): imt/imt_kategori, gcs/kategori/pupil_score/gcs_p,
 	// news2_total — recompute vs user value after shape validation.
-	if !clinicalValidateCalcV3(c, payload.Sections) {
+	if !clinicalValidateCalcV3(c, payload.Sections, birthDate) {
 		return nil, false
 	}
 	return warnings, true
@@ -842,7 +844,11 @@ func CreateClinicalFormHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	warnings, okV := validateClinicalFormData(c, req.FormType, defs, req.FormData)
+	birth, okBirth := clinicalAdmissionBirthDate(c, q, admissionID)
+	if !okBirth {
+		return
+	}
+	warnings, okV := validateClinicalFormData(c, req.FormType, defs, req.FormData, birth)
 	if !okV {
 		return
 	}
@@ -1054,7 +1060,11 @@ func UpdateClinicalFormHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	warnings, okV := validateClinicalFormData(c, entry.FormType, defs, req.FormData)
+	birth, okBirth := clinicalAdmissionBirthDate(c, q, entry.AdmissionID)
+	if !okBirth {
+		return
+	}
+	warnings, okV := validateClinicalFormData(c, entry.FormType, defs, req.FormData, birth)
 	if !okV {
 		return
 	}

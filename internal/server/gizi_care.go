@@ -29,7 +29,7 @@ func RegisterGiziCareRoutes(rg *gin.RouterGroup) {
 	rg.GET("/clinical/nutrition-episodes", ListGiziNutritionEpisodesHandler)
 }
 
-var validGiziProfiles = map[string]bool{"dewasa": true, "lansia": true, "bumil": true, "menyusui": true, "balita": true}
+var validGiziProfiles = map[string]bool{"dewasa": true, "lansia": true, "bumil": true, "menyusui": true, "balita": true, "anak": true}
 var validGiziRisks = map[string]bool{"rendah": true, "sedang": true, "tinggi": true}
 
 // personGenderToGizi maps core.person.gender (male/female) to the
@@ -540,7 +540,8 @@ type createGiziAnthropometryRequest struct {
 	Extras      json.RawMessage `json:"extras"`
 }
 
-// validateGiziExtras enforces spec §5 extras ranges (mgg 1..45, lila/lk > 0).
+// validateGiziExtras enforces spec §5 extras ranges (mgg 1..45, lila > 0,
+// lk 0 < x < 80 — plan 2026-11-18-anak-a1-1-be Task 2).
 func validateGiziExtras(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return true
@@ -555,12 +556,16 @@ func validateGiziExtras(raw json.RawMessage) bool {
 			return false
 		}
 	}
-	for _, key := range []string{"lila_cm", "lk_cm"} {
-		if v, ok := ex[key]; ok {
-			n, isNum := v.(float64)
-			if !isNum || n <= 0 {
-				return false
-			}
+	if v, ok := ex["lila_cm"]; ok {
+		n, isNum := v.(float64)
+		if !isNum || n <= 0 {
+			return false
+		}
+	}
+	if v, ok := ex["lk_cm"]; ok {
+		n, isNum := v.(float64)
+		if !isNum || n <= 0 || n >= 80 {
+			return false
 		}
 	}
 	return true
@@ -579,6 +584,22 @@ func giziAdmission(c *gin.Context, q *sqlcgen.Queries, merchantID pgtype.UUID, a
 		return sqlcgen.GetAdmissionForGiziRow{}, false
 	}
 	return admission, true
+}
+
+// clinicalAdmissionBirthDate fetches the person DOB of an admission for the
+// CPPT imt_kategori age gate (plan 2026-11-18-anak-a1-1-be Task 2: gate
+// menyala HANYA bila DOB tersedia). Admission tidak dikenal → tanggal invalid
+// (gate di-skip aman); DB error lain → 500 (respondInternalError) + false.
+func clinicalAdmissionBirthDate(c *gin.Context, q *sqlcgen.Queries, admissionID pgtype.UUID) (pgtype.Date, bool) {
+	adm, err := q.GetAdmissionForGizi(c.Request.Context(), admissionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.Date{}, true
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return pgtype.Date{}, false
+	}
+	return adm.BirthDate, true
 }
 
 // giziAgeDays derives age in days from birth_date to measured_at in the

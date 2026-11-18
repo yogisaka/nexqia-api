@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // clinicalInvalidKind writes the contract 400 for a v3 kind violation.
@@ -681,14 +682,31 @@ func clinicalSectionMap(sections map[string]json.RawMessage, key string) map[str
 	return m
 }
 
-func clinicalValidateCalcV3(c *gin.Context, sections map[string]json.RawMessage) bool {
+// clinicalAgeMonths: floor(age_days/30.4375) dari DOB person ke hari ini —
+// basis persis sama dengan trigger fn_anthropometry_snapshot (plan
+// 2026-11-18-anak-a1-1-be Task 2). DOB kosong → (0, false): gate
+// imt_kategori di-skip aman (bukan error).
+func clinicalAgeMonths(birth pgtype.Date) (int, bool) {
+	if !birth.Valid {
+		return 0, false
+	}
+	days := int(time.Since(birth.Time).Hours() / 24)
+	if days < 0 {
+		days = 0
+	}
+	return int(math.Floor(float64(days) / 30.4375)), true
+}
+
+func clinicalValidateCalcV3(c *gin.Context, sections map[string]json.RawMessage, birthDate pgtype.Date) bool {
 	mismatch := func(field string) bool {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "kalkulasi " + field + " tidak konsisten"})
 		return false
 	}
 
 	// antropometri: imt = round(bb/(tb/100)², 1) bila bb & tb ada;
-	// imt_kategori dari imt recompute.
+	// imt_kategori dari imt recompute — check di-SKIP bila usia <= 228 bulan
+	// (<19 th: trigger menulis imt_kategori NULL, D-KA-04; plan
+	// 2026-11-18-anak-a1-1-be Task 2). Gate menyala HANYA bila DOB tersedia.
 	if m := clinicalSectionMap(sections, "antropometri"); m != nil {
 		bb, bbFilled, _ := clinicalKindNumOpt(m, "bb")
 		tb, tbFilled, _ := clinicalKindNumOpt(m, "tb")
@@ -698,8 +716,9 @@ func clinicalValidateCalcV3(c *gin.Context, sections map[string]json.RawMessage)
 			(!complete || math.Abs(imt-expected) > 1e-9) {
 			return mismatch("imt")
 		}
-		if kat, filled, _ := clinicalKindStrOpt(m, "imt_kategori"); filled &&
-			(!complete || kat != clinicalImtKategori(expected)) {
+		months, hasAge := clinicalAgeMonths(birthDate)
+		if kat, filled, _ := clinicalKindStrOpt(m, "imt_kategori"); filled && hasAge &&
+			months > 228 && (!complete || kat != clinicalImtKategori(expected)) {
 			return mismatch("imt_kategori")
 		}
 	}

@@ -87,7 +87,9 @@ func CreateContentTemplateHandler(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	if _, okV := validateClinicalFormData(c, req.FormType, defs, req.FormData); !okV {
+	// Content template tidak terikat admission → DOB invalid; gate
+	// imt_kategori per-usia di-skip aman (plan 2026-11-18-anak-a1-1-be Task 2).
+	if _, okV := validateClinicalFormData(c, req.FormType, defs, req.FormData, pgtype.Date{}); !okV {
 		return
 	}
 	row, err := q.CreateContentTemplate(ctx, sqlcgen.CreateContentTemplateParams{
