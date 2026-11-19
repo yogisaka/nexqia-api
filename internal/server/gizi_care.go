@@ -29,6 +29,7 @@ func RegisterGiziCareRoutes(rg *gin.RouterGroup) {
 	rg.PATCH("/clinical/nutrition-episode/:id", UpdateGiziNutritionEpisodeHandler)
 	rg.POST("/clinical/nutrition-episode/:id/revert-profile", RevertGiziNutritionProfileHandler)
 	rg.GET("/clinical/nutrition-episodes", ListGiziNutritionEpisodesHandler)
+	rg.POST("/clinical/person-growth-context", CreateGiziGrowthContextHandler)
 }
 
 var validGiziProfiles = map[string]bool{"dewasa": true, "lansia": true, "bumil": true, "menyusui": true, "balita": true, "anak": true}
@@ -1090,6 +1091,7 @@ func GetGiziNutritionEpisodeHandler(c *gin.Context) {
 		scr = append(scr, nsrJSON(r))
 	}
 	resp["screening"] = scr
+	var latestAgeDays pgtype.Int4
 	latest, err := q.GetLatestAnthropometryByPerson(c.Request.Context(), admission.PersonID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -1099,6 +1101,21 @@ func GetGiziNutritionEpisodeHandler(c *gin.Context) {
 		return
 	default:
 		resp["anthropometry_latest"] = latestAnthropometryJSON(latest)
+		latestAgeDays = latest.AgeDays
+	}
+	// Konteks bayi kecil (plan 2026-11-19-gizi-balita-1-be Task 2, spec §3):
+	// usia_koreksi_bulan = rumus trigger Task 1 pada age_days terakhir.
+	gcRow, err := q.GetPersonGrowthContext(c.Request.Context(), sqlcgen.GetPersonGrowthContextParams{
+		CompanyID: AuthCompanyID(c), PersonID: admission.PersonID,
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		resp["growth_context"] = nil
+	case err != nil:
+		respondInternalError(c, err)
+		return
+	default:
+		resp["growth_context"] = growthContextJSON(gcRow, latestAgeDays)
 	}
 	kunjungan, err := q.CountKunjunganByPerson(c.Request.Context(), admission.PersonID)
 	if err != nil {
@@ -1351,4 +1368,134 @@ func ListGiziNutritionEpisodesHandler(c *gin.Context) {
 		data = append(data, item)
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+// usiaKoreksiBulan menerjemahkan rumus koreksi usia prematur trigger Task 1
+// (migration 000106 fn_anthropometry_snapshot): age_eff_days =
+// GREATEST(age_days − (40 − gest) × 7, 0) bila gest < 37 mgg AND age_days < 731,
+// else tanpa koreksi; usia_koreksi_bulan = floor(age_eff_days / 30.4375).
+func usiaKoreksiBulan(gest int16, ageDays int32) (int, bool) {
+	if gest >= 37 || ageDays >= 731 {
+		return 0, false
+	}
+	eff := int(ageDays) - int(40-gest)*7
+	if eff < 0 {
+		eff = 0
+	}
+	return int(math.Floor(float64(eff) / 30.4375)), true
+}
+
+// growthContextJSON maps clinical.person_growth_context ke bentuk kontrak
+// episode (spec §3): bbl_kg, usia_gestasi_mgg, source_ref, recorded_at,
+// bblr (bbl_kg < 2.5) dan usia_koreksi_bulan (null tanpa koreksi / tanpa
+// antropometri terakhir).
+func growthContextJSON(r sqlcgen.ClinicalPersonGrowthContext, ageDays pgtype.Int4) gin.H {
+	bblr := false
+	if v, ok := giziNumVal(r.BblKg); ok {
+		bblr = v < 2.5
+	}
+	var koreksi any
+	if ageDays.Valid {
+		if m, ok := usiaKoreksiBulan(r.UsiaGestasiMgg, ageDays.Int32); ok {
+			koreksi = m
+		}
+	}
+	return gin.H{
+		"bbl_kg":             numericJSON(r.BblKg),
+		"usia_gestasi_mgg":   int(r.UsiaGestasiMgg),
+		"source_ref":         r.SourceRef,
+		"recorded_at":        tsJSON(r.RecordedAt),
+		"bblr":               bblr,
+		"usia_koreksi_bulan": koreksi,
+	}
+}
+
+type createGiziGrowthContextRequest struct {
+	PersonID       string  `json:"person_id" binding:"required"`
+	BblKg          float64 `json:"bbl_kg" binding:"required"`
+	UsiaGestasiMgg *int    `json:"usia_gestasi_mgg"`
+	SourceRef      *string `json:"source_ref"`
+}
+
+// CreateGiziGrowthContextHandler godoc
+// @Summary Upsert the small-baby growth context (BBL + gestational age)
+// @Tags clinical
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param request body createGiziGrowthContextRequest true "Growth context data"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Router /clinical/person-growth-context [post]
+func CreateGiziGrowthContextHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalNutritionWrite, merchantID) {
+		return
+	}
+	var req createGiziGrowthContextRequest
+	if !bindJSONOrFields(c, &req) {
+		return
+	}
+	personID, okID := parseUUID(req.PersonID)
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person_id"})
+		return
+	}
+	// Validasi = CHECK literal migration 000106 (tolak 400 dengan pesan field).
+	if req.BblKg <= 0 || req.BblKg >= 6 {
+		giziJSONHelperError(c, "bbl_kg")
+		return
+	}
+	if req.UsiaGestasiMgg == nil || *req.UsiaGestasiMgg < 20 || *req.UsiaGestasiMgg > 45 {
+		giziJSONHelperError(c, "usia_gestasi_mgg")
+		return
+	}
+	sourceRef := "manual"
+	if req.SourceRef != nil && *req.SourceRef != "" {
+		sourceRef = *req.SourceRef
+	}
+	ctx := c.Request.Context()
+	q := sqlcgen.New(TxFromContext(c))
+	// Upsert idempoten UPDATE-then-INSERT (pola persistGiziStampResult);
+	// tabel tanpa trg_touch_row → cabang UPDATE set updated_at eksplisit.
+	updParams := sqlcgen.UpdatePersonGrowthContextParams{
+		CompanyID: AuthCompanyID(c), PersonID: personID,
+		BblKg: numericFromFloat(&req.BblKg), UsiaGestasiMgg: int16(*req.UsiaGestasiMgg),
+		SourceRef: sourceRef, RecordedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		RecordedBy: AuthUserID(c),
+	}
+	tag, err := q.UpdatePersonGrowthContext(ctx, updParams)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	var row sqlcgen.ClinicalPersonGrowthContext
+	if tag > 0 {
+		row, err = q.GetPersonGrowthContext(ctx, sqlcgen.GetPersonGrowthContextParams{
+			CompanyID: AuthCompanyID(c), PersonID: personID,
+		})
+	} else {
+		row, err = q.InsertPersonGrowthContext(ctx, sqlcgen.InsertPersonGrowthContextParams{
+			CompanyID: updParams.CompanyID, PersonID: updParams.PersonID,
+			BblKg: updParams.BblKg, UsiaGestasiMgg: updParams.UsiaGestasiMgg,
+			SourceRef: updParams.SourceRef, RecordedAt: updParams.RecordedAt,
+			RecordedBy: updParams.RecordedBy,
+		})
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	var ageDays pgtype.Int4
+	if latest, errL := q.GetLatestAnthropometryByPerson(ctx, personID); errL == nil {
+		ageDays = latest.AgeDays
+	} else if !errors.Is(errL, pgx.ErrNoRows) {
+		respondInternalError(c, errL)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": growthContextJSON(row, ageDays), "meta": gin.H{}})
 }

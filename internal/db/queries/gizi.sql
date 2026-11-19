@@ -256,3 +256,23 @@ JOIN clinical.nutrition_order o ON o.id = r.order_id
 JOIN core.app_user u ON u.id = r.changed_by
 WHERE o.admission_id = $1
 ORDER BY r.changed_at DESC;
+
+-- Konteks antropometri bayi kecil (plan 2026-11-19-gizi-balita-1-be Task 2,
+-- spec 2026-11-19-gizi-balita-revisi-design §3–§4; tabel migration 000106,
+-- UNIQUE (company_id, person_id), tanpa trg_touch_row → UPDATE set updated_at
+-- eksplisit; idempoten UPDATE-then-INSERT pola persistGiziStampResult).
+-- name: GetPersonGrowthContext :one
+SELECT * FROM clinical.person_growth_context
+WHERE company_id = $1 AND person_id = $2;
+
+-- name: UpdatePersonGrowthContext :execrows
+UPDATE clinical.person_growth_context
+SET bbl_kg = $3, usia_gestasi_mgg = $4, source_ref = $5,
+    recorded_at = $6, recorded_by = $7, updated_at = now()
+WHERE company_id = $1 AND person_id = $2;
+
+-- name: InsertPersonGrowthContext :one
+INSERT INTO clinical.person_growth_context
+    (company_id, person_id, bbl_kg, usia_gestasi_mgg, source_ref, recorded_at, recorded_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING *;
