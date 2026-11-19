@@ -511,3 +511,98 @@ func TestEvaluateGiziRiskHbTrimester(t *testing.T) {
 		t.Fatalf("(c) hb 10.2 mgg 20 = tanpa hb_rendah, want ada")
 	}
 }
+
+// TestNutritionRiskBalitaHb — rule anemia balita (plan 2026-11-19-gizi-
+// balita-1-be Task 3, D-BT-02): hb_rendah balita HANYA bila usia efektif
+// am = floor(age_days/30.4375) di 6–59 bln DAN Hb < 11 → level sedang.
+// Ekspektasi dari kontrak: (d) balita 548 hari = 18 bln, Hb 9.8 → pemicu
+// hb_rendah sedang label "Hb < 11 g/dL (balita 6–59 bln)"; (e) Hb 11.5
+// (≥ 11) → tanpa pemicu; (f) balita 122 hari = 4 bln (< 6), Hb 9.8 →
+// tanpa pemicu (gate 6–59). Cabang bumil trimester tak tersentuh
+// (TestEvaluateGiziRiskHbTrimester).
+func TestNutritionRiskBalitaHb(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "riskhbb")
+
+	newBalita := func(t *testing.T, label string, ageDays int) string {
+		t.Helper()
+		_, admissionID := gzSeedAnakAge(t, ctx, pool, router, token, companyID, merchantID, label, ageDays)
+		rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-episode", token, companyID, merchantID, map[string]any{
+			"admission_id": admissionID, "profile": "balita",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("episode %s = %d: %s", label, rec.Code, rec.Body.String())
+		}
+		return admissionID
+	}
+	postAnthro := func(t *testing.T, admissionID string) {
+		t.Helper()
+		body := map[string]any{
+			"admission_id": admissionID,
+			"measured_at":  time.Now().Format(time.RFC3339),
+			"bb_kg":        9.0, "tb_cm": 75.0,
+		}
+		if rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/anthropometry", token, companyID, merchantID, body); rec.Code != http.StatusCreated {
+			t.Fatalf("anthro = %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	postHb := func(t *testing.T, admissionID string, hb float64) {
+		t.Helper()
+		rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+			"admission_id": admissionID, "form_type": "asuhan_gizi",
+			"form_data": map[string]any{"sections": map[string]any{
+				"biokimia": []map[string]any{{"item": "hb", "nilai": hb}},
+			}},
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("form asuhan_gizi hb %.1f = %d: %s", hb, rec.Code, rec.Body.String())
+		}
+	}
+	getRisk := func(t *testing.T, admissionID string) map[string]any {
+		t.Helper()
+		rec, resp := cfDo(t, router, http.MethodGet, "/api/v1/clinical/nutrition-episode?admission_id="+admissionID, token, companyID, merchantID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get episode = %d: %s", rec.Code, rec.Body.String())
+		}
+		risk, _ := resp["risk"].(map[string]any)
+		return risk
+	}
+	hbTrigger := func(t *testing.T, risk map[string]any) map[string]any {
+		t.Helper()
+		for _, raw := range risk["triggers"].([]any) {
+			if tr := raw.(map[string]any); tr["code"] == "hb_rendah" {
+				return tr
+			}
+		}
+		return nil
+	}
+
+	// (d) balita 18 bln + Hb 9.8 → hb_rendah sedang.
+	d := newBalita(t, "hb18", 548)
+	postAnthro(t, d)
+	postHb(t, d, 9.8)
+	risk := getRisk(t, d)
+	tr := hbTrigger(t, risk)
+	if tr == nil || risk["level"] != "sedang" || tr["risk"] != "sedang" ||
+		tr["label"] != "Hb < 11 g/dL (balita 6–59 bln)" {
+		t.Fatalf("(d) risk = %v, want hb_rendah sedang label balita", risk)
+	}
+
+	// (e) balita 18 bln + Hb 11.5 → tanpa pemicu.
+	e := newBalita(t, "hbok", 548)
+	postAnthro(t, e)
+	postHb(t, e, 11.5)
+	if risk = getRisk(t, e); hbTrigger(t, risk) != nil {
+		t.Fatalf("(e) risk = %v, want tanpa hb_rendah (Hb 11.5)", risk)
+	}
+
+	// (f) balita 4 bln + Hb 9.8 → tanpa pemicu (di luar 6–59).
+	f := newBalita(t, "hb4", 122)
+	postAnthro(t, f)
+	postHb(t, f, 9.8)
+	if risk = getRisk(t, f); hbTrigger(t, risk) != nil {
+		t.Fatalf("(f) risk = %v, want tanpa hb_rendah (usia 4 bln)", risk)
+	}
+}

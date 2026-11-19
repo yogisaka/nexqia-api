@@ -288,6 +288,23 @@ func evaluateGiziRisk(ctx context.Context, q *sqlcgen.Queries, personID, admissi
 		triggers = append(triggers, gin.H{"code": "hb_rendah", "risk": "sedang",
 			"label": "Hb " + giziFmtNum(hb, 1)})
 	}
+	// hb_rendah (balita, plan 2026-11-19-gizi-balita-1-be Task 3, D-BT-02):
+	// Hb < 11 pada usia efektif 6–59 bln (am kronologis baris antropometri
+	// terbaru) → level sedang. Usia tak diketahui / di luar 6–59 → tanpa
+	// pemicu.
+	if profile == "balita" && hasHb && hb < 11.0 {
+		for i := len(meas) - 1; i >= 0; i-- {
+			if !meas[i].hasAge {
+				continue
+			}
+			if am := math.Floor(float64(meas[i].ageDays) / 30.4375); am >= 6 && am <= 59 {
+				hbRendah = true
+				triggers = append(triggers, gin.H{"code": "hb_rendah", "risk": "sedang",
+					"label": "Hb < 11 g/dL (balita 6–59 bln)"})
+			}
+			break
+		}
+	}
 	// zscore_anak — GATE profil balita|anak (plan 2026-11-18-anak-a1-1-be
 	// Task 3: profil 'anak' ikut; review fix #1 tetap: dewasa/lansia/bumil/
 	// menyusui TIDAK PERNAH dipicu rules anak): band risk sedang/tinggi,

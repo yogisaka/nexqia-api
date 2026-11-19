@@ -179,3 +179,115 @@ func TestGiziStamp(t *testing.T) {
 		t.Fatalf("(f) stamp setelah PATCH = %d/%s, want 8/tinggi", score, interp)
 	}
 }
+
+// TestGiziStampBalitaGate — gate STAMP 14 hari + usia tak diketahui (plan
+// 2026-11-19-gizi-balita-1-be Task 3, D-BT-01). Ekspektasi dari kontrak:
+// (g) usia 10 hari (< giziStampMinAgeDays 14) → skip TANPA baris 'stamp';
+// (h) usia 913 hari = floor(913/30.4375) = 30 bln (>= 14 hari, <= 192 bln)
+// → persist: tanpa antropometri → s3 = 0 hint, skor = 2 + 3 = 5 → tinggi;
+// (i) age_days tak diketahui (DOB NULL → NULL) → hook TETAP jalan dengan
+// stamp_step3 = 0 + sumber hint (paritas v2).
+func TestGiziStampBalitaGate(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "stampgate")
+
+	newEpisode := func(t *testing.T, label string, ageDays int) string {
+		t.Helper()
+		_, admissionID := gzSeedAnakAge(t, ctx, pool, router, token, companyID, merchantID, label, ageDays)
+		rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-episode", token, companyID, merchantID, map[string]any{
+			"admission_id": admissionID, "profile": "anak",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("episode %s = %d: %s", label, rec.Code, rec.Body.String())
+		}
+		return admissionID
+	}
+	postAnthro := func(t *testing.T, admissionID string, bb, tb float64) {
+		t.Helper()
+		body := map[string]any{
+			"admission_id": admissionID,
+			"measured_at":  time.Now().Format(time.RFC3339),
+			"bb_kg":        bb, "tb_cm": tb,
+		}
+		if rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/anthropometry", token, companyID, merchantID, body); rec.Code != http.StatusCreated {
+			t.Fatalf("anthro = %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	postStamp := func(t *testing.T, admissionID string, s1, s2 int) {
+		t.Helper()
+		rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
+			"admission_id": admissionID, "form_type": "ases_gizi_stamp",
+			"form_data": map[string]any{"sections": map[string]any{
+				"stamp_diagnosis": strconv.Itoa(s1), "stamp_asupan": strconv.Itoa(s2),
+			}},
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("form stamp = %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	// stampPayload mengembalikan (jumlah baris 'stamp', payload baris terakhir).
+	stampPayload := func(t *testing.T, admissionID string) (int, map[string]any) {
+		t.Helper()
+		var n int
+		var payloadRaw string
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*), COALESCE(max(payload::text), '{}')
+			 FROM clinical.nutrition_screening_result
+			 WHERE admission_id = $1::uuid AND instrument = 'stamp'`,
+			admissionID).Scan(&n, &payloadRaw); err != nil {
+			t.Fatalf("stamp payload %s: %v", admissionID, err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
+			t.Fatalf("payload %s: %v", payloadRaw, err)
+		}
+		return n, payload
+	}
+
+	// (g) usia 10 hari → skip tanpa baris 'stamp'.
+	gAdm := newEpisode(t, "g10d", 10)
+	postAnthro(t, gAdm, 3.5, 50.0)
+	postStamp(t, gAdm, 2, 3)
+	if n, _ := stampPayload(t, gAdm); n != 0 {
+		t.Fatalf("(g) stamp rows = %d, want 0 (usia 10 hari < 14)", n)
+	}
+
+	// (h) usia 30 bln (913 hari) → persist skor 5 tinggi (s3 hint 0).
+	hAdm := newEpisode(t, "h30bln", 913)
+	postStamp(t, hAdm, 2, 3)
+	n, payload := stampPayload(t, hAdm)
+	if n != 1 {
+		t.Fatalf("(h) stamp rows = %d, want 1 (usia 30 bln persist)", n)
+	}
+	if gzNum(t, payload["stamp_step3"]) != 0 || payload["sumber_step3"] != "hint" {
+		t.Fatalf("(h) payload = %v, want step3 0 hint", payload)
+	}
+	var score int
+	if err := pool.QueryRow(ctx,
+		`SELECT score FROM clinical.nutrition_screening_result
+		 WHERE admission_id = $1::uuid AND instrument = 'stamp'`,
+		hAdm).Scan(&score); err != nil || score != 5 {
+		t.Fatalf("(h) stamp score = %d (%v), want 5", score, err)
+	}
+
+	// (i) age_days tak diketahui (person DOB NULL → antropometri tanpa
+	// age_days) → hook jalan, s3 = 0 (paritas v2).
+	_, iAdm := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "gzst-i")
+	rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/nutrition-episode", token, companyID, merchantID, map[string]any{
+		"admission_id": iAdm, "profile": "dewasa",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("episode i = %d: %s", rec.Code, rec.Body.String())
+	}
+	postAnthro(t, iAdm, 62.0, 158.0)
+	postStamp(t, iAdm, 1, 1)
+	n, payload = stampPayload(t, iAdm)
+	if n != 1 {
+		t.Fatalf("(i) stamp rows = %d, want 1 (usia tak diketahui tetap jalan)", n)
+	}
+	if gzNum(t, payload["stamp_step3"]) != 0 || payload["sumber_step3"] != "hint" {
+		t.Fatalf("(i) payload = %v, want step3 0 hint", payload)
+	}
+}

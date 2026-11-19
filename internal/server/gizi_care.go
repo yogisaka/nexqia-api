@@ -316,12 +316,14 @@ func persistGiziPemicuBumilResult(c *gin.Context, formID, admissionID, personID 
 	return true
 }
 
-// Konstanta hook STAMP (plan 2026-11-18-anak-a1-1-be Task 3, D-KA-10):
-// usia resmi STAMP s.d. 16 th → gate server 61–192 bln (193–228 = hint
-// z-murni di FE, hook skip); max skor 9 = s1(0..3) + s2(0..3) + s3(0..3);
-// ambang z_bb < −2,05 (2nd centile, D-KA-09 non-redundan).
+// Konstanta hook STAMP (plan 2026-11-19-gizi-balita-1-be Task 3, D-BT-01):
+// batas bawah STAMP balita = 14 hari (usia < 14 hari → hook skip); batas
+// atas tetap 16 th (192 bln — 193–228 = hint z-murni di FE, hook skip);
+// max skor 9 = s1(0..3) + s2(0..3) + s3(0..3); ambang z_bb < −2,05
+// (2nd centile, D-KA-09 non-redundan). Usia tak diketahui (age_days
+// NULL/−1) → hook TETAP jalan dengan s3 = 0 (paritas v2).
 const (
-	giziStampMinAgeMonths = 61
+	giziStampMinAgeDays   = 14
 	giziStampMaxAgeMonths = 192
 	giziStampMaxScore     = 9
 	giziStampZbbAmbang    = -2.05
@@ -398,8 +400,10 @@ func giziStampInterpretation(score int) string {
 // spec §5): score = s1 + s2 + s3; s3 dihitung SERVER dari antropometri
 // terakhir person — dz = |z_tb − z_bb| (dz > 3 → 3; dz > 2 → 1; else 0),
 // z_bb < −2,05 → 3; tanpa z → s3 = 0 + sumber hint. Gate usia server
-// (D-KA-10): hanya persist bila age_months 61–192 (age_days baris terbaru,
-// am = floor(age_days/30.4375)); 193–228 → hook skip (FE hint D-KA-10).
+// (D-BT-01): hanya persist bila age_days >= 14 hari DAN am <= 192
+// (am = floor(age_days/30.4375) kronologis dari age_days baris terakhir);
+// am > 192 → hook skip (FE hint D-KA-10); age_days <= 0 (tak diketahui)
+// → hook TETAP jalan dengan s3 = 0 (paritas v2).
 // Idempoten UPDATE-then-INSERT pola pemicu_bumil (partial ON CONFLICT
 // uq_nsr_form_instrument); refreshGiziRules setelahnya.
 func persistGiziStampResult(c *gin.Context, formID, admissionID, personID pgtype.UUID, s1, s2 int, episodeID pgtype.UUID) bool {
@@ -410,6 +414,7 @@ func persistGiziStampResult(c *gin.Context, formID, admissionID, personID pgtype
 	ctx := c.Request.Context()
 	q := sqlcgen.New(TxFromContext(c))
 	var zTb, zBb *float64
+	ageDays := -1
 	ageMonths := -1
 	latest, err := q.GetLatestAnthropometryByPerson(ctx, personID)
 	switch {
@@ -419,6 +424,7 @@ func persistGiziStampResult(c *gin.Context, formID, admissionID, personID pgtype
 		return false
 	default:
 		if latest.AgeDays.Valid {
+			ageDays = int(latest.AgeDays.Int32)
 			ageMonths = int(math.Floor(float64(latest.AgeDays.Int32) / 30.4375))
 		}
 		if v, ok := giziNumVal(latest.ZscoreTbu); ok {
@@ -428,8 +434,8 @@ func persistGiziStampResult(c *gin.Context, formID, admissionID, personID pgtype
 			zBb = &v
 		}
 	}
-	if ageMonths != -1 && (ageMonths < giziStampMinAgeMonths || ageMonths > giziStampMaxAgeMonths) {
-		return true // di luar 61–192 bln (mis. 17 th) → hook skip
+	if ageDays > 0 && (ageDays < giziStampMinAgeDays || ageMonths > giziStampMaxAgeMonths) {
+		return true // usia < 14 hari atau am > 192 bln (mis. 17 th) → hook skip
 	}
 	s3 := 0
 	sumber := "hint"
