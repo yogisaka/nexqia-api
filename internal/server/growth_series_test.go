@@ -351,3 +351,103 @@ func TestGrowthSeriesMergedSources(t *testing.T) {
 		}
 	})
 }
+
+// TestGrowthSeriesPrematurX — plan 2026-11-19-gizi-balita-1-be Task 4 (spec
+// §3–§4, §6): titik pasien growth-series memakai x = usia efektif
+// (status->>'age_eff_days', trigger v3 migration 000106) bila ada dan ≠
+// age_days; tanpa konteks prematur x = age_days kronologis (regresi). Nilai
+// ekspektasi dihitung dari DEFINISI kontrak (rumus LMS), bukan output handler.
+func TestGrowthSeriesPrematurX(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "gsx")
+
+	// Ref sintetis laki_laki (BUKAN WHO): bbu L=1 M=9 di x=489 (usia efektif
+	// prematur), L=1 M=16 di x=545 (kronologis). Rumus LMS kontrak.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ref.growth_curve (indicator, gender, x_kind, x, l, m, s, source_name, source_version, source_url, downloaded_at) VALUES
+			('bbu', 'laki_laki', 'age_days', 489, 1,  9, 0.1, 'sintetis', 'gsx-test', 'http://test.local/gsx', now()),
+			('bbu', 'laki_laki', 'age_days', 545, 1, 16, 0.1, 'sintetis', 'gsx-test', 'http://test.local/gsx', now())`); err != nil {
+		t.Fatalf("seed ref sintetis: %v", err)
+	}
+
+	seedPerson := func(t *testing.T, label string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(ctx,
+			"INSERT INTO core.person (company_id, full_name, gender, birth_date) VALUES ($1, $2, 'male', $3) RETURNING id::text",
+			companyID, "Gizi GSX "+label, time.Now().AddDate(0, 0, -545).Format("2006-01-02")).Scan(&id); err != nil {
+			t.Fatalf("seed person %s: %v", label, err)
+		}
+		return id
+	}
+	// insertAnthro langsung SQL — trigger snapshot v3 mengisi z + age_eff_days.
+	insertAnthro := func(t *testing.T, personID string, ageDays int, bb float64) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO clinical.anthropometry
+				(company_id, merchant_id, person_id, admission_id, measured_at, gender, age_days, bb_kg, tb_cm, extras)
+			VALUES ($1, $2, $3, NULL, now(), 'laki_laki', $4, $5, 75, '{}'::jsonb)`,
+			companyID, merchantID, personID, ageDays, bb); err != nil {
+			t.Fatalf("insert anthropometry: %v", err)
+		}
+	}
+	insertGc := func(t *testing.T, personID string, bbl float64, gest int) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO clinical.person_growth_context
+				(company_id, person_id, bbl_kg, usia_gestasi_mgg, recorded_at, recorded_by)
+			VALUES ($1, $2, $3, $4, now(), '00000000-0000-0000-0000-000000000000')`,
+			companyID, personID, bbl, gest); err != nil {
+			t.Fatalf("insert growth context: %v", err)
+		}
+	}
+	growthSeries := func(t *testing.T, personID string) []any {
+		t.Helper()
+		rec, resp := cfDo(t, router, http.MethodGet,
+			"/api/v1/clinical/growth-series?person_id="+personID+"&indicator=bbu",
+			token, companyID, merchantID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("bbu = %d: %v", rec.Code, resp)
+		}
+		return resp["data"].(map[string]any)["points"].([]any)
+	}
+
+	t.Run("prematur: titik di usia koreksi", func(t *testing.T) {
+		person := seedPerson(t, "prem545")
+		insertGc(t, person, 2.9, 32)
+		// Kronologis 545, gest 32 → age_eff = 545 − (40−32)×7 = 489. bb 8 →
+		// z snapshot di ref x=489: (8/9−1)/0.1 = −1.11 (round 2).
+		insertAnthro(t, person, 545, 8)
+		pts := growthSeries(t, person)
+		if len(pts) != 1 {
+			t.Fatalf("points len = %d, want 1", len(pts))
+		}
+		p := pts[0].(map[string]any)
+		if gzNum(t, p["x"]) != 489 {
+			t.Fatalf("x = %v, want 489 (usia koreksi, bukan 545)", p["x"])
+		}
+		if gzNum(t, p["zscore"]) != -1.11 {
+			t.Fatalf("zscore = %v, want -1.11 (snapshot age_eff 489)", p["zscore"])
+		}
+	})
+
+	t.Run("tanpa konteks: x kronologis", func(t *testing.T) {
+		person := seedPerson(t, "kron545")
+		// Tanpa konteks status tanpa age_eff_days → x = age_days = 545;
+		// z snapshot di ref x=545: (8/16−1)/0.1 = −5.00.
+		insertAnthro(t, person, 545, 8)
+		pts := growthSeries(t, person)
+		if len(pts) != 1 {
+			t.Fatalf("points len = %d, want 1", len(pts))
+		}
+		p := pts[0].(map[string]any)
+		if gzNum(t, p["x"]) != 545 {
+			t.Fatalf("x = %v, want 545 (kronologis)", p["x"])
+		}
+		if gzNum(t, p["zscore"]) != -5.00 {
+			t.Fatalf("zscore = %v, want -5.00 (snapshot 545)", p["zscore"])
+		}
+	})
+}

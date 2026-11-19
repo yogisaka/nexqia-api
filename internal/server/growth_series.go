@@ -191,6 +191,27 @@ func growthRefRange(indicator string, rows []sqlcgen.ListGrowthCurveByIndicatorG
 	return low - step, high + step, true
 }
 
+// growthAgeEffDays membaca status->>'age_eff_days' (plan 2026-11-19-gizi-
+// balita-1-be Task 4): bila ada dan ≠ age_days, titik pasien jatuh di usia
+// efektif (koreksi prematur — konsisten z snapshot trigger v3, migration
+// 000106); selain itu age_days kronologis.
+func growthAgeEffDays(raw []byte, ageDays float64) float64 {
+	if len(raw) == 0 {
+		return ageDays
+	}
+	var st struct {
+		AgeEffDays *float64 `json:"age_eff_days"`
+	}
+	if err := json.Unmarshal(raw, &st); err != nil || st.AgeEffDays == nil {
+		return ageDays
+	}
+	eff := *st.AgeEffDays
+	if eff == ageDays {
+		return ageDays
+	}
+	return eff
+}
+
 // growthKMSPoints memetakan pengukuran person (measured_at ASC) ke titik
 // {measured_at, x, value, zscore, status} per indikator: z MENYALIN snapshot
 // (tanpa hitung ulang), dinilai null di luar rentang ref ±1 langkah. flag_t
@@ -205,26 +226,27 @@ func growthKMSPoints(indicator string, rows []sqlcgen.ListAnthropometryByPersonR
 		if hasAge {
 			ageDays = float64(r.AgeDays.Int32)
 		}
+		effDays := growthAgeEffDays(r.Status, ageDays)
 		var x, value float64
 		ok := false
 		switch indicator {
 		case "bbu":
 			value, ok = numericFloat(r.BbKg), r.BbKg.Valid && hasAge
-			x = ageDays
+			x = effDays
 		case "tbu":
 			value, ok = numericFloat(r.TbCm), r.TbCm.Valid && hasAge
-			x = ageDays
+			x = effDays
 		case "bbtb":
 			value, x, ok = numericFloat(r.BbKg), numericFloat(r.TbCm), r.BbKg.Valid && r.TbCm.Valid
 		case "imtu":
 			value, ok = numericFloat(r.Imt), r.Imt.Valid && hasAge
-			x = ageDays
+			x = effDays
 		case "lku":
 			v, hasV := giziExtrasFloat(r.Extras, "lk_cm")
-			value, x, ok = v, ageDays, hasV && hasAge
+			value, x, ok = v, effDays, hasV && hasAge
 		case "lila":
 			v, hasV := giziExtrasFloat(r.Extras, "lila_cm")
-			value, x, ok = v, ageDays, hasV && hasAge
+			value, x, ok = v, effDays, hasV && hasAge
 		}
 		if !ok {
 			continue
