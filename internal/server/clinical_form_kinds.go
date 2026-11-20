@@ -6,6 +6,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"regexp"
@@ -237,6 +238,24 @@ func clinicalValidatePhysicalExam(c *gin.Context, key string, raw json.RawMessag
 		if _, filled, ok := clinicalKindStrOpt(om, "keterangan"); filled && !ok {
 			return clinicalInvalidKind(c, key)
 		}
+		// marks (baru, additif — spec 2026-11-20 §3.1): per-figureId strokes+pins.
+		// Legacy `strokes` flat di bawah TIDAK diubah (union kompat). Batas pin
+		// total & keunikan nomor dinilai per ORGAN lintas figur.
+		if rawMarks, present := om["marks"]; present && string(rawMarks) != "null" {
+			if organ == "genital_urogenital" {
+				return clinicalInvalidKind(c, key)
+			}
+			if err := clinicalMarksOk(rawMarks, organ); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return false
+			}
+		}
+		if rawLegend, present := om["legend"]; present && string(rawLegend) != "null" {
+			if err := clinicalLegendOk(rawLegend); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return false
+			}
+		}
 		rawStrokes, present := om["strokes"]
 		if !present || string(rawStrokes) == "null" {
 			continue
@@ -289,6 +308,92 @@ func clinicalStrokeOk(raw json.RawMessage) bool {
 		return false
 	}
 	return true
+}
+
+// clinicalFigureIDRe matches the figureId stem of marking assets (spec
+// 2026-11-20 §2, contoh "pf-16", "pf-23-dorsum-kanan").
+var clinicalFigureIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// clinicalMarksOk validates one organ's `marks` object (spec 2026-11-20
+// §3.1): key figureId `^[a-z0-9][a-z0-9-]*$` ≤64 char; value object with
+// optional `strokes` (via clinicalStrokeOk, ≤50/figure) and `pins` ({x,y,n}:
+// x,y float 0..1; n int 1..9; ≤9 pins TOTAL per organ across figures; n
+// unique per organ). Error messages are contract literals.
+func clinicalMarksOk(raw json.RawMessage, organ string) error {
+	invalid := errors.New("invalid marks for organ " + organ)
+	var marks map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &marks); err != nil {
+		return invalid
+	}
+	pinTotal := 0
+	pinNums := map[int]bool{}
+	for figID, rawFig := range marks {
+		if len(figID) > 64 || !clinicalFigureIDRe.MatchString(figID) {
+			return errors.New("invalid figure id")
+		}
+		var fig map[string]json.RawMessage
+		if err := json.Unmarshal(rawFig, &fig); err != nil {
+			return invalid
+		}
+		if rawStrokes, present := fig["strokes"]; present && string(rawStrokes) != "null" {
+			var strokes []json.RawMessage
+			if err := json.Unmarshal(rawStrokes, &strokes); err != nil || len(strokes) > 50 {
+				return invalid
+			}
+			for _, rawStroke := range strokes {
+				if !clinicalStrokeOk(rawStroke) {
+					return invalid
+				}
+			}
+		}
+		if rawPins, present := fig["pins"]; present && string(rawPins) != "null" {
+			var pins []struct {
+				X float64 `json:"x"`
+				Y float64 `json:"y"`
+				N *int    `json:"n"`
+			}
+			if err := json.Unmarshal(rawPins, &pins); err != nil {
+				return invalid
+			}
+			for _, p := range pins {
+				if p.N == nil || *p.N < 1 || *p.N > 9 ||
+					p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
+					return invalid
+				}
+				if pinNums[*p.N] {
+					return errors.New("duplicate pin number")
+				}
+				pinNums[*p.N] = true
+				pinTotal++
+				if pinTotal > 9 {
+					return errors.New("too many pins")
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// clinicalLegendOk validates one organ's organ-level `legend` object (spec
+// 2026-11-20 §2): keys are string digits "1".."9", values strings ≤200
+// characters. A pin without a legend entry is valid (soft). Key/value
+// violations both use the contract literal `invalid legend key`.
+func clinicalLegendOk(raw json.RawMessage) error {
+	var legend map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &legend); err != nil {
+		return errors.New("invalid legend key")
+	}
+	for k, rawVal := range legend {
+		n, err := strconv.Atoi(k)
+		if err != nil || n < 1 || n > 9 {
+			return errors.New("invalid legend key")
+		}
+		var s string
+		if err := json.Unmarshal(rawVal, &s); err != nil || len([]rune(s)) > 200 {
+			return errors.New("invalid legend key")
+		}
+	}
+	return nil
 }
 
 // ── consciousness (§Bentuk nilai #13, kesadaran) ──
