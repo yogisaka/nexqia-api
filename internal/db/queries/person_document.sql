@@ -26,7 +26,10 @@ WHERE d.id = $1 AND d.deleted_at IS NULL;
 -- Merchant filter: isolation is enforced here (RLS alone is not enough for
 -- roles that bypass it, and person is company-level while documents are
 -- merchant-level, K11).
-SELECT d.*, m.mime_type, m.size_bytes, m.original_filename, m.virus_scan_status,
+-- $3 (admission_id, nullable) filters via core.media_link (owner_table
+-- 'admission'); NULL keeps the full person list unchanged. DISTINCT guards
+-- against duplicating a document linked to several admissions.
+SELECT DISTINCT d.*, m.mime_type, m.size_bytes, m.original_filename, m.virus_scan_status,
        dt.name AS document_type_name,
        COALESCE(pe.full_name, u.username) AS created_by_name
 FROM core.person_document d
@@ -34,7 +37,10 @@ JOIN core.media m ON m.id = d.media_id
 JOIN core.document_type dt ON dt.code = d.document_type
 LEFT JOIN core.app_user u ON u.id = d.created_by
 LEFT JOIN core.person pe ON pe.id = u.person_id
+LEFT JOIN core.media_link ml ON ml.media_id = d.media_id
+  AND ml.owner_table = 'admission' AND ml.deleted_at IS NULL
 WHERE d.person_id = $1 AND d.merchant_id = $2 AND d.deleted_at IS NULL
+  AND (sqlc.arg('admission_id')::uuid IS NULL OR ml.owner_id = sqlc.arg('admission_id')::uuid)
 ORDER BY d.created_at DESC;
 
 -- name: UpdatePersonDocument :one

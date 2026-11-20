@@ -618,6 +618,71 @@ func TestPersonDocumentUploadOrphanCleanup(t *testing.T) {
 	}
 }
 
+// TestPersonDocumentListAdmissionFilter — list accepts ?admission_id= and
+// filters via core.media_link: (a) no param returns all, (b) with the param
+// only the linked document, (c) non-UUID → 400, (d) soft-deleted linked
+// document disappears from the filtered list.
+func TestPersonDocumentListAdmissionFilter(t *testing.T) {
+	e := setupDocEnv(t, "doclistadm.owner", 10<<20)
+	ctx := context.Background()
+	admissionID, _ := seedAuditPersonAdmission(t, ctx, e.pool, e.seedRouter, e.token, e.companyID, e.merchantID, e.personID, "doclistadm")
+	linked := docUploadAdmission(t, e, e.personID, "ktp", "KTP kunjungan", admissionID, "linked.pdf", testPDF)
+	if linked.Code != http.StatusCreated {
+		t.Fatalf("linked upload expected 201, got %d: %s", linked.Code, linked.Body.String())
+	}
+	// Distinct payload so the plain upload gets its own media row (dedup would
+	// reuse the linked media).
+	plainPDF := append([]byte(nil), testPDF...)
+	plainPDF = append(plainPDF, "\n% distinct payload for list filter\n"...)
+	if rec := docUpload(t, e, e.personID, "ktp", "KTP polos", "plain.pdf", plainPDF); rec.Code != http.StatusCreated {
+		t.Fatalf("plain upload expected 201, got %d", rec.Code)
+	}
+	getList := func(query string) []map[string]any {
+		t.Helper()
+		rec := docRequest(e, http.MethodGet, "/api/v1/persons/"+e.personID+"/documents"+query, nil, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list %q expected 200, got %d: %s", query, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode list %q: %v", query, err)
+		}
+		return body.Data
+	}
+	// (a) tanpa param → keduanya.
+	if got := getList(""); len(got) != 2 {
+		t.Fatalf("unfiltered list expected 2 documents, got %d: %+v", len(got), got)
+	}
+	// (b) dengan param → hanya yang ber-link.
+	got := getList("?admission_id=" + admissionID)
+	if len(got) != 1 || got[0]["label"] != "KTP kunjungan" {
+		t.Fatalf("filtered list expected only the linked document, got %+v", got)
+	}
+	// (c) non-UUID → 400 invalid admission_id.
+	rec := docRequest(e, http.MethodGet, "/api/v1/persons/"+e.personID+"/documents?admission_id=abc", nil, "")
+	if rec.Code != http.StatusBadRequest || documentError(t, rec) != "invalid admission_id" {
+		t.Fatalf("invalid admission_id expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// (d) soft-delete dokumen ber-link → hilang dari hasil filter.
+	var created struct {
+		Document struct {
+			ID string `json:"id"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(linked.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode linked upload: %v", err)
+	}
+	rec = docRequest(e, http.MethodDelete, "/api/v1/persons/"+e.personID+"/documents/"+created.Document.ID, nil, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := getList("?admission_id=" + admissionID); len(got) != 0 {
+		t.Fatalf("filtered list after soft-delete expected 0, got %+v", got)
+	}
+}
+
 // docUploadAdmission is docUpload plus the optional admission_id field.
 func docUploadAdmission(t *testing.T, e *docEnv, personID, documentType, label, admissionID, filename string, data []byte) *httptest.ResponseRecorder {
 	t.Helper()

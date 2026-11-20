@@ -320,6 +320,7 @@ func UploadPersonDocumentHandler(store storage.ObjectStorage) gin.HandlerFunc {
 // @Security BearerAuth
 // @Param id path string true "Person UUID"
 // @Param service_type query string false "umum|bpjs|asuransi"
+// @Param admission_id query string false "Admission UUID (filter via media_link)"
 // @Success 200 {object} apiResponse
 // @Router /persons/{id}/documents [get]
 func ListPersonDocumentsHandler(c *gin.Context) {
@@ -332,11 +333,20 @@ func ListPersonDocumentsHandler(c *gin.Context) {
 		return
 	}
 	merchantID, _ := parseUUID(c.GetHeader("X-Merchant-ID"))
+	var admissionID pgtype.UUID
+	if raw := c.Query("admission_id"); raw != "" {
+		id, ok := parseUUID(raw)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid admission_id"})
+			return
+		}
+		admissionID = id
+	}
 	tx := TxFromContext(c)
 	q := sqlcgen.New(tx)
 	ctx := c.Request.Context()
 	rows, err := q.ListPersonDocumentsByPerson(ctx, sqlcgen.ListPersonDocumentsByPersonParams{
-		PersonID: personID, MerchantID: merchantID,
+		PersonID: personID, MerchantID: merchantID, AdmissionID: admissionID,
 	})
 	if err != nil {
 		respondInternalError(c, err)
