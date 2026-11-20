@@ -178,8 +178,8 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		t.Fatalf("form-templates = %d: %s", rec.Code, rec.Body.String())
 	}
 	data, _ := resp["data"].([]any)
-	if len(data) != 9 {
-		t.Fatalf("form-templates: got %d items, want 9", len(data))
+	if len(data) != 11 {
+		t.Fatalf("form-templates: got %d items, want 11", len(data))
 	}
 	var soap, asuhan, mnasf map[string]any
 	for _, it := range data {
@@ -207,11 +207,11 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 	if soap["scope"] != "platform" || soap["category"] != "soap" {
 		t.Fatalf("soap_dokter = %v", soap)
 	}
-	if v, _ := soap["version"].(float64); v != 4 {
-		t.Fatalf("soap_dokter version = %v, want 4", soap["version"])
+	if v, _ := soap["version"].(float64); v != 5 {
+		t.Fatalf("soap_dokter version = %v, want 5", soap["version"])
 	}
-	// soap_dokter v4 = 22 sections (migration 000096; v3 000095 spec §Kontrak
-	// data) — v4 hanya menambah field waktu pada section alergi.
+	// soap_dokter = 22 sections (migration 000096; v5 000107 hanya patch
+	// section nyeri — lokasi text_multi + field marks).
 	defs, _ := soap["sections"].(map[string]any)["sections"].([]any)
 	if len(defs) != 22 {
 		t.Fatalf("soap_dokter sections = %d, want 22", len(defs))
@@ -234,6 +234,40 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 	for key, want := range wantKind {
 		if got := kindOf[key]; got != want {
 			t.Fatalf("soap_dokter v3 section %s kind = %q, want %q", key, got, want)
+		}
+	}
+
+	// soap_dokter v5 (migration 000107) — section nyeri: lokasi type
+	// text_multi + field marks (canvas_marks, figures a1|a2b); spec §3.
+	for _, d := range defs {
+		def := d.(map[string]any)
+		if def["key"] != "nyeri" {
+			continue
+		}
+		fields, _ := def["fields"].([]any)
+		var lokasiType string
+		var marks map[string]any
+		for _, f := range fields {
+			fld := f.(map[string]any)
+			switch fld["key"] {
+			case "lokasi":
+				lokasiType, _ = fld["type"].(string)
+			case "marks":
+				marks = fld
+			}
+		}
+		if lokasiType != "text_multi" {
+			t.Fatalf("nyeri lokasi type = %q, want text_multi", lokasiType)
+		}
+		if marks == nil {
+			t.Fatal("nyeri marks field missing")
+		}
+		if marks["type"] != "canvas_marks" {
+			t.Fatalf("nyeri marks type = %v, want canvas_marks", marks["type"])
+		}
+		figs, _ := marks["figures"].([]any)
+		if len(figs) != 2 || figs[0] != "a1" || figs[1] != "a2b" {
+			t.Fatalf("nyeri marks figures = %v, want [a1 a2b]", figs)
 		}
 	}
 
