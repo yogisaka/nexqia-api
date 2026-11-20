@@ -419,14 +419,21 @@ func TestClinicalFormDraftCreateUpdateDelete(t *testing.T) {
 func TestClinicalFormValidation(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPostgresPool(t, ctx)
-	// This test makes ~25 API calls with one token — lift the default burst
-	// of 20 (pattern rbac_physician_cleanup_test.go).
+	// This test makes ~60 API calls with one token — lift the default burst
+	// of 20 (pattern rbac_physician_cleanup_test.go / incident_test.go).
 	cfg := testConfig()
-	cfg.RateLimitAPITokensPerMinute = 1000
-	cfg.RateLimitAPIBurst = 100
+	cfg.RateLimitAPITokensPerMinute = 6000
+	cfg.RateLimitAPIBurst = 1000
 	router := server.NewRouter(pool, newTestRedisClient(t, ctx), cfg)
 	companyID, merchantID, _, token := cfSeedEnv(t, ctx, pool, router, "valid")
-	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "valid")
+	personID, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "valid")
+	// v3_calc_antropometri asserts the imt_kategori mismatch (400), so the
+	// usia gate (clinical_form_kinds.go, skip bila DOB kosong) must be
+	// ACTIVE: give the fixture person an adult DOB (> 228 bulan; 2026-11 →
+	// ±26 tahun).
+	if _, err := pool.Exec(ctx, `UPDATE core.person SET birth_date = '2000-06-15' WHERE id = $1::uuid`, personID); err != nil {
+		t.Fatalf("set fixture DOB: %v", err)
+	}
 
 	post := func(formType string, formData any) (*httptest.ResponseRecorder, map[string]any) {
 		return cfDo(t, router, http.MethodPost, "/api/v1/clinical/forms", token, companyID, merchantID, map[string]any{
@@ -895,6 +902,77 @@ func TestClinicalFormValidation(t *testing.T) {
 			}
 		})
 	}
+
+	// ── v5 marks/pins/legend + nyeri text_multi/canvas_marks (plan
+	// 2026-11-20-cppt-o-1-be-validator Task 4, spec 2026-11-20 §2/§3.1/§3.2) ──
+	// Expectations computed from the contract: pin n int 1..9, UNIK per
+	// organ lintas figur, ≤9 pin total per organ; legend key "1".."9";
+	// figureId `^[a-z0-9][a-z0-9-]*$`; genital tanpa marks; nyeri marks
+	// whitelist ["a1","a2b"] dari template v5 (migration 000107).
+	t.Run("v5 marks pins legend", func(t *testing.T) {
+		// (a) marks valid multi-figur + pins lintas figur + legend → 201.
+		rec, _ = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"keadaan_umum":"sedang","organ":{"thorax":{"status":"ada_kelainan",`+
+			`"marks":{"pf-16":{"strokes":[{"points":[{"x":0.31,"y":0.42}],"color":"#dc2626","width":3,"label":null}],"pins":[{"x":0.4,"y":0.3,"n":1}]},"pf-26-belakang":{"pins":[{"x":0.5,"y":0.5,"n":2}]}},`+
+			`"legend":{"1":"Ronki basa halus kiri"}}}}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("marks valid = %d: %s", rec.Code, rec.Body.String())
+		}
+		// (b) pin ke-10 lintas figur → 400 "too many pins" (≤9 per organ).
+		// n=1 di pin ke-10 (nomor ganda) membuktikan urutan guard: cek
+		// pinTotal > 9 berjalan SEBELUM duplicate, jadi 400-nya
+		// "too many pins", bukan "duplicate pin number".
+		pins := make([]string, 9)
+		for i := range pins {
+			pins[i] = fmt.Sprintf(`{"x":0.1,"y":0.1,"n":%d}`, i+1)
+		}
+		rec, resp = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"thorax":{"status":"ada_kelainan","marks":{`+
+			`"pf-16":{"pins":[`+strings.Join(pins, ",")+`]},"pf-26-belakang":{"pins":[{"x":0.2,"y":0.2,"n":1}]}}}}}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "too many pins" {
+			t.Fatalf("pin ke-10 = %d %v", rec.Code, resp)
+		}
+		// (c) nomor pin ganda lintas figur → 400 "duplicate pin number".
+		rec, resp = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"thorax":{"status":"ada_kelainan","marks":{`+
+			`"pf-16":{"pins":[{"x":0.4,"y":0.3,"n":1}]},"pf-26-belakang":{"pins":[{"x":0.5,"y":0.5,"n":1}]}}}}}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "duplicate pin number" {
+			t.Fatalf("pin ganda = %d %v", rec.Code, resp)
+		}
+		// (d) marks di genital → 400 (larangan diperluas dari strokes).
+		rec, resp = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"genital_urogenital":{"status":"tidak_ada","marks":{"pf-16":{"pins":[{"x":0.5,"y":0.5,"n":1}]}}}}}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'pemeriksaan_fisik'" {
+			t.Fatalf("marks genital = %d %v", rec.Code, resp)
+		}
+		// (e) figureId asing (huruf besar) → 400 "invalid figure id".
+		rec, resp = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"thorax":{"status":"ada_kelainan","marks":{"XX":{"pins":[{"x":0.5,"y":0.5,"n":1}]}}}}}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid figure id" {
+			t.Fatalf("figureId asing = %d %v", rec.Code, resp)
+		}
+		// (f) legend key "10" di luar "1".."9" → 400 "invalid legend key".
+		rec, resp = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"thorax":{"status":"ada_kelainan","legend":{"10":"dua angka"}}}}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid legend key" {
+			t.Fatalf("legend key 10 = %d %v", rec.Code, resp)
+		}
+		// (g) nyeri lokasi array 2 region → 201 (text_multi union, spec §2).
+		rec, _ = post("soap_dokter", sections(`"nyeri":[{"skala":"nrs","skor":3,"lokasi":["Regio frontalis","Regio epigastrium"],`+
+			`"durasi":"3 hari","frekuensi":"intermiten","karakteristik":"tertusuk","berkurang":"istirahat","penyebab":"batuk","lama":"<1 minggu","poss":"1"}]`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("nyeri lokasi array = %d: %s", rec.Code, rec.Body.String())
+		}
+		// (h) nyeri marks a1 + a2b (whitelist template v5) → 201; key "a3"
+		// di luar whitelist → 400 "unknown figure id a3".
+		rec, _ = post("soap_dokter", sections(`"nyeri":[{"skala":"nrs","skor":3,"lokasi":["Regio frontalis"],`+
+			`"durasi":"3 hari","frekuensi":"intermiten","karakteristik":"tertusuk","berkurang":"istirahat","penyebab":"batuk","lama":"<1 minggu","poss":"1",`+
+			`"marks":{"a1":[{"points":[{"x":0.5,"y":0.3}],"color":"#dc2626","width":3,"label":null}],"a2b":[{"points":[{"x":0.6,"y":0.4}],"color":"#dc2626","width":3,"label":null}]}}]`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("nyeri marks a1+a2b = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, resp = post("soap_dokter", sections(`"nyeri":[{"skala":"nrs","skor":3,"lokasi":"Regio frontalis",`+
+			`"durasi":"3 hari","frekuensi":"intermiten","karakteristik":"tertusuk","berkurang":"istirahat","penyebab":"batuk","lama":"<1 minggu","poss":"1",`+
+			`"marks":{"a3":[{"points":[{"x":0.5,"y":0.3}],"color":"#dc2626","width":3,"label":null}]}}]`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "unknown figure id a3" {
+			t.Fatalf("nyeri marks a3 = %d %v", rec.Code, resp)
+		}
+	})
+
 	// ── v3 calc consistency (plan Task 2, spec §Validasi server + §NEWS2) ──
 	// Expectations computed from the contract definitions: imt =
 	// round(62/(158/100)²,1) = round(24.8357,1) = 24.8 → bb_lebih (23–24.9);

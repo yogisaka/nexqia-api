@@ -160,6 +160,37 @@ func TestClinicalFormSignatureDeterministic(t *testing.T) {
 		t.Fatalf("one-char change produced the same hash")
 	}
 
+	// v5 shape (spec 2026-11-20 §2/§3.3): organ marks/pins + legend + nyeri
+	// lokasi array + canvas_marks — bentuk baru ikut ter-hash kanonik tanpa
+	// parser: recompute preimage reproduces the hash and the stored
+	// signature verifies.
+	marked := `{"sections":{"anamnesis_info":{"jenis":"autoanamnesis"},"keluhan_utama":"Nyeri ulu hati sejak 2 hari",` +
+		`"diagnosa":{"narrative":"Suspek dispepsia","diagnoses":[{"role":"primary","concept":{"system":"ICD-11","code":"CA00.00","display":"Acute upper respiratory infection"},"icd10":{"code":"J06.9","display":"Acute upper respiratory infection, unspecified","source":"auto","map_set":"icd10-icd11-map"}}]},` +
+		`"pemeriksaan_fisik":{"keadaan_umum":"sedang","organ":{"thorax":{"status":"ada_kelainan",` +
+		`"marks":{"pf-16":{"strokes":[{"points":[{"x":0.31,"y":0.42}],"color":"#dc2626","width":3,"label":null}],"pins":[{"x":0.4,"y":0.3,"n":1}]}},` +
+		`"legend":{"1":"Ronki basa halus kiri"}}}},"nyeri":[{"skala":"nrs","skor":3,"lokasi":["Regio frontalis","Regio epigastrium"],` +
+		`"durasi":"3 hari","frekuensi":"intermiten","karakteristik":"tertusuk","berkurang":"istirahat","penyebab":"batuk","lama":"<1 minggu","poss":"1",` +
+		`"marks":{"a1":[{"points":[{"x":0.5,"y":0.3}],"color":"#dc2626","width":3,"label":null}]}}]}}`
+	idD := cfCreateDraft(t, router, token, companyID, merchantID, admissionID, marked)
+	cfPinFilledAt(t, ctx, pool, idD)
+	hashD := sign(idD)
+	rowD := cfGetEntryRow(t, ctx, pool, idD)
+	var fdD map[string]any
+	if err := json.Unmarshal(rowD.FormData, &fdD); err != nil {
+		t.Fatalf("unmarshal D form_data: %v", err)
+	}
+	canonicalD, _ := json.Marshal(fdD)
+	preimageD := fmt.Sprintf("nexqia-clinical-sign-v1|%s|%s|%s|%d|%s|%s|%s",
+		idD, admissionID, "soap_dokter", rowD.TemplateVersion, userID,
+		rowD.FilledAt.Time.Format(time.RFC3339Nano), string(canonicalD))
+	sumD := sha256.Sum256([]byte(preimageD))
+	if got := hex.EncodeToString(sumD[:]); got != hashD {
+		t.Fatalf("recomputed marked preimage hash = %s, want %s", got, hashD)
+	}
+	if err := server.VerifyEntrySignature(rowD); err != nil {
+		t.Fatalf("VerifyEntrySignature D = %v", err)
+	}
+
 	// Prefix shape: recomputing the spec §6.2 preimage (canonical JSON from a
 	// Go map, RFC3339Nano filled_at) reproduces hashA.
 	row := cfGetEntryRow(t, ctx, pool, idA)

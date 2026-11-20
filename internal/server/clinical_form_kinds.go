@@ -360,14 +360,14 @@ func clinicalMarksOk(raw json.RawMessage, organ string) error {
 					p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
 					return invalid
 				}
-				if pinNums[*p.N] {
-					return errors.New("duplicate pin number")
-				}
-				pinNums[*p.N] = true
 				pinTotal++
 				if pinTotal > 9 {
 					return errors.New("too many pins")
 				}
+				if pinNums[*p.N] {
+					return errors.New("duplicate pin number")
+				}
+				pinNums[*p.N] = true
 			}
 		}
 	}
