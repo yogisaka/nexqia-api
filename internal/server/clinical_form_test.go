@@ -207,11 +207,12 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 	if soap["scope"] != "platform" || soap["category"] != "soap" {
 		t.Fatalf("soap_dokter = %v", soap)
 	}
-	if v, _ := soap["version"].(float64); v != 5 {
-		t.Fatalf("soap_dokter version = %v, want 5", soap["version"])
+	if v, _ := soap["version"].(float64); v != 6 {
+		t.Fatalf("soap_dokter version = %v, want 6", soap["version"])
 	}
-	// soap_dokter = 22 sections (migration 000096; v5 000107 hanya patch
-	// section nyeri — lokasi text_multi + field marks).
+	// soap_dokter = 22 sections (migration 000096; v5 000107 patch section
+	// nyeri — lokasi text_multi + field marks; v6 000108 tambah field
+	// dampak_fungsi + fase pada nyeri).
 	defs, _ := soap["sections"].(map[string]any)["sections"].([]any)
 	if len(defs) != 22 {
 		t.Fatalf("soap_dokter sections = %d, want 22", len(defs))
@@ -237,8 +238,9 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		}
 	}
 
-	// soap_dokter v5 (migration 000107) — section nyeri: lokasi type
-	// text_multi + field marks (canvas_marks, figures a1|a2b); spec §3.
+	// soap_dokter v6 (migration 000108) — section nyeri: lokasi type
+	// text_multi + field marks (canvas_marks, figures a1|a2b) + fields
+	// dampak_fungsi & fase (select); spec §3.
 	for _, d := range defs {
 		def := d.(map[string]any)
 		if def["key"] != "nyeri" {
@@ -247,6 +249,11 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		fields, _ := def["fields"].([]any)
 		var lokasiType string
 		var marks map[string]any
+		wantOpts := map[string][]any{
+			"dampak_fungsi": {"tidak_mengganggu", "ganggu_tidur", "ganggu_aktivitas", "ganggu_kerja"},
+			"fase":          {"awal", "reasesmen"},
+		}
+		gotOpts := map[string][]any{}
 		for _, f := range fields {
 			fld := f.(map[string]any)
 			switch fld["key"] {
@@ -254,6 +261,15 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 				lokasiType, _ = fld["type"].(string)
 			case "marks":
 				marks = fld
+			case "dampak_fungsi", "fase":
+				if fld["type"] != "select" {
+					t.Fatalf("nyeri %s type = %v, want select", fld["key"], fld["type"])
+				}
+				opts, _ := fld["options"].([]any)
+				for _, o := range opts {
+					v, _ := o.(map[string]any)["value"].(string)
+					gotOpts[fld["key"].(string)] = append(gotOpts[fld["key"].(string)], v)
+				}
 			}
 		}
 		if lokasiType != "text_multi" {
@@ -268,6 +284,17 @@ func TestClinicalFormTemplateSeed(t *testing.T) {
 		figs, _ := marks["figures"].([]any)
 		if len(figs) != 2 || figs[0] != "a1" || figs[1] != "a2b" {
 			t.Fatalf("nyeri marks figures = %v, want [a1 a2b]", figs)
+		}
+		for key, want := range wantOpts {
+			got := gotOpts[key]
+			if len(got) != len(want) {
+				t.Fatalf("nyeri %s options = %v, want %v", key, got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("nyeri %s options = %v, want %v", key, got, want)
+				}
+			}
 		}
 	}
 
@@ -993,6 +1020,86 @@ func TestClinicalFormValidation(t *testing.T) {
 			`"marks":{"a3":[{"points":[{"x":0.5,"y":0.3}],"color":"#dc2626","width":3,"label":null}]}}]`))
 		if rec.Code != http.StatusBadRequest || resp["error"] != "unknown figure id a3" {
 			t.Fatalf("nyeri marks a3 = %d %v", rec.Code, resp)
+		}
+	})
+
+	// ── v6 nyeri dampak_fungsi/fase + canvas_marks object union (plan
+	// 2026-11-21-cppt-o-nyeri-1-pipeline-be Task 3, migration 000108) ──
+	// Expectations from contract: dampak_fungsi select 4 values, fase 2
+	// values; canvas_marks per-figure value union legacy array | object
+	// {strokes?,pins?,legend?}; pins ≤9 total & n unique across object-shaped
+	// figures; legend key "1".."9" referencing that figure's pin n.
+	nyeriRow := func(extra string) string {
+		return `"nyeri":[{"skala":"nrs","skor":3,"lokasi":["Regio frontalis"],` +
+			`"durasi":"3 hari","frekuensi":"intermiten","karakteristik":"tertusuk","berkurang":"istirahat","penyebab":"batuk","lama":"<1 minggu","poss":"1"` + extra + `}]`
+	}
+	t.Run("v6 nyeri dampak fase marks pins legend", func(t *testing.T) {
+		// (a) dampak_fungsi + fase valid + marks object pins+legend → 201.
+		rec, _ = post("soap_dokter", sections(nyeriRow(
+			`,"dampak_fungsi":"ganggu_tidur","fase":"reasesmen",`+
+				`"marks":{"a1":{"pins":[{"x":0.5,"y":0.065,"n":1}],"legend":{"1":"Regio frontalis"}}}`)))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("v6 nyeri valid = %d: %s", rec.Code, rec.Body.String())
+		}
+		// (b) dampak_fungsi di luar options → 400 pesan select generic.
+		rec, resp = post("soap_dokter", sections(nyeriRow(`,"dampak_fungsi":"ngawur","fase":"awal"`)))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'nyeri'" {
+			t.Fatalf("dampak_fungsi ngawur = %d %v", rec.Code, resp)
+		}
+		// (c) fase di luar options → 400 pesan select generic.
+		rec, resp = post("soap_dokter", sections(nyeriRow(`,"dampak_fungsi":"awal","fase":"besok"`)))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'nyeri'" {
+			t.Fatalf("fase besok = %d %v", rec.Code, resp)
+		}
+		// (d) marks LEGACY per-figure array (data signed lama) → tetap 201.
+		rec, _ = post("soap_dokter", sections(nyeriRow(
+			`,"dampak_fungsi":"tidak_mengganggu","fase":"awal",`+
+				`"marks":{"a1":[{"points":[{"x":0.5,"y":0.3}],"color":"#dc2626","width":3,"label":null}]}`)))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("nyeri marks legacy = %d: %s", rec.Code, rec.Body.String())
+		}
+		// (d2) marks campuran: a1 array legacy + a2b object pins+legend → 201.
+		rec, _ = post("soap_dokter", sections(nyeriRow(
+			`,"dampak_fungsi":"ganggu_kerja","fase":"reasesmen",`+
+				`"marks":{"a1":[{"points":[{"x":0.5,"y":0.3}],"color":"#dc2626","width":3,"label":null}],`+
+				`"a2b":{"pins":[{"x":0.2,"y":0.2,"n":2}],"legend":{"2":"Regio epigastrium"}}}`)))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("nyeri marks campuran = %d: %s", rec.Code, rec.Body.String())
+		}
+		// (e) pin ke-10 lintas figure object → 400 "too many pins".
+		// Figure dikunjungi by figureId sort (a1 < a2b), jadi 9 pin a1
+		// divalidasi dulu; n=1 di pin ke-10 membuktikan guard pinTotal
+		// berjalan SEBELUM duplicate (pola subtest v5 (b)).
+		pins := make([]string, 9)
+		for i := range pins {
+			pins[i] = fmt.Sprintf(`{"x":0.1,"y":0.1,"n":%d}`, i+1)
+		}
+		rec, resp = post("soap_dokter", sections(nyeriRow(
+			`,"dampak_fungsi":"tidak_mengganggu","fase":"awal",`+
+				`"marks":{"a1":{"pins":[`+strings.Join(pins, ",")+`]},"a2b":{"pins":[{"x":0.2,"y":0.2,"n":1}]}}`)))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "too many pins" {
+			t.Fatalf("v6 pin ke-10 = %d %v", rec.Code, resp)
+		}
+		// (f) n ganda lintas figure object → 400 "duplicate pin number".
+		rec, resp = post("soap_dokter", sections(nyeriRow(
+			`,"dampak_fungsi":"tidak_mengganggu","fase":"awal",`+
+				`"marks":{"a1":{"pins":[{"x":0.4,"y":0.3,"n":1}]},"a2b":{"pins":[{"x":0.5,"y":0.5,"n":1}]}}`)))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "duplicate pin number" {
+			t.Fatalf("v6 pin ganda = %d %v", rec.Code, resp)
+		}
+		// (g) legend key "10" di luar "1".."9" → 400 "invalid legend key".
+		rec, resp = post("soap_dokter", sections(nyeriRow(
+			`,"dampak_fungsi":"tidak_mengganggu","fase":"awal",`+
+				`"marks":{"a1":{"pins":[{"x":0.5,"y":0.065,"n":1}],"legend":{"10":"dua angka"}}}`)))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid legend key" {
+			t.Fatalf("v6 legend key 10 = %d %v", rec.Code, resp)
+		}
+		// (i) key asing dalam object figure → 400 "invalid canvas_marks value".
+		rec, resp = post("soap_dokter", sections(nyeriRow(
+			`,"dampak_fungsi":"tidak_mengganggu","fase":"awal",`+
+				`"marks":{"a1":{"pins":[{"x":0.5,"y":0.065,"n":1}],"foo":1}}`)))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid canvas_marks value" {
+			t.Fatalf("v6 key asing figure object = %d %v", rec.Code, resp)
 		}
 	})
 

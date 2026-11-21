@@ -10,6 +10,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -745,9 +746,14 @@ func clinicalRepeatableFieldOk(raw json.RawMessage, fd clinicalRepeatableFieldDe
 		}
 		return nil
 	case "canvas_marks":
-		// Spec 2026-11-20 §3.2: figure-id → stroke array (clinicalStrokeOk),
-		// ≤50 strokes per figure, no pins; keys must be in the def whitelist
-		// when the def declares `figures`.
+		// Spec 2026-11-20 §3.2 + v6 revisi 2026-11-21 (plan Task 3): top-level
+		// figure-id → value; keys must be in the def whitelist when the def
+		// declares `figures`. Per-figure value union: legacy stroke array
+		// (clinicalStrokeOk, ≤50 strokes) or v6 object {strokes?, pins?,
+		// legend?}. Pin/legend rules follow the organ-marks pattern
+		// (clinicalMarksOk/clinicalLegendOk, clinical_form_kinds.go) with
+		// aggregates across object-shaped figures PER ROW: ≤9 pins total,
+		// n unique; legend key "1".."9" must reference a pin n of that figure.
 		var figs map[string]json.RawMessage
 		if json.Unmarshal(raw, &figs) != nil {
 			return errors.New("invalid canvas_marks value")
@@ -756,20 +762,103 @@ func clinicalRepeatableFieldOk(raw json.RawMessage, fd clinicalRepeatableFieldDe
 		for _, f := range fd.Figures {
 			allowed[f] = true
 		}
-		for k, v := range figs {
+		// Deterministic visit order (pattern clinicalMarksOk): figureId sort
+		// so aggregate guard order (too many pins before duplicate) does not
+		// depend on Go's randomized map iteration.
+		figIDs := make([]string, 0, len(figs))
+		for id := range figs {
+			figIDs = append(figIDs, id)
+		}
+		sort.Strings(figIDs)
+		pinTotal := 0
+		pinNums := map[int]bool{}
+		for _, k := range figIDs {
+			v := figs[k]
 			if len(allowed) > 0 && !allowed[k] {
 				return errors.New("unknown figure id " + k)
 			}
+			// Legacy shape: JSON array of strokes.
 			var strokes []json.RawMessage
-			if json.Unmarshal(v, &strokes) != nil {
+			if json.Unmarshal(v, &strokes) == nil {
+				if len(strokes) > 50 {
+					return errors.New("too many strokes")
+				}
+				for _, st := range strokes {
+					if !clinicalStrokeOk(st) {
+						return errors.New("invalid canvas_marks value")
+					}
+				}
+				continue
+			}
+			// v6 shape: JSON object {strokes?, pins?, legend?}.
+			var fig map[string]json.RawMessage
+			if json.Unmarshal(v, &fig) != nil {
 				return errors.New("invalid canvas_marks value")
 			}
-			if len(strokes) > 50 {
-				return errors.New("too many strokes")
-			}
-			for _, st := range strokes {
-				if !clinicalStrokeOk(st) {
+			for fk := range fig {
+				if fk != "strokes" && fk != "pins" && fk != "legend" {
 					return errors.New("invalid canvas_marks value")
+				}
+			}
+			figPinNums := map[int]bool{}
+			if rawStrokes, present := fig["strokes"]; present && string(rawStrokes) != "null" {
+				var st []json.RawMessage
+				if json.Unmarshal(rawStrokes, &st) != nil {
+					return errors.New("invalid canvas_marks value")
+				}
+				if len(st) > 50 {
+					return errors.New("too many strokes")
+				}
+				for _, s := range st {
+					if !clinicalStrokeOk(s) {
+						return errors.New("invalid canvas_marks value")
+					}
+				}
+			}
+			if rawPins, present := fig["pins"]; present && string(rawPins) != "null" {
+				// json.Number rejects quoted / non-number x,y (NaN is not
+				// valid JSON at all; float64 parse failure rejects the rest).
+				var pins []struct {
+					X json.Number `json:"x"`
+					Y json.Number `json:"y"`
+					N *int        `json:"n"`
+				}
+				if json.Unmarshal(rawPins, &pins) != nil {
+					return errors.New("invalid canvas_marks value")
+				}
+				for _, p := range pins {
+					x, errX := p.X.Float64()
+					y, errY := p.Y.Float64()
+					if errX != nil || errY != nil || math.IsNaN(x) || math.IsNaN(y) ||
+						x < 0 || x > 1 || y < 0 || y > 1 ||
+						p.N == nil || *p.N < 1 || *p.N > 9 {
+						return errors.New("invalid canvas_marks value")
+					}
+					pinTotal++
+					if pinTotal > 9 {
+						return errors.New("too many pins")
+					}
+					if pinNums[*p.N] {
+						return errors.New("duplicate pin number")
+					}
+					pinNums[*p.N] = true
+					figPinNums[*p.N] = true
+				}
+			}
+			if rawLegend, present := fig["legend"]; present && string(rawLegend) != "null" {
+				var legend map[string]json.RawMessage
+				if json.Unmarshal(rawLegend, &legend) != nil {
+					return errors.New("invalid legend key")
+				}
+				for lk, rawVal := range legend {
+					n, err := strconv.Atoi(lk)
+					if err != nil || n < 1 || n > 9 || !figPinNums[n] {
+						return errors.New("invalid legend key")
+					}
+					var s string
+					if json.Unmarshal(rawVal, &s) != nil || len([]rune(s)) > 200 {
+						return errors.New("invalid legend key")
+					}
 				}
 			}
 		}
