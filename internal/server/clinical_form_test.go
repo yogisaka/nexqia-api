@@ -919,8 +919,10 @@ func TestClinicalFormValidation(t *testing.T) {
 			t.Fatalf("marks valid = %d: %s", rec.Code, rec.Body.String())
 		}
 		// (b) pin ke-10 lintas figur → 400 "too many pins" (≤9 per organ).
-		// n=1 di pin ke-10 (nomor ganda) membuktikan urutan guard: cek
-		// pinTotal > 9 berjalan SEBELUM duplicate, jadi 400-nya
+		// Figur dikunjungi deterministik by figureId sort (plan 2026-11-21
+		// Task 4): "pf-16" < "pf-26-belakang", jadi 9 pin pf-16 divalidasi
+		// lebih dulu. n=1 di pin ke-10 (nomor ganda) membuktikan urutan
+		// guard: cek pinTotal > 9 berjalan SEBELUM duplicate, jadi 400-nya
 		// "too many pins", bukan "duplicate pin number".
 		pins := make([]string, 9)
 		for i := range pins {

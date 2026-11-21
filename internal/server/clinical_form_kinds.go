@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"time"
 
@@ -328,7 +329,17 @@ func clinicalMarksOk(raw json.RawMessage, organ string) error {
 	}
 	pinTotal := 0
 	pinNums := map[int]bool{}
-	for figID, rawFig := range marks {
+	// Deterministic visit order (plan 2026-11-21 Task 4): sort figureIds so
+	// that when ≥2 rules are violated the returned message does not depend on
+	// Go's randomized map iteration. Per-figure rule order is unchanged
+	// (pinTotal > 9 guard before duplicate, decision 2026-11-20).
+	figIDs := make([]string, 0, len(marks))
+	for figID := range marks {
+		figIDs = append(figIDs, figID)
+	}
+	sort.Strings(figIDs)
+	for _, figID := range figIDs {
+		rawFig := marks[figID]
 		if len(figID) > 64 || !clinicalFigureIDRe.MatchString(figID) {
 			return errors.New("invalid figure id")
 		}
