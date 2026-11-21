@@ -204,7 +204,8 @@ var clinicalTimeRe = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
 // clinicalValidatePhysicalExam: keadaan_umum enum|null; organ map limited to
 // the 18 spec keys; per-organ status enum + optional keterangan + strokes
 // (≤50 strokes/stroke ≤512 points, normalized coords, #RRGGBB, width 2..5,
-// label "A"|"B"|null); genital_urogenital may not carry strokes. The
+// label "A"|"B"|null); genital_urogenital legacy flat strokes still
+// rejected. The
 // top-level key `pemeriksaan_lain` (FE-only free text) is intentionally
 // ignored by this validator — the FE owns its shape (keputusan 2026-11-11).
 func clinicalValidatePhysicalExam(c *gin.Context, key string, raw json.RawMessage) bool {
@@ -238,13 +239,13 @@ func clinicalValidatePhysicalExam(c *gin.Context, key string, raw json.RawMessag
 		if _, filled, ok := clinicalKindStrOpt(om, "keterangan"); filled && !ok {
 			return clinicalInvalidKind(c, key)
 		}
-		// marks (baru, additif — spec 2026-11-20 §3.1): per-figureId strokes+pins.
-		// Legacy `strokes` flat di bawah TIDAK diubah (union kompat). Batas pin
-		// total & keunikan nomor dinilai per ORGAN lintas figur.
+		// marks (baru, additif — spec 2026-11-20 §3.1 revisi 2026-11-21):
+		// per-figureId strokes+pins; genital_urogenital tidak lagi diblokir
+		// (keputusan user 2026-11-21) dan tunduk pada aturan yang sama dengan
+		// organ lain (clinicalMarksOk). Legacy `strokes` flat di bawah TIDAK
+		// diubah (union kompat). Batas pin total & keunikan nomor dinilai
+		// per ORGAN lintas figur.
 		if rawMarks, present := om["marks"]; present && string(rawMarks) != "null" {
-			if organ == "genital_urogenital" {
-				return clinicalInvalidKind(c, key)
-			}
 			if err := clinicalMarksOk(rawMarks, organ); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return false

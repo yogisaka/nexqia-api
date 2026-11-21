@@ -907,7 +907,8 @@ func TestClinicalFormValidation(t *testing.T) {
 	// 2026-11-20-cppt-o-1-be-validator Task 4, spec 2026-11-20 §2/§3.1/§3.2) ──
 	// Expectations computed from the contract: pin n int 1..9, UNIK per
 	// organ lintas figur, ≤9 pin total per organ; legend key "1".."9";
-	// figureId `^[a-z0-9][a-z0-9-]*$`; genital tanpa marks; nyeri marks
+	// figureId `^[a-z0-9][a-z0-9-]*$`; genital marks tunduk aturan sama
+	// (revisi 2026-11-21); nyeri marks
 	// whitelist ["a1","a2b"] dari template v5 (migration 000107).
 	t.Run("v5 marks pins legend", func(t *testing.T) {
 		// (a) marks valid multi-figur + pins lintas figur + legend → 201.
@@ -936,10 +937,16 @@ func TestClinicalFormValidation(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || resp["error"] != "duplicate pin number" {
 			t.Fatalf("pin ganda = %d %v", rec.Code, resp)
 		}
-		// (d) marks di genital → 400 (larangan diperluas dari strokes).
-		rec, resp = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"genital_urogenital":{"status":"tidak_ada","marks":{"pf-16":{"pins":[{"x":0.5,"y":0.5,"n":1}]}}}}}`))
-		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'pemeriksaan_fisik'" {
-			t.Fatalf("marks genital = %d %v", rec.Code, resp)
+		// (d) marks di genital DIVALIDASI SAMA seperti organ lain (keputusan
+		// user 2026-11-21: larangan dihapus): figureId grup gender pasien
+		// (pria pf-20-depan) → 201; figureId asing → 400 "invalid figure id".
+		rec, _ = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"genital_urogenital":{"status":"tidak_ada","marks":{"pf-20-depan":{"pins":[{"x":0.5,"y":0.5,"n":1}]}}}}}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("marks genital valid = %d: %s", rec.Code, rec.Body.String())
+		}
+		rec, resp = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"genital_urogenital":{"status":"tidak_ada","marks":{"XX":{"pins":[{"x":0.5,"y":0.5,"n":1}]}}}}}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid figure id" {
+			t.Fatalf("marks genital figureId asing = %d %v", rec.Code, resp)
 		}
 		// (e) figureId asing (huruf besar) → 400 "invalid figure id".
 		rec, resp = post("cf_v3_form", sections(`"pemeriksaan_fisik":{"organ":{"thorax":{"status":"ada_kelainan","marks":{"XX":{"pins":[{"x":0.5,"y":0.5,"n":1}]}}}}}`))
