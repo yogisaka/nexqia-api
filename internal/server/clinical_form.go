@@ -67,6 +67,9 @@ type clinicalRepeatableFieldDef struct {
 	Label   string                  `json:"label"`
 	Type    string                  `json:"type"`
 	Options []clinicalSectionOption `json:"options"`
+	// Figures is the canvas_marks whitelist (spec 2026-11-20 §3.2: template v5
+	// nyeri marks figures ["a1","a2b"]).
+	Figures []string `json:"figures,omitempty"`
 }
 
 // clinicalCalcDef is the declarative recompute metadata of a calc section
@@ -394,8 +397,12 @@ func validateClinicalFormData(c *gin.Context, formType string, defs clinicalSect
 						c.JSON(http.StatusBadRequest, gin.H{"error": "unknown field '" + fk + "' di section '" + d.Key + "'"})
 						return nil, false
 					}
-					if !clinicalRepeatableFieldOk(fv, fd) {
-						clinicalInvalidSection(c, d.Key)
+					if err := clinicalRepeatableFieldOk(fv, fd); err != nil {
+						if errors.Is(err, errClinicalFieldGeneric) {
+							clinicalInvalidSection(c, d.Key)
+						} else {
+							c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+						}
 						return nil, false
 					}
 				}
@@ -674,48 +681,122 @@ func clinicalCalcNumber(raw json.RawMessage) (float64, bool) {
 	return 0, false
 }
 
+// errClinicalFieldGeneric marks the pre-existing generic failure path: the
+// caller answers with the usual "invalid value for section" message.
+var errClinicalFieldGeneric = errors.New("invalid repeatable field value")
+
 // clinicalRepeatableFieldOk validates one repeatable row value against its
 // field def (spec 2a §6.2: text/select/date; v3 §Bentuk nilai #18: number =
-// json.Number, time = HH:MM, boolean = bool).
-func clinicalRepeatableFieldOk(raw json.RawMessage, fd clinicalRepeatableFieldDef) bool {
+// json.Number, time = HH:MM, boolean = bool; v5 2026-11-20 §3.2: text_multi =
+// string|array of string union, canvas_marks = figure-id → strokes).
+// Returns nil when valid; errClinicalFieldGeneric keeps the legacy generic
+// section message, other errors carry their literal client-facing message.
+func clinicalRepeatableFieldOk(raw json.RawMessage, fd clinicalRepeatableFieldDef) error {
 	switch fd.Type {
 	case "number":
 		// json.Number would also accept a JSON string (it has string kind) —
 		// reject quoted values so `tarif_snapshot:"150000"` fails.
 		if len(raw) > 0 && raw[0] == '"' {
-			return false
+			return errClinicalFieldGeneric
 		}
 		var n json.Number
-		return json.Unmarshal(raw, &n) == nil
+		if json.Unmarshal(raw, &n) != nil {
+			return errClinicalFieldGeneric
+		}
+		return nil
 	case "boolean":
 		var b bool
-		return json.Unmarshal(raw, &b) == nil
+		if json.Unmarshal(raw, &b) != nil {
+			return errClinicalFieldGeneric
+		}
+		return nil
 	case "time":
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
-			return false
+			return errClinicalFieldGeneric
 		}
-		return clinicalTimeRe.MatchString(s)
+		if !clinicalTimeRe.MatchString(s) {
+			return errClinicalFieldGeneric
+		}
+		return nil
+	case "text_multi":
+		// Union (spec 2026-11-20 §2 aturan 2): legacy string stays valid;
+		// array items must be non-empty ≤128 runes, ≤28 items.
+		var arr []string
+		if json.Unmarshal(raw, &arr) == nil {
+			if len(arr) > 28 {
+				return errors.New("invalid text_multi value")
+			}
+			for _, it := range arr {
+				it = strings.TrimSpace(it)
+				if it == "" || len([]rune(it)) > 128 {
+					return errors.New("invalid text_multi value")
+				}
+			}
+			return nil
+		}
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return errors.New("invalid text_multi value")
+		}
+		s = strings.TrimSpace(s)
+		if s == "" || len([]rune(s)) > 128 {
+			return errors.New("invalid text_multi value")
+		}
+		return nil
+	case "canvas_marks":
+		// Spec 2026-11-20 §3.2: figure-id → stroke array (clinicalStrokeOk),
+		// ≤50 strokes per figure, no pins; keys must be in the def whitelist
+		// when the def declares `figures`.
+		var figs map[string]json.RawMessage
+		if json.Unmarshal(raw, &figs) != nil {
+			return errors.New("invalid canvas_marks value")
+		}
+		allowed := make(map[string]bool, len(fd.Figures))
+		for _, f := range fd.Figures {
+			allowed[f] = true
+		}
+		for k, v := range figs {
+			if len(allowed) > 0 && !allowed[k] {
+				return errors.New("unknown figure id " + k)
+			}
+			var strokes []json.RawMessage
+			if json.Unmarshal(v, &strokes) != nil {
+				return errors.New("invalid canvas_marks value")
+			}
+			if len(strokes) > 50 {
+				return errors.New("too many strokes")
+			}
+			for _, st := range strokes {
+				if !clinicalStrokeOk(st) {
+					return errors.New("invalid canvas_marks value")
+				}
+			}
+		}
+		return nil
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return false
+		return errClinicalFieldGeneric
 	}
 	switch fd.Type {
 	case "text":
-		return true
+		return nil
 	case "select":
 		for _, o := range fd.Options {
 			if o.Value == s {
-				return true
+				return nil
 			}
 		}
-		return false
+		return errClinicalFieldGeneric
 	case "date":
 		_, err := time.Parse("2006-01-02", s)
-		return err == nil
+		if err != nil {
+			return errClinicalFieldGeneric
+		}
+		return nil
 	}
-	return false
+	return errClinicalFieldGeneric
 }
 
 // clinicalFormJSON maps a sqlcgen row to the snake_case contract shape (spec

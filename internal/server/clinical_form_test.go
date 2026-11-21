@@ -621,6 +621,20 @@ func TestClinicalFormValidation(t *testing.T) {
 			t.Fatalf("gcs T numeric = %d %v", rec.Code, resp)
 		}
 	})
+	t.Run("kesadaran empty string optional", func(t *testing.T) {
+		// (l) "" dari clear combobox FE (legacy) = kosong untuk field
+		// opsional kesadaran (keputusan user 2026-11-21): e/v/m "" +
+		// refleks_kiri "" + lainnya sah → 201.
+		rec, _ = post("soap_dokter", sections(`"kesadaran":{"e":"","v":"","m":"6","pupil":{"kiri_mm":3,"kanan_mm":3,"refleks_kiri":"","refleks_kanan":"cepat"},"kategori":"","respons":""}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("kesadaran empty-string = %d: %s", rec.Code, rec.Body.String())
+		}
+		// Aturan lama utuh: "t" lowercase tetap 400.
+		rec, resp = post("soap_dokter", sections(`"kesadaran":{"v":"t"}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'kesadaran'" {
+			t.Fatalf("kesadaran v lowercase t = %d %v", rec.Code, resp)
+		}
+	})
 	t.Run("calc imt", func(t *testing.T) {
 		// (e) BB 62 / TB 158 → imt seharusnya 24.8; ditulis 30 → 400.
 		rec, resp := post("soap_dokter", sections(
@@ -1036,6 +1050,23 @@ func TestClinicalFormValidation(t *testing.T) {
 		rec, _ = post("cf_v3_form", sections(`"kesadaran":{"e":"4","gcs":null,"kategori":null,"pupil_score":null,"gcs_p":null}`))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("gcs partial null = %d: %s", rec.Code, rec.Body.String())
+		}
+		// GCS-P clamp (Teasdale 2014 min 1; keputusan user 2026-11-21):
+		// gcs = 1+1+1 = 3, refleks tidak_ada kiri+kanan → pupil_score
+		// 2+2 = 4, gcs_p = max(3−4, 1) = 1 → diterima.
+		rec, _ = post("cf_v3_form", sections(`"kesadaran":{"e":"1","v":"1","m":"1","gcs":3,`+
+			`"pupil":{"refleks_kiri":"tidak_ada","refleks_kanan":"tidak_ada"},`+
+			`"pupil_score":4,"gcs_p":1,"respons":"a"}`))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("gcs_p clamped 1 = %d: %s", rec.Code, rec.Body.String())
+		}
+		// gcs_p −1 (tidak di-clamp di input) → 400 invalid (shape rule
+		// gcs_p int ≥ 0; nilai sah 1..15 tetap lewat shape).
+		rec, resp = post("cf_v3_form", sections(`"kesadaran":{"e":"1","v":"1","m":"1","gcs":3,`+
+			`"pupil":{"refleks_kiri":"tidak_ada","refleks_kanan":"tidak_ada"},`+
+			`"pupil_score":4,"gcs_p":-1,"respons":"a"}`))
+		if rec.Code != http.StatusBadRequest || resp["error"] != "invalid value for section 'kesadaran'" {
+			t.Fatalf("gcs_p -1 = %d %v", rec.Code, resp)
 		}
 		// "T": gcs/kategori/gcs_p null diterima; gcs terisi → 400 (bentuk).
 		rec, _ = post("cf_v3_form", sections(`"kesadaran":{"e":"T","v":"T","m":"T","gcs":null,"kategori":null,"gcs_p":null,"pupil_score":null}`))

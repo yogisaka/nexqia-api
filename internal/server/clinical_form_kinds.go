@@ -437,6 +437,9 @@ func clinicalValidateConsciousness(c *gin.Context, key string, raw json.RawMessa
 			return clinicalInvalidKind(c, key)
 		}
 		switch s {
+		case "":
+			// "" (legacy FE clear combobox) = kosong, keputusan user 2026-11-21.
+			continue
 		case "T":
 			hasT = true
 		case "1", "2", "3", "4", "5", "6":
@@ -460,8 +463,10 @@ func clinicalValidateConsciousness(c *gin.Context, key string, raw json.RawMessa
 			}
 		}
 	}
+	// "" (legacy FE clear combobox) = kosong untuk field opsional, keputusan
+	// user 2026-11-21 — hanya di validator kesadaran ini.
 	if k, filled, ok := clinicalKindStrOpt(m, "kategori"); filled &&
-		(!ok || !clinicalKindStringEnum(k, "compos_mentis", "somnolen", "sopor", "koma")) {
+		(!ok || (k != "" && !clinicalKindStringEnum(k, "compos_mentis", "somnolen", "sopor", "koma"))) {
 		return clinicalInvalidKind(c, key)
 	}
 	if rawPupil, present := m["pupil"]; present && string(rawPupil) != "null" {
@@ -470,13 +475,19 @@ func clinicalValidateConsciousness(c *gin.Context, key string, raw json.RawMessa
 			return clinicalInvalidKind(c, key)
 		}
 		for _, f := range []string{"kiri_mm", "kanan_mm"} {
+			// pupil mm is a JSON number (spec §Bentuk nilai #13); a quoted
+			// string like "2.5" would slip through clinicalKindNumOpt
+			// (json.Number accepts numeric strings) — reject it here.
+			if raw, present := p[f]; present && string(raw) != "null" && len(raw) > 0 && raw[0] == '"' {
+				return clinicalInvalidKind(c, key)
+			}
 			if v, filled, ok := clinicalKindNumOpt(p, f); filled && (!ok || v <= 0 || v >= 10) {
 				return clinicalInvalidKind(c, key)
 			}
 		}
 		for _, f := range []string{"refleks_kiri", "refleks_kanan"} {
 			if s, filled, ok := clinicalKindStrOpt(p, f); filled &&
-				(!ok || !clinicalKindStringEnum(s, "cepat", "lambat", "tidak_ada")) {
+				(!ok || (s != "" && !clinicalKindStringEnum(s, "cepat", "lambat", "tidak_ada"))) {
 				return clinicalInvalidKind(c, key)
 			}
 		}
@@ -488,7 +499,7 @@ func clinicalValidateConsciousness(c *gin.Context, key string, raw json.RawMessa
 		return clinicalInvalidKind(c, key)
 	}
 	if r, filled, ok := clinicalKindStrOpt(m, "respons"); filled &&
-		(!ok || !clinicalKindStringEnum(r, "a", "c", "v", "p", "u")) {
+		(!ok || (r != "" && !clinicalKindStringEnum(r, "a", "c", "v", "p", "u"))) {
 		return clinicalInvalidKind(c, key)
 	}
 	return true
@@ -861,7 +872,7 @@ func clinicalValidateCalcV3(c *gin.Context, sections map[string]json.RawMessage,
 			(!gcsComplete || int64(gcsVal) != gcs) {
 			return mismatch("gcs")
 		}
-		if kat, filled, _ := clinicalKindStrOpt(m, "kategori"); filled &&
+		if kat, filled, _ := clinicalKindStrOpt(m, "kategori"); filled && kat != "" &&
 			(!gcsComplete || kat != clinicalGcsKategori(gcs)) {
 			return mismatch("kategori")
 		}
@@ -878,7 +889,7 @@ func clinicalValidateCalcV3(c *gin.Context, sections map[string]json.RawMessage,
 		if p := clinicalSectionMap(map[string]json.RawMessage{"kesadaran": m["pupil"]}, "kesadaran"); p != nil {
 			rl, rlFilled, _ := clinicalKindStrOpt(p, "refleks_kiri")
 			rr, rrFilled, _ := clinicalKindStrOpt(p, "refleks_kanan")
-			psComplete = rlFilled && rrFilled
+			psComplete = rlFilled && rl != "" && rrFilled && rr != ""
 			if psComplete {
 				expectedPS = reflScore(rl) + reflScore(rr)
 			}
@@ -887,8 +898,10 @@ func clinicalValidateCalcV3(c *gin.Context, sections map[string]json.RawMessage,
 			(!psComplete || int64(ps) != expectedPS) {
 			return mismatch("pupil_score")
 		}
+		// gcs_p = gcs − pupil_score, clamp minimum 1 — GCS-P min 1
+		// (Teasdale 2014); keputusan user 2026-11-21.
 		if gcsP, filled, _ := clinicalKindIntOpt(m, "gcs_p"); filled &&
-			(!gcsComplete || !psComplete || gcsP != gcs-expectedPS) {
+			(!gcsComplete || !psComplete || gcsP != max(gcs-expectedPS, 1)) {
 			return mismatch("gcs_p")
 		}
 	}
