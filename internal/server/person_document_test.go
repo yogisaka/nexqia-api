@@ -651,12 +651,39 @@ func TestPersonDocumentListAdmissionFilter(t *testing.T) {
 		}
 		return body.Data
 	}
-	// (a) tanpa param → keduanya.
-	if got := getList(""); len(got) != 2 {
+	// (a) tanpa param → keduanya; konteks kunjungan hanya pada dokumen ber-link.
+	// Fixture visit_no dari baris admission (plan berkas-rm-v2 Task 3).
+	var fixtureVisitNo string
+	if err := e.pool.QueryRow(ctx, "SELECT visit_no FROM operations.admission WHERE id = $1::uuid", admissionID).Scan(&fixtureVisitNo); err != nil {
+		t.Fatalf("resolve fixture visit_no: %v", err)
+	}
+	got := getList("")
+	if len(got) != 2 {
 		t.Fatalf("unfiltered list expected 2 documents, got %d: %+v", len(got), got)
 	}
+	byLabel := map[string]map[string]any{}
+	for _, d := range got {
+		byLabel[d["label"].(string)] = d
+	}
+	linkedDoc := byLabel["KTP kunjungan"]
+	if linkedDoc == nil {
+		t.Fatalf("linked document missing from unfiltered list: %+v", got)
+	}
+	if linkedDoc["admission_visit_no"] != fixtureVisitNo {
+		t.Fatalf("linked admission_visit_no = %v, want fixture visit_no %s", linkedDoc["admission_visit_no"], fixtureVisitNo)
+	}
+	if linkedDoc["admission_date"] == nil {
+		t.Fatalf("linked admission_date must be non-null")
+	}
+	plainDoc := byLabel["KTP polos"]
+	if plainDoc == nil {
+		t.Fatalf("plain document missing from unfiltered list: %+v", got)
+	}
+	if plainDoc["admission_visit_no"] != nil || plainDoc["admission_date"] != nil {
+		t.Fatalf("plain admission context = %v/%v, want null/null", plainDoc["admission_visit_no"], plainDoc["admission_date"])
+	}
 	// (b) dengan param → hanya yang ber-link.
-	got := getList("?admission_id=" + admissionID)
+	got = getList("?admission_id=" + admissionID)
 	if len(got) != 1 || got[0]["label"] != "KTP kunjungan" {
 		t.Fatalf("filtered list expected only the linked document, got %+v", got)
 	}

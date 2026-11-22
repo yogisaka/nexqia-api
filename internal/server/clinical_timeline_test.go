@@ -114,6 +114,11 @@ func TestClinicalTimeline(t *testing.T) {
 	if adm["id"] != admissionID || adm["status"] != "registered" {
 		t.Fatalf("admission = %v", adm)
 	}
+	// service_type = kode penjamin utama fixture (plan berkas-rm-v2 Task 3);
+	// seedAuditPersonAdmission memakai payer code "APSP-cf-tl" (payer_type self_pay).
+	if adm["service_type"] != "APSP-cf-tl" {
+		t.Fatalf("admission service_type = %v, want payer code APSP-cf-tl", adm["service_type"])
+	}
 	person := data["person"].(map[string]any)
 	if person["id"] != personID || person["name"] != "Pasien CPPT tl" || person["gender"] != "male" {
 		t.Fatalf("person = %v", person)
@@ -207,6 +212,21 @@ func TestClinicalTimeline(t *testing.T) {
 		if it.(map[string]any)["kind"] == "person_document" {
 			t.Fatalf("admission B items = %v, want no person_document", itemsB)
 		}
+	}
+	// Admission B (seedAuditPersonAdmission "tl-b") punya penjamin utama →
+	// service_type = kode payernya.
+	if admB := resp["data"].(map[string]any)["admission"].(map[string]any); admB["service_type"] != "APSP-tl-b" {
+		t.Fatalf("admission B service_type = %v, want APSP-tl-b", admB["service_type"])
+	}
+
+	// (c2) Admission TANPA penjamin utama (INSERT langsung, pola
+	// cfSeedInpatientAdmission) → service_type null.
+	noPayerID := cfSeedInpatientAdmission(t, ctx, pool, companyID, merchantID, personID, "tl-nopayer")
+	if rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/admissions/"+noPayerID+"/clinical-timeline", token, companyID, merchantID, nil); rec.Code != http.StatusOK {
+		t.Fatalf("timeline no-payer = %d: %s", rec.Code, rec.Body.String())
+	}
+	if st, _ := resp["data"].(map[string]any)["admission"].(map[string]any)["service_type"]; st != nil {
+		t.Fatalf("no-payer admission service_type = %v, want null", st)
 	}
 
 	// (d) Soft-delete the linked document (deleted_at + deleted_by together,
