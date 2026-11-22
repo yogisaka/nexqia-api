@@ -260,8 +260,15 @@ func GetClinicalTimelineHandler(c *gin.Context) {
 		feed = append(feed, it.data)
 	}
 
+	adm := admissionJSON(admission)
+	// Penjamin utama tidak valid / tidak ditemukan → service_type tidak diset (null di JSON), chip FE hidden.
+	if admission.PrimaryPayerID.Valid {
+		if payer, err := q.GetPayerByID(ctx, admission.PrimaryPayerID); err == nil {
+			adm["service_type"] = payer.Code
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"admission":        admissionJSON(admission),
+		"admission":        adm,
 		"person":           gin.H{"id": uuidJSON(person.ID), "mrn": textJSON(person.MedicalRecordNo), "name": person.FullName, "gender": textJSON(person.Gender), "birth_date": dateJSON(person.BirthDate)},
 		"allergies":        allergyItems,
 		"diagnoses":        dxItems,
