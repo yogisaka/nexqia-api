@@ -70,7 +70,7 @@ func maxUploadBytes(store storage.ObjectStorage) int64 {
 
 // documentJSON maps the document fields to the snake_case response shape of
 // spec §5.1 — no storage_key ever leaves the server.
-func documentJSON(id, personID pgtype.UUID, documentType, documentTypeName, label string, issuedDate, expiredDate pgtype.Date, mimeType string, sizeBytes int64, createdBy pgtype.UUID, createdAt, updatedAt pgtype.Timestamptz, rowVersion int32, originalFilename, createdByName, virusScanStatus string) gin.H {
+func documentJSON(id, personID pgtype.UUID, documentType, documentTypeName, label string, issuedDate, expiredDate pgtype.Date, mimeType string, sizeBytes int64, createdBy pgtype.UUID, createdAt, updatedAt pgtype.Timestamptz, rowVersion int32, originalFilename, createdByName, virusScanStatus string, admissionVisitNo pgtype.Text, admissionDate pgtype.Timestamptz) gin.H {
 	return gin.H{
 		"id":                 uuidJSON(id),
 		"person_id":          uuidJSON(personID),
@@ -88,6 +88,8 @@ func documentJSON(id, personID pgtype.UUID, documentType, documentTypeName, labe
 		"original_filename":  originalFilename,
 		"created_by_name":    createdByName,
 		"virus_scan_status":  virusScanStatus,
+		"admission_visit_no": textJSON(admissionVisitNo),
+		"admission_date":     tsJSON(admissionDate),
 	}
 }
 
@@ -308,6 +310,7 @@ func UploadPersonDocumentHandler(store storage.ObjectStorage) gin.HandlerFunc {
 			doc.IssuedDate, doc.ExpiredDate, mimeType, int64(len(buf)),
 			doc.CreatedBy, doc.CreatedAt, doc.UpdatedAt, doc.RowVersion,
 			media.OriginalFilename, createdByName, media.VirusScanStatus,
+			pgtype.Text{}, pgtype.Timestamptz{}, // upload response has no admission context (join is list-only)
 		)})
 	}
 }
@@ -358,7 +361,8 @@ func ListPersonDocumentsHandler(c *gin.Context) {
 		items[i] = documentJSON(r.ID, r.PersonID, r.DocumentType, r.DocumentTypeName, r.Label,
 			r.IssuedDate, r.ExpiredDate, r.MimeType, r.SizeBytes,
 			r.CreatedBy, r.CreatedAt, r.UpdatedAt, r.RowVersion,
-			r.OriginalFilename, r.CreatedByName, r.VirusScanStatus)
+			r.OriginalFilename, r.CreatedByName, r.VirusScanStatus,
+			r.AdmissionVisitNo, r.AdmissionDate)
 		present[r.DocumentType] = true
 	}
 	resp := gin.H{"data": items, "meta": gin.H{}}
@@ -480,6 +484,7 @@ func UpdatePersonDocumentHandler(c *gin.Context) {
 		updated.IssuedDate, updated.ExpiredDate, updated.MimeType, updated.SizeBytes,
 		updated.CreatedBy, updated.CreatedAt, updated.UpdatedAt, updated.RowVersion,
 		updated.OriginalFilename, updated.CreatedByName, updated.VirusScanStatus,
+		pgtype.Text{}, pgtype.Timestamptz{}, // patch response reads via GetPersonDocumentByID (no admission join)
 	), "meta": gin.H{}})
 }
 

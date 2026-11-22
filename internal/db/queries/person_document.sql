@@ -30,6 +30,8 @@ WHERE d.id = $1 AND d.deleted_at IS NULL;
 -- 'admission'); NULL keeps the full person list unchanged. DISTINCT guards
 -- against duplicating a document linked to several admissions.
 SELECT DISTINCT d.*, m.mime_type, m.size_bytes, m.original_filename, m.virus_scan_status,
+       adm.visit_no     AS admission_visit_no,
+       adm.admission_at AS admission_date,
        dt.name AS document_type_name,
        COALESCE(pe.full_name, u.username) AS created_by_name
 FROM core.person_document d
@@ -39,6 +41,8 @@ LEFT JOIN core.app_user u ON u.id = d.created_by
 LEFT JOIN core.person pe ON pe.id = u.person_id
 LEFT JOIN core.media_link ml ON ml.media_id = d.media_id
   AND ml.owner_table = 'admission' AND ml.deleted_at IS NULL
+LEFT JOIN operations.admission adm
+  ON ml.owner_table = 'admission' AND ml.owner_id = adm.id
 WHERE d.person_id = $1 AND d.merchant_id = $2 AND d.deleted_at IS NULL
   AND (sqlc.arg('admission_id')::uuid IS NULL OR ml.owner_id = sqlc.arg('admission_id')::uuid)
 ORDER BY d.created_at DESC;
