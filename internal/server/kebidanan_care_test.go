@@ -642,3 +642,166 @@ func TestKebidananAncVisitRLS(t *testing.T) {
 		t.Fatalf("cross pe = %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// ---- Task 4: vaksin Td + anc-summary + timeline kinds (plan step 4) ----
+
+// TestKebidananVaksin — dosis_ke SERVER (ordinal berikutnya); interval <30d →
+// 422 + TIDAK tersimpan; band 2 dosis → protect_until = tahun given+3 (jadwal
+// Td dosis 2 masa_perlindungan 3 th, migration 000109); riwayat kosong →
+// belum_lengkap + next.dosis_ke=1.
+func TestKebidananVaksin(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "kev1")
+	personID, _ := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "kev1")
+
+	vaksinBody := func(given string) map[string]any {
+		return map[string]any{"person_id": personID, "antigen_slug": "td",
+			"given_date": given, "tempat": "faskes_ini", "no_batch": "TD-001", "pemberi": "Bidan A"}
+	}
+	// Dosis 1: 201, dosis_ke dihitung server = 1.
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/person-vaccination", token, companyID, merchantID,
+		vaksinBody("2026-01-01"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("vaksin 1 = %d: %s", rec.Code, rec.Body.String())
+	}
+	if d := resp["data"].(map[string]any); d["dosis_ke"].(float64) != 1 || d["given_date"] != "2026-01-01" ||
+		d["tempat"] != "faskes_ini" || d["no_batch"] != "TD-001" {
+		t.Fatalf("vaksin 1 data = %v", d)
+	}
+	// Interval <30d: given 2026-01-15, syarat 2026-01-01+30 = 2026-01-31 →
+	// sisa 16 hari → 422 "interval Td belum terpenuhi (min 16 hari)".
+	rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/person-vaccination", token, companyID, merchantID,
+		vaksinBody("2026-01-15"))
+	if rec.Code != http.StatusUnprocessableEntity || resp["error"] != "interval Td belum terpenuhi (min 16 hari)" {
+		t.Fatalf("interval = %d %v", rec.Code, resp)
+	}
+	// TIDAK tersimpan: GET masih 1 dosis.
+	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/person-vaccination?person_id="+personID+"&antigen=td", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get = %d: %s", rec.Code, rec.Body.String())
+	}
+	dosis := resp["data"].(map[string]any)["dosis"].([]any)
+	if len(dosis) != 1 {
+		t.Fatalf("dosis len = %d (422 harus tidak tersimpan)", len(dosis))
+	}
+	// Dosis 2: 2026-02-15 = 45 hari setelah dosis 1 (≥30) → 201, dosis_ke 2.
+	rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/person-vaccination", token, companyID, merchantID,
+		vaksinBody("2026-02-15"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("vaksin 2 = %d: %s", rec.Code, rec.Body.String())
+	}
+	if resp["data"].(map[string]any)["dosis_ke"].(float64) != 2 {
+		t.Fatalf("ordinal = %v", resp["data"])
+	}
+	// Band 2 dosis: dosis terakhir 2, masa 3 th → aktif, protect_until
+	// 2026+3 = "2029"; next = dosis 3 min_date 2026-02-15+180 = 2026-08-14.
+	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/person-vaccination?person_id="+personID+"&antigen=td", token, companyID, merchantID, nil)
+	band := resp["data"].(map[string]any)["band"].(map[string]any)
+	if band["status"] != "aktif" || band["protect_until"] != "2029" {
+		t.Fatalf("band 2 dosis = %v", band)
+	}
+	next := band["next"].(map[string]any)
+	if next["dosis_ke"].(float64) != 3 || next["min_date"] != "2026-08-14" {
+		t.Fatalf("next = %v", next)
+	}
+
+	// Riwayat kosong → belum_lengkap + next.dosis_ke=1.
+	person2, _ := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, fmt.Sprintf("kev1b%d", kebNext()))
+	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/person-vaccination?person_id="+person2+"&antigen=td", token, companyID, merchantID, nil)
+	band = resp["data"].(map[string]any)["band"].(map[string]any)
+	if band["status"] != "belum_lengkap" || band["protect_until"] != nil {
+		t.Fatalf("band kosong = %v", band)
+	}
+	if n := band["next"].(map[string]any); n["dosis_ke"].(float64) != 1 {
+		t.Fatalf("next kosong = %v", n)
+	}
+}
+
+// TestKebidananAncSummary — read-model G4AncData: episode aktif + latest visit
+// (TFU 22 / DJJ 140) + latest USG (hc 62 = usg_lk, fl 44) → snake_case persis;
+// tanpa episode aktif → 200 semua null.
+func TestKebidananAncSummary(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "kes1")
+	personID, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "kes1")
+
+	// Tanpa episode aktif → semua null.
+	rec, resp := cfDo(t, router, http.MethodGet, "/api/v1/clinical/midwifery/anc-summary?person_id="+personID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary kosong = %d: %s", rec.Code, rec.Body.String())
+	}
+	empty := resp["data"].(map[string]any)
+	for _, k := range []string{"gravida", "para", "tfu_cm", "tfu_at", "djj", "djj_at", "usg_lk_mm", "usg_fl_mm", "usg_at", "episode_ordinal"} {
+		if empty[k] != nil {
+			t.Fatalf("summary kosong %s = %v", k, empty[k])
+		}
+	}
+
+	episodeID := kebNewEpisode(t, router, token, companyID, merchantID, admissionID, "2026-08-01")
+	// Fixture visit langsung (TFU 22 / DJJ 140; visited_at = now()).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO clinical.midwifery_anc_visit
+			(company_id, merchant_id, care_episode_id, admission_id, visited_at, tfu_cm, djj)
+		VALUES ($1, $2, $3, $4, now(), 22, 140)`,
+		companyID, merchantID, episodeID, admissionID); err != nil {
+		t.Fatalf("seed visit: %v", err)
+	}
+	rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/usg", token, companyID, merchantID,
+		map[string]any{"episode_id": episodeID, "trimester": "t1", "usg_date": "2026-09-10", "hc_mm": 62, "fl_mm": 44})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("usg = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/midwifery/anc-summary?person_id="+personID, token, companyID, merchantID, nil)
+	s := resp["data"].(map[string]any)
+	if s["gravida"].(float64) != 2 || s["para"].(float64) != 1 || s["episode_ordinal"].(float64) != 1 ||
+		gzNum(t, s["tfu_cm"]) != 22 || gzNum(t, s["djj"]) != 140 ||
+		gzNum(t, s["usg_lk_mm"]) != 62 || gzNum(t, s["usg_fl_mm"]) != 44 ||
+		s["usg_at"] != "2026-09-10" || s["tfu_at"] == nil || s["djj_at"] == nil {
+		t.Fatalf("summary = %v", s)
+	}
+}
+
+// TestClinicalTimelineKebidanan — KETIGA kind kebidanan muncul di feed
+// clinical-timeline admission: midwifery_visit, midwifery_pe_screen,
+// person_vaccination.
+func TestClinicalTimelineKebidanan(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "ket1")
+	personID, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "ket1")
+	episodeID := kebNewEpisode(t, router, token, companyID, merchantID, admissionID, "2026-08-01")
+	kebSeedVisit(t, ctx, pool, companyID, merchantID, episodeID, admissionID)
+	rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/pe-screen", token, companyID, merchantID,
+		map[string]any{"episode_id": episodeID, "factors": map[string]bool{"primigravida": true}})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("pe = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/person-vaccination", token, companyID, merchantID,
+		map[string]any{"person_id": personID, "antigen_slug": "td", "given_date": "2026-03-01", "tempat": "luar"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("vaksin = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec, resp := cfDo(t, router, http.MethodGet, "/api/v1/admissions/"+admissionID+"/clinical-timeline", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("timeline = %d: %s", rec.Code, rec.Body.String())
+	}
+	items := resp["data"].(map[string]any)["items"].([]any)
+	seen := map[string]bool{}
+	for _, it := range items {
+		if k, ok := it.(map[string]any)["kind"].(string); ok {
+			seen[k] = true
+		}
+	}
+	for _, kind := range []string{"midwifery_visit", "midwifery_pe_screen", "person_vaccination"} {
+		if !seen[kind] {
+			t.Fatalf("kind %s tidak ada di timeline (seen=%v)", kind, seen)
+		}
+	}
+}

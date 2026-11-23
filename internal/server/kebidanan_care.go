@@ -8,6 +8,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -38,6 +39,10 @@ func RegisterKebidananCareRoutes(rg *gin.RouterGroup) {
 	rg.GET("/clinical/midwifery/usg", ListKebidananUsgHandler)
 	rg.POST("/clinical/midwifery/pe-screen", CreatePeScreenHandler)
 	rg.GET("/clinical/midwifery/pe-screen", ListPeScreensHandler)
+	// Task 4: imunisasi Td person + anc-summary read-model.
+	rg.POST("/clinical/person-vaccination", CreatePersonVaccinationHandler)
+	rg.GET("/clinical/person-vaccination", ListPersonVaccinationHandler)
+	rg.GET("/clinical/midwifery/anc-summary", GetMidwiferyAncSummaryHandler)
 }
 
 type createKebidananEpisodeRequest struct {
@@ -1105,6 +1110,341 @@ func ListPeScreensHandler(c *gin.Context) {
 	data := make([]gin.H, 0, len(rows))
 	for _, r := range rows {
 		data = append(data, kebPeScreenJSON(r))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+// ---- Task 4: imunisasi Td person + anc-summary read-model (spec §5) ----
+
+type createPersonVaccinationRequest struct {
+	PersonID         string  `json:"person_id" binding:"required"`
+	AntigenSlug      string  `json:"antigen_slug" binding:"required"`
+	GivenDate        string  `json:"given_date" binding:"required"`
+	Tempat           string  `json:"tempat" binding:"required"`
+	TempatKeterangan *string `json:"tempat_keterangan"`
+	NoBatch          *string `json:"no_batch"`
+	Pemberi          *string `json:"pemberi"`
+}
+
+// kebVaksinSchedule — ref.immunization_schedule rows of one antigen for
+// kategori 'ibu_hamil' ordered by dosis_ke (seed migration 000109: Td 1–5).
+func kebVaksinSchedule(c *gin.Context, q *sqlcgen.Queries, antigen string) ([]sqlcgen.RefImmunizationSchedule, bool) {
+	rows, err := q.GetImmunizationSchedule(c.Request.Context(), sqlcgen.GetImmunizationScheduleParams{
+		AntigenSlug: antigen, Kategori: "ibu_hamil",
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return nil, false
+	}
+	return rows, true
+}
+
+// kebVaksinBand — kontrak Task 4 step 1: dosis terakhir N → status 'aktif' +
+// protect_until = year(given_date)+masa_perlindungan_tahun(N); riwayat kosong
+// → 'belum_lengkap' + next.dosis_ke=1. next (jika jadwal punya dosis N+1) =
+// {dosis_ke, min_date = last.given_date + interval_hari(N+1)}.
+func kebVaksinBand(rows []sqlcgen.ClinicalPersonRiwayatVaksin, sched []sqlcgen.RefImmunizationSchedule) gin.H {
+	band := gin.H{"status": "belum_lengkap", "protect_until": nil, "next": nil}
+	if len(rows) == 0 {
+		band["next"] = gin.H{"dosis_ke": 1, "min_date": nil}
+		return band
+	}
+	last := rows[0]
+	for _, r := range rows[1:] {
+		if r.DosisKe > last.DosisKe {
+			last = r
+		}
+	}
+	var cur sqlcgen.RefImmunizationSchedule
+	for _, s := range sched {
+		if s.DosisKe == last.DosisKe {
+			cur = s
+		}
+	}
+	if cur.MasaPerlindunganTahun.Valid {
+		band["status"] = "aktif"
+		band["protect_until"] = fmt.Sprintf("%04d", last.GivenDate.Time.Year()+int(cur.MasaPerlindunganTahun.Int32))
+	}
+	if !cur.MasaPerlindunganTahun.Valid {
+		// dosis 1 tanpa masa perlindungan di jadwal → belum_lengkap (KEPUTUSAN).
+		next := gin.H{"dosis_ke": last.DosisKe + 1, "min_date": nil}
+		for _, s := range sched {
+			if s.DosisKe == last.DosisKe+1 {
+				if s.IntervalHariDariDosisSebelumnya.Valid {
+					minDate := last.GivenDate.Time.AddDate(0, 0, int(s.IntervalHariDariDosisSebelumnya.Int32))
+					next["min_date"] = minDate.Format("2006-01-02")
+				}
+				break
+			}
+		}
+		band["next"] = next
+		return band
+	}
+	for _, s := range sched {
+		if s.DosisKe == last.DosisKe+1 {
+			next := gin.H{"dosis_ke": s.DosisKe, "min_date": nil}
+			if s.IntervalHariDariDosisSebelumnya.Valid {
+				minDate := last.GivenDate.Time.AddDate(0, 0, int(s.IntervalHariDariDosisSebelumnya.Int32))
+				next["min_date"] = minDate.Format("2006-01-02")
+			}
+			band["next"] = next
+			break
+		}
+	}
+	return band
+}
+
+func kebVaksinJSON(v sqlcgen.ClinicalPersonRiwayatVaksin) gin.H {
+	return gin.H{
+		"id": uuidJSON(v.ID), "person_id": uuidJSON(v.PersonID), "antigen_slug": v.AntigenSlug,
+		"dosis_ke": v.DosisKe, "given_date": dateJSON(v.GivenDate), "no_batch": textJSON(v.NoBatch),
+		"tempat": textJSON(v.Tempat), "tempat_keterangan": textJSON(v.TempatKeterangan),
+		"pemberi": textJSON(v.Pemberi), "row_version": v.RowVersion,
+	}
+}
+
+// kebPersonByCompany — person ada + milik company token (pola guard tenant
+// eksplisit giziAdmission; pool test superuser mem-bypass RLS).
+func kebPersonByCompany(c *gin.Context, q *sqlcgen.Queries, personID pgtype.UUID) (sqlcgen.CorePerson, bool) {
+	p, err := q.GetPersonByID(c.Request.Context(), personID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && p.CompanyID != AuthCompanyID(c)) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "person tidak ditemukan"})
+		return sqlcgen.CorePerson{}, false
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return sqlcgen.CorePerson{}, false
+	}
+	return p, true
+}
+
+// CreatePersonVaccinationHandler godoc
+// @Summary Record one Td vaccination of a person (dosis_ke computed server-side)
+// @Description dosis_ke = ordinal berikutnya dari riwayat person+antigen; given_date < last.given_date + interval_hari → 422 tanpa tersimpan (spec §5).
+// @Tags clinical
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param request body createPersonVaccinationRequest true "Vaccination data"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 422 {object} apiErrorResponse
+// @Router /clinical/person-vaccination [post]
+func CreatePersonVaccinationHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalMidwiferyWrite, merchantID) {
+		return
+	}
+	var req createPersonVaccinationRequest
+	if !bindJSONOrFields(c, &req) {
+		return
+	}
+	if req.AntigenSlug != "td" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "antigen_slug hanya td"})
+		return
+	}
+	if req.Tempat != "faskes_ini" && req.Tempat != "luar" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tempat tidak valid"})
+		return
+	}
+	givenDate, err := time.Parse("2006-01-02", req.GivenDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "given_date tidak valid"})
+		return
+	}
+	personID, okID := parseUUID(req.PersonID)
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person_id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	if _, okP := kebPersonByCompany(c, q, personID); !okP {
+		return
+	}
+	sched, okS := kebVaksinSchedule(c, q, req.AntigenSlug)
+	if !okS {
+		return
+	}
+	// dosis_ke server: ordinal berikutnya (lompat tidak mungkin — bukan input).
+	rows, err := q.ListPersonVaksin(c.Request.Context(), sqlcgen.ListPersonVaksinParams{
+		PersonID: personID, AntigenSlug: req.AntigenSlug,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	dosisKe := int32(len(rows) + 1)
+	if len(rows) > 0 {
+		// Guard keras interval (spec §5): given_date < last.given_date +
+		// interval_hari(dosis_ke) → 422, TIDAK tersimpan (respons ≥400
+		// auto-rollback ambient RunRequestTx).
+		var cur sqlcgen.RefImmunizationSchedule
+		for _, s := range sched {
+			if s.DosisKe == dosisKe {
+				cur = s
+				break
+			}
+		}
+		if cur.IntervalHariDariDosisSebelumnya.Valid {
+			last := rows[0]
+			minDate := last.GivenDate.Time.AddDate(0, 0, int(cur.IntervalHariDariDosisSebelumnya.Int32))
+			if givenDate.Before(minDate) {
+				remaining := int(minDate.Sub(givenDate).Hours() / 24)
+				c.JSON(http.StatusUnprocessableEntity, gin.H{
+					"error": fmt.Sprintf("interval Td belum terpenuhi (min %d hari)", remaining)})
+				return
+			}
+		}
+	}
+	v, err := q.CreatePersonVaksin(c.Request.Context(), sqlcgen.CreatePersonVaksinParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID, PersonID: personID,
+		AntigenSlug: req.AntigenSlug, DosisKe: dosisKe,
+		GivenDate: pgtype.Date{Time: givenDate, Valid: true},
+		NoBatch:   kebTextPtr(req.NoBatch), Tempat: pgtype.Text{String: req.Tempat, Valid: true},
+		TempatKeterangan: kebTextPtr(req.TempatKeterangan), Pemberi: kebTextPtr(req.Pemberi),
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": kebVaksinJSON(v), "meta": gin.H{}})
+}
+
+// ListPersonVaccinationHandler godoc
+// @Summary Td vaccination history of a person + protection band (server)
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param person_id query string true "Person UUID"
+// @Param antigen query string true "Antigen slug (td)"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Router /clinical/person-vaccination [get]
+func ListPersonVaccinationHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalRecordView, merchantID) {
+		return
+	}
+	personID, okID := parseUUID(c.Query("person_id"))
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person_id"})
+		return
+	}
+	antigen := c.Query("antigen")
+	if antigen != "td" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "antigen hanya td"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	sched, okS := kebVaksinSchedule(c, q, antigen)
+	if !okS {
+		return
+	}
+	rows, err := q.ListPersonVaksin(c.Request.Context(), sqlcgen.ListPersonVaksinParams{
+		PersonID: personID, AntigenSlug: antigen,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	own := make([]sqlcgen.ClinicalPersonRiwayatVaksin, 0, len(rows))
+	for _, r := range rows {
+		if r.MerchantID != merchantID {
+			continue
+		}
+		own = append(own, r)
+		// Kontrak dosis entry: dosis_ke, given_date, tempat, tempat_keterangan.
+		data = append(data, gin.H{
+			"dosis_ke": r.DosisKe, "given_date": dateJSON(r.GivenDate),
+			"tempat": textJSON(r.Tempat), "tempat_keterangan": textJSON(r.TempatKeterangan),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"dosis": data, "band": kebVaksinBand(own, sched),
+	}, "meta": gin.H{}})
+}
+
+// GetMidwiferyAncSummaryHandler godoc
+// @Summary ANC summary read-model of a person's active pregnancy (all null-able)
+// @Description Untuk tab Gizi (G4Bumil G4AncData): pregnancy aktif + latest visit + latest USG; tanpa episode aktif → 200 semua null.
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param person_id query string true "Person UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Router /clinical/midwifery/anc-summary [get]
+func GetMidwiferyAncSummaryHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalRecordView, merchantID) {
+		return
+	}
+	personID, okID := parseUUID(c.Query("person_id"))
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid person_id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	data := gin.H{
+		"gravida": nil, "para": nil, "tfu_cm": nil, "tfu_at": nil,
+		"djj": nil, "djj_at": nil, "usg_lk_mm": nil, "usg_fl_mm": nil,
+		"usg_at": nil, "episode_ordinal": nil,
+	}
+	ep, err := q.GetActiveCareEpisodeByPerson(c.Request.Context(), personID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Tanpa episode aktif → 200 semua null (FE fallback slot lama).
+		c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+		return
+	}
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	preg, err := q.GetMidwiferyPregnancy(c.Request.Context(), ep.ID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data["gravida"] = preg.Gravida
+	data["para"] = preg.Para
+	data["episode_ordinal"] = ep.OrdinalNo
+	visit, okV := kebLatestVisit(c, q, ep.ID)
+	if !okV {
+		return
+	}
+	if visit != nil {
+		data["tfu_cm"] = numericJSON(visit.TfuCm)
+		data["djj"] = intText(visit.Djj)
+		if visit.VisitedAt.Valid {
+			data["tfu_at"] = visit.VisitedAt.Time.Format("2006-01-02")
+			data["djj_at"] = visit.VisitedAt.Time.Format("2006-01-02")
+		}
+	}
+	usgRows, err := q.ListUsgByEpisode(c.Request.Context(), ep.ID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if len(usgRows) > 0 {
+		u := usgRows[0]
+		// Kontrak G4AncData: usg_lk = lingkar kepala (HC) — satu baris USG terakhir.
+		data["usg_lk_mm"] = numericJSON(u.HcMm)
+		data["usg_fl_mm"] = numericJSON(u.FlMm)
+		data["usg_at"] = dateJSON(u.UsgDate)
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }

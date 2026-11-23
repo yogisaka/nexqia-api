@@ -8,6 +8,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"time"
@@ -252,6 +253,60 @@ func GetClinicalTimelineHandler(c *gin.Context) {
 			"profile":    e.Profile,
 			"started_at": tsJSON(e.StartedAt),
 			"closed_at":  tsJSON(e.ClosedAt),
+		}})
+	}
+	// Kebidanan kinds (plan 2026-11-22-kebidanan-anc-f1 Task 4, spec §5):
+	// midwifery_visit / midwifery_pe_screen via episode kehamilan person
+	// admission, person_vaccination (antigen td) via person — tanpa tabel baru.
+	kebEpisodes, err := q.ListCareEpisodesByPerson(ctx, person.ID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	for _, e := range kebEpisodes {
+		if e.MerchantID != merchantID {
+			continue
+		}
+		visits, err := q.ListAncVisitsByEpisode(ctx, e.ID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		for _, v := range visits {
+			items = append(items, timelineItem{at: v.VisitedAt.Time, data: gin.H{
+				"kind":    "midwifery_visit",
+				"at":      tsJSON(v.VisitedAt),
+				"summary": "Kunjungan ANC",
+			}})
+		}
+		screens, err := q.ListPeScreensByEpisode(ctx, e.ID)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
+		for _, s := range screens {
+			items = append(items, timelineItem{at: s.ScreenedAt.Time, data: gin.H{
+				"kind":    "midwifery_pe_screen",
+				"at":      tsJSON(s.ScreenedAt),
+				"summary": "Skrining preeklampsia: " + s.Band,
+			}})
+		}
+	}
+	vaksin, err := q.ListPersonVaksin(ctx, sqlcgen.ListPersonVaksinParams{
+		PersonID: person.ID, AntigenSlug: "td",
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	for _, v := range vaksin {
+		if v.MerchantID != merchantID {
+			continue
+		}
+		items = append(items, timelineItem{at: v.GivenDate.Time, data: gin.H{
+			"kind":    "person_vaccination",
+			"at":      dateJSON(v.GivenDate),
+			"summary": fmt.Sprintf("Vaksinasi Td dosis ke-%d", v.DosisKe),
 		}})
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].at.After(items[j].at) })
