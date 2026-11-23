@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/yogisaka/nexqia-api/internal/db/sqlcgen"
@@ -115,6 +116,16 @@ func kebCreateEpisode(c *gin.Context, q *sqlcgen.Queries, companyID, merchantID,
 		Kind: kebKind, OrdinalNo: int32(count + 1),
 	})
 	if err != nil {
+		// Partial unique uq_care_episode_active (person_id, kind) WHERE active
+		// tidak menyertakan merchant: guard GetActive (RLS per merchant) bisa
+		// melewatkan episode aktif person yang sama di merchant lain satu
+		// company → 409 pesan kontrak guard, bukan 500 (pola pgconn 23505 +
+		// ConstraintName di person.go).
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_care_episode_active" {
+			c.JSON(http.StatusConflict, gin.H{"error": "episode aktif masih ada"})
+			return sqlcgen.OperationsCareEpisode{}, sqlcgen.ClinicalMidwiferyPregnancy{}, false
+		}
 		respondInternalError(c, err)
 		return sqlcgen.OperationsCareEpisode{}, sqlcgen.ClinicalMidwiferyPregnancy{}, false
 	}

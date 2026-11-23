@@ -85,6 +85,42 @@ func TestKebidananEpisodeCreateGuardConflict(t *testing.T) {
 	}
 }
 
+// TestKebidananEpisodeCreateUniqueCrossMerchant — episode aktif person yang
+// sama di merchant LAIN satu company (insert SQL langsung, owner pool bypass
+// RLS): guard GetActive (RLS per merchant) tidak melihatnya, insert kena
+// partial unique uq_care_episode_active (person_id, kind) tanpa merchant →
+// handler harus 409 pesan kontrak, bukan 500.
+func TestKebidananEpisodeCreateUniqueCrossMerchant(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "kep9")
+	personID, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "kep9")
+
+	// Merchant kedua dalam company yang sama.
+	var merchantB string
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO core.merchant (company_id, code, name) VALUES ($1, 'kep9b', 'Keb Merchant B') RETURNING id::text",
+		companyID).Scan(&merchantB); err != nil {
+		t.Fatalf("seed merchant b: %v", err)
+	}
+	// Episode aktif person sama di merchantB (DDL 000109: kolom NOT NULL lain
+	// punya DEFAULT — status 'active', ordinal 1).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO operations.care_episode (company_id, merchant_id, person_id, kind, ordinal_no, status)
+		VALUES ($1, $2, $3, 'kehamilan', 1, 'active')`,
+		companyID, merchantB, personID); err != nil {
+		t.Fatalf("seed episode merchant b: %v", err)
+	}
+
+	// POST create di merchantA: guard lolos (RLS), insert → unique violation → 409.
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/episodes", token, companyID, merchantID,
+		kebCreateBody(admissionID, "2026-08-01", false))
+	if rec.Code != http.StatusConflict || resp["error"] != "episode aktif masih ada" {
+		t.Fatalf("cross-merchant unique = %d %v", rec.Code, resp)
+	}
+}
+
 // TestKebidananEpisodeCloseAndNew — step-2: confirm wajib (400), close+new
 // dalam satu tx (2 write): ordinal baru = 2, aktif berpindah.
 func TestKebidananEpisodeCloseAndNew(t *testing.T) {
