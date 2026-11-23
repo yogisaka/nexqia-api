@@ -28,6 +28,9 @@ const (
 	PermClinicalRecordWrite       = "clinical.record.write"
 	PermClinicalRecordCountersign = "clinical.record.countersign"
 	PermClinicalNutritionWrite    = "clinical.nutrition.write"
+	// PermClinicalMidwiferyWrite — migration 000109 (kebidanan F1; view
+	// memakai PermClinicalRecordView existing — persis pola gizi).
+	PermClinicalMidwiferyWrite = "clinical.midwifery.write"
 )
 
 func RegisterClinicalRoutes(rg *gin.RouterGroup) {
@@ -54,6 +57,8 @@ func RegisterClinicalRoutes(rg *gin.RouterGroup) {
 	RegisterGiziCareRoutes(rg)
 	// Gizi: series growth KMS + band bumil (plan 2026-11-13-gizi chunk 3 Task 1).
 	RegisterGrowthSeriesRoutes(rg)
+	// Kebidanan: episode kehamilan (plan 2026-11-22-kebidanan-anc-f1 Task 2).
+	RegisterKebidananCareRoutes(rg)
 }
 
 type clinicalSectionOption struct {
