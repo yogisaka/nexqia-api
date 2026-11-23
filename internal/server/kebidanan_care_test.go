@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -378,4 +379,266 @@ func personIDof(t *testing.T, ctx context.Context, pool *pgxpool.Pool, admission
 		t.Fatalf("read person: %v", err)
 	}
 	return personID
+}
+
+// kebNewEpisode — buat episode aktif via API untuk test Task 3 (kunjungan,
+// USG, PE); return episode id.
+func kebNewEpisode(t *testing.T, router *gin.Engine, token, companyID, merchantID, admissionID, hpht string) string {
+	t.Helper()
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/episodes", token, companyID, merchantID,
+		kebCreateBody(admissionID, hpht, false))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create episode = %d: %s", rec.Code, rec.Body.String())
+	}
+	return resp["data"].(map[string]any)["id"].(string)
+}
+
+// TestKebidananAncVisitCrud — POST kunjungan (echo field kontrak), jiwa jsonb
+// invalid → 400, GET list visited_at DESC.
+func TestKebidananAncVisitCrud(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "kea1")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "kea1")
+	episodeID := kebNewEpisode(t, router, token, companyID, merchantID, admissionID, "2026-08-01")
+
+	body := map[string]any{
+		"episode_id": episodeID, "admission_id": admissionID,
+		"tfu_cm": 12.5, "djj": 140, "presentation": "kepala", "placenta_location": "fundus",
+		"inspekulo":         map[string]any{"porsio": "normal", "vagina": "normal", "vulva": nil},
+		"tanda_bahaya":      []string{"pendarahan"},
+		"jiwa":              map[string]any{"q1": false, "q2": true, "q3": false, "q4": false, "tindak_lanjut": "edukasi"},
+		"imunisasi_lainnya": "COVID-19 dosis 1", "next_visit_date": "2026-09-15",
+	}
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/anc-visit", token, companyID, merchantID, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create visit = %d: %s", rec.Code, rec.Body.String())
+	}
+	v := resp["data"].(map[string]any)
+	if v["episode_id"] != episodeID || v["admission_id"] != admissionID || v["visited_at"] == nil ||
+		gzNum(t, v["tfu_cm"]) != 12.5 || gzNum(t, v["djj"]) != 140 ||
+		v["presentation"] != "kepala" || v["placenta_location"] != "fundus" ||
+		v["imunisasi_lainnya"] != "COVID-19 dosis 1" || v["next_visit_date"] != "2026-09-15" {
+		t.Fatalf("visit = %v", v)
+	}
+	jiwa := v["jiwa"].(map[string]any)
+	if jiwa["q2"] != true || jiwa["tindak_lanjut"] != "edukasi" {
+		t.Fatalf("jiwa = %v", jiwa)
+	}
+
+	// jiwa bentuk invalid (tindak_lanjut di luar enum) → 400.
+	bad := map[string]any{"episode_id": episodeID, "admission_id": admissionID,
+		"jiwa": map[string]any{"q1": true, "tindak_lanjut": "bogus"}}
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/anc-visit", token, companyID, merchantID, bad)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("jiwa invalid = %d: %s", rec.Code, rec.Body.String())
+	}
+	// key asing di jiwa → 400.
+	bad2 := map[string]any{"episode_id": episodeID, "admission_id": admissionID,
+		"jiwa": map[string]any{"q9": true}}
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/anc-visit", token, companyID, merchantID, bad2)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("jiwa key asing = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Kunjungan kedua + GET list (DESC: kunjungan terbaru dulu) — urutan
+	// dijamin by visited_at DESC; 2 baris.
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/anc-visit", token, companyID, merchantID,
+		map[string]any{"episode_id": episodeID, "admission_id": admissionID, "tfu_cm": 14})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("visit 2 = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/midwifery/anc-visit?episode_id="+episodeID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", rec.Code, rec.Body.String())
+	}
+	items := resp["data"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("list len = %d", len(items))
+	}
+	if gzNum(t, items[0].(map[string]any)["tfu_cm"]) != 14 ||
+		gzNum(t, items[1].(map[string]any)["tfu_cm"]) != 12.5 {
+		t.Fatalf("list order = %v", items)
+	}
+
+	// episode_id invalid → 400.
+	rec, _ = cfDo(t, router, http.MethodGet, "/api/v1/clinical/midwifery/anc-visit?episode_id=xyz", token, companyID, merchantID, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("list invalid id = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestKebidananUsg — POST USG T1 (echo biometri), GET list desc tanggal,
+// trimester invalid → 400.
+func TestKebidananUsg(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "kea2")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "kea2")
+	episodeID := kebNewEpisode(t, router, token, companyID, merchantID, admissionID, "2026-08-01")
+
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/usg", token, companyID, merchantID,
+		map[string]any{"episode_id": episodeID, "trimester": "t1", "usg_date": "2026-09-10",
+			"crl_mm": 55.2, "gs_mm": 24, "bpd_mm": 21, "hc_mm": 62, "ac_mm": 58, "fl_mm": 44, "efw_g": 480, "sdp": "normal"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create usg = %d: %s", rec.Code, rec.Body.String())
+	}
+	u := resp["data"].(map[string]any)
+	// Kontrak echo: usg_date literal, biometri number, efw_g int.
+	if u["trimester"] != "t1" || u["usg_date"] != "2026-09-10" || gzNum(t, u["crl_mm"]) != 55.2 ||
+		gzNum(t, u["hc_mm"]) != 62 || gzNum(t, u["fl_mm"]) != 44 || gzNum(t, u["efw_g"]) != 480 || u["sdp"] != "normal" {
+		t.Fatalf("usg = %v", u)
+	}
+
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/usg", token, companyID, merchantID,
+		map[string]any{"episode_id": episodeID, "trimester": "t3", "usg_date": "2026-12-20", "efw_g": 2800})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create usg t3 = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/midwifery/usg?episode_id="+episodeID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list usg = %d: %s", rec.Code, rec.Body.String())
+	}
+	items := resp["data"].([]any)
+	if len(items) != 2 || items[0].(map[string]any)["usg_date"] != "2026-12-20" ||
+		items[1].(map[string]any)["usg_date"] != "2026-09-10" {
+		t.Fatalf("list usg = %v", items)
+	}
+
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/usg", token, companyID, merchantID,
+		map[string]any{"episode_id": episodeID, "trimester": "t2", "usg_date": "2026-10-01"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("trimester t2 = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestKebidananPeScreenBand — RULE LITERAL: jumlah faktor true 0 → rendah
+// (flag false), 1 → sedang (flag true), ≥2 → tinggi (flag true); GET list
+// terbaru dulu.
+func TestKebidananPeScreenBand(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "kea3")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "kea3")
+	episodeID := kebNewEpisode(t, router, token, companyID, merchantID, admissionID, "2026-08-01")
+
+	post := func(factors map[string]bool) map[string]any {
+		return map[string]any{"episode_id": episodeID, "factors": factors}
+	}
+	// 0 faktor → rendah, rujukan_flag false.
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/pe-screen", token, companyID, merchantID,
+		post(map[string]bool{}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("pe 0 = %d: %s", rec.Code, rec.Body.String())
+	}
+	d := resp["data"].(map[string]any)
+	if d["band"] != "rendah" || d["rujukan_flag"] != false || d["screened_at"] == nil {
+		t.Fatalf("band rendah = %v", d)
+	}
+	if f := d["factors"].(map[string]any); f["primigravida"] != false {
+		t.Fatalf("factors = %v", f)
+	}
+
+	// 1 faktor → sedang, flag true.
+	rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/pe-screen", token, companyID, merchantID,
+		post(map[string]bool{"primigravida": true}))
+	if rec.Code != http.StatusCreated || resp["data"].(map[string]any)["band"] != "sedang" ||
+		resp["data"].(map[string]any)["rujukan_flag"] != true {
+		t.Fatalf("band sedang = %d %v", rec.Code, resp)
+	}
+
+	// 2 faktor → tinggi, flag true.
+	rec, resp = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/pe-screen", token, companyID, merchantID,
+		post(map[string]bool{"primigravida": true, "imt_gt30": true}))
+	if rec.Code != http.StatusCreated || resp["data"].(map[string]any)["band"] != "tinggi" ||
+		resp["data"].(map[string]any)["rujukan_flag"] != true {
+		t.Fatalf("band tinggi = %d %v", rec.Code, resp)
+	}
+
+	rec, resp = cfDo(t, router, http.MethodGet, "/api/v1/clinical/midwifery/pe-screen?episode_id="+episodeID, token, companyID, merchantID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list pe = %d: %s", rec.Code, rec.Body.String())
+	}
+	items := resp["data"].([]any)
+	if len(items) != 3 ||
+		items[0].(map[string]any)["band"] != "tinggi" ||
+		items[1].(map[string]any)["band"] != "sedang" ||
+		items[2].(map[string]any)["band"] != "rendah" {
+		t.Fatalf("list pe order = %v", items)
+	}
+
+	// factors hilang → 400.
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/pe-screen", token, companyID, merchantID,
+		map[string]any{"episode_id": episodeID})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("factors hilang = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestKebidananAncVisitPermission — write butuh clinical.midwifery.write,
+// view butuh clinical.record.view (403).
+func TestKebidananAncVisitPermission(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "kea4")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "kea4")
+	episodeID := kebNewEpisode(t, router, token, companyID, merchantID, admissionID, "2026-08-01")
+
+	viewOnly := cfSeedUserWithPerms(t, ctx, pool, router, companyID, merchantID, "kea4view", "clinical.record.view")
+	rec, _ := cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/anc-visit", viewOnly, companyID, merchantID,
+		map[string]any{"episode_id": episodeID, "admission_id": admissionID})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewOnly visit = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/pe-screen", viewOnly, companyID, merchantID,
+		map[string]any{"episode_id": episodeID, "factors": map[string]bool{}})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewOnly pe = %d: %s", rec.Code, rec.Body.String())
+	}
+	writeOnly := cfSeedUserWithPerms(t, ctx, pool, router, companyID, merchantID, "kea4write", "clinical.midwifery.write")
+	rec, _ = cfDo(t, router, http.MethodGet, "/api/v1/clinical/midwifery/anc-visit?episode_id="+episodeID, writeOnly, companyID, merchantID, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("writeOnly list visit = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec, _ = cfDo(t, router, http.MethodGet, "/api/v1/clinical/midwifery/usg?episode_id="+episodeID, writeOnly, companyID, merchantID, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("writeOnly list usg = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestKebidananAncVisitRLS — tenant silang: POST kunjungan (admission tak
+// terlihat → 404), GET visit/usg/pe episode tenant lain → 404.
+func TestKebidananAncVisitRLS(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	router := gzNewRouter(t, ctx, pool)
+	companyID, merchantID, _, token := gzSeedEnv(t, ctx, pool, router, "kea5")
+	_, admissionID := cfSeedAdmission(t, ctx, pool, router, token, companyID, merchantID, "kea5")
+	episodeID := kebNewEpisode(t, router, token, companyID, merchantID, admissionID, "2026-08-01")
+
+	companyB, merchantB, _, tokenB := gzSeedEnv(t, ctx, pool, router, fmt.Sprintf("kea5b%d", kebNext()))
+	rec, resp := cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/anc-visit", tokenB, companyB, merchantB,
+		map[string]any{"episode_id": episodeID, "admission_id": admissionID})
+	if rec.Code != http.StatusNotFound || resp["error"] != "admission tidak ditemukan" {
+		t.Fatalf("cross visit = %d %v", rec.Code, resp)
+	}
+	for _, path := range []string{
+		"/api/v1/clinical/midwifery/anc-visit?episode_id=",
+		"/api/v1/clinical/midwifery/usg?episode_id=",
+		"/api/v1/clinical/midwifery/pe-screen?episode_id=",
+	} {
+		rec, _ = cfDo(t, router, http.MethodGet, path+episodeID, tokenB, companyB, merchantB, nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("cross GET %s = %d: %s", path, rec.Code, rec.Body.String())
+		}
+	}
+	rec, _ = cfDo(t, router, http.MethodPost, "/api/v1/clinical/midwifery/pe-screen", tokenB, companyB, merchantB,
+		map[string]any{"episode_id": episodeID, "factors": map[string]bool{}})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross pe = %d: %s", rec.Code, rec.Body.String())
+	}
 }

@@ -31,6 +31,13 @@ func RegisterKebidananCareRoutes(rg *gin.RouterGroup) {
 	rg.PATCH("/clinical/midwifery/episode/:id", UpdateKebidananEpisodeHandler)
 	rg.POST("/clinical/midwifery/episode/:id/close", CloseKebidananEpisodeHandler)
 	rg.GET("/clinical/midwifery/episodes", AccessLog("midwifery_episode", "view", "person_id"), ListKebidananEpisodesHandler)
+	// Task 3: kunjungan ANC, USG, skrining PE.
+	rg.POST("/clinical/midwifery/anc-visit", CreateAncVisitHandler)
+	rg.GET("/clinical/midwifery/anc-visit", ListAncVisitsHandler)
+	rg.POST("/clinical/midwifery/usg", CreateKebidananUsgHandler)
+	rg.GET("/clinical/midwifery/usg", ListKebidananUsgHandler)
+	rg.POST("/clinical/midwifery/pe-screen", CreatePeScreenHandler)
+	rg.GET("/clinical/midwifery/pe-screen", ListPeScreensHandler)
 }
 
 type createKebidananEpisodeRequest struct {
@@ -629,6 +636,475 @@ func ListKebidananEpisodesHandler(c *gin.Context) {
 			"started_at": tsJSON(r.StartedAt), "closed_at": tsJSON(r.ClosedAt),
 			"kunjungan_count": len(visits), "outcome": outcome,
 		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+// ---- Task 3: kunjungan ANC, USG, skrining PE (spec §5, pola gizi_care) ----
+
+type createAncVisitRequest struct {
+	EpisodeID        string          `json:"episode_id" binding:"required"`
+	AdmissionID      string          `json:"admission_id" binding:"required"`
+	TfuCm            *float64        `json:"tfu_cm"`
+	Djj              *int            `json:"djj"`
+	Presentation     *string         `json:"presentation"`
+	PlacentaLocation *string         `json:"placenta_location"`
+	Inspekulo        json.RawMessage `json:"inspekulo"`
+	TandaBahaya      json.RawMessage `json:"tanda_bahaya"`
+	Jiwa             json.RawMessage `json:"jiwa"`
+	ImunisasiLainnya *string         `json:"imunisasi_lainnya"`
+	NextVisitDate    *string         `json:"next_visit_date"`
+}
+
+// kebValidJSON menolak jsonb request yang bukan JSON valid.
+func kebValidJSON(raw json.RawMessage) bool {
+	return len(raw) == 0 || json.Valid(raw)
+}
+
+// kebValidateJiwa — kontrak Task 3 step 1: bentuk jiwa = {q1..q4:bool,
+// tindak_lanjut ∈ 'edukasi','konseling','rujukan', null}; key lain ditolak.
+func kebValidateJiwa(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	tl := map[string]bool{"edukasi": true, "konseling": true, "rujukan": true}
+	for k, v := range m {
+		switch {
+		case k == "q1" || k == "q2" || k == "q3" || k == "q4":
+			if _, ok := v.(bool); !ok {
+				return false
+			}
+		case k == "tindak_lanjut":
+			if v == nil {
+				continue
+			}
+			s, ok := v.(string)
+			if !ok || !tl[s] {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// kebVisitJSON — snake_case (pola kebEpisodeJSON).
+func kebVisitJSON(v sqlcgen.ClinicalMidwiferyAncVisit) gin.H {
+	return gin.H{
+		"id": uuidJSON(v.ID), "episode_id": uuidJSON(v.CareEpisodeID),
+		"admission_id": uuidJSON(v.AdmissionID), "visited_at": tsJSON(v.VisitedAt),
+		"tfu_cm": numericJSON(v.TfuCm), "djj": intText(v.Djj),
+		"presentation": textJSON(v.Presentation), "placenta_location": textJSON(v.PlacentaLocation),
+		"inspekulo": json.RawMessage(v.Inspekulo), "tanda_bahaya": json.RawMessage(v.TandaBahaya), "jiwa": json.RawMessage(v.Jiwa),
+		"imunisasi_lainnya": textJSON(v.ImunisasiLainnya), "next_visit_date": dateJSON(v.NextVisitDate),
+		"row_version": v.RowVersion,
+	}
+}
+
+// CreateAncVisitHandler godoc
+// @Summary Record one ANC visit (kunjungan) of a pregnancy episode
+// @Tags clinical
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param request body createAncVisitRequest true "Visit data"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Failure 409 {object} apiErrorResponse
+// @Router /clinical/midwifery/anc-visit [post]
+func CreateAncVisitHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalMidwiferyWrite, merchantID) {
+		return
+	}
+	var req createAncVisitRequest
+	if !bindJSONOrFields(c, &req) {
+		return
+	}
+	episodeID, okE := parseUUID(req.EpisodeID)
+	if !okE {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode_id"})
+		return
+	}
+	admissionID, okA := parseUUID(req.AdmissionID)
+	if !okA {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid admission_id"})
+		return
+	}
+	// Bentuk jsonb (kontrak): jiwa keys literal q1..q4 + tindak_lanjut.
+	if !kebValidateJiwa(req.Jiwa) || !kebValidJSON(req.Inspekulo) || !kebValidJSON(req.TandaBahaya) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bentuk jsonb tidak valid"})
+		return
+	}
+	if req.Presentation != nil && *req.Presentation != "kepala" && *req.Presentation != "sungsang" &&
+		*req.Presentation != "melintang" && *req.Presentation != "belumdapat" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "presentation tidak valid"})
+		return
+	}
+	if req.PlacentaLocation != nil && *req.PlacentaLocation != "fundus" && *req.PlacentaLocation != "corpus" &&
+		*req.PlacentaLocation != "letak_rendah" && *req.PlacentaLocation != "previa" &&
+		*req.PlacentaLocation != "belumdapat" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "placenta_location tidak valid"})
+		return
+	}
+	var nextVisit pgtype.Date
+	if req.NextVisitDate != nil {
+		t, err := time.Parse("2006-01-02", *req.NextVisitDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "next_visit_date tidak valid"})
+			return
+		}
+		nextVisit = pgtype.Date{Time: t, Valid: true}
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	admission, okAd := giziAdmission(c, q, merchantID, admissionID)
+	if !okAd {
+		return
+	}
+	ep, okEp := kebEpisodeByID(c, merchantID, episodeID)
+	if !okEp {
+		return
+	}
+	// Kontrak: episode milik person admission (mismatch → 409).
+	if ep.PersonID != admission.PersonID {
+		c.JSON(http.StatusConflict, gin.H{"error": "episode bukan milik person admission"})
+		return
+	}
+	visit, err := q.CreateAncVisit(c.Request.Context(), sqlcgen.CreateAncVisitParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID,
+		CareEpisodeID: episodeID, AdmissionID: admissionID,
+		VisitedAt:        pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		TfuCm:            numericFromFloat(req.TfuCm),
+		Djj:              kebIntPtr(req.Djj),
+		Presentation:     kebTextPtr(req.Presentation),
+		PlacentaLocation: kebTextPtr(req.PlacentaLocation),
+		Inspekulo:        req.Inspekulo, TandaBahaya: req.TandaBahaya, Jiwa: req.Jiwa,
+		ImunisasiLainnya: kebTextPtr(req.ImunisasiLainnya), NextVisitDate: nextVisit,
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": kebVisitJSON(visit), "meta": gin.H{}})
+}
+
+// ListAncVisitsHandler godoc
+// @Summary ANC visits of an episode (visited_at DESC)
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param episode_id query string true "Care episode UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /clinical/midwifery/anc-visit [get]
+func ListAncVisitsHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalRecordView, merchantID) {
+		return
+	}
+	episodeID, okID := parseUUID(c.Query("episode_id"))
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode_id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	if _, okEp := kebEpisodeByID(c, merchantID, episodeID); !okEp {
+		return
+	}
+	rows, err := q.ListAncVisitsByEpisode(c.Request.Context(), episodeID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		data = append(data, kebVisitJSON(r))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+type createKebidananUsgRequest struct {
+	EpisodeID string   `json:"episode_id" binding:"required"`
+	Trimester string   `json:"trimester" binding:"required"`
+	UsgDate   string   `json:"usg_date" binding:"required"`
+	CrlMm     *float64 `json:"crl_mm"`
+	GsMm      *float64 `json:"gs_mm"`
+	BpdMm     *float64 `json:"bpd_mm"`
+	HcMm      *float64 `json:"hc_mm"`
+	AcMm      *float64 `json:"ac_mm"`
+	FlMm      *float64 `json:"fl_mm"`
+	EfwG      *int     `json:"efw_g"`
+	Sdp       *string  `json:"sdp"`
+}
+
+func kebUsgJSON(u sqlcgen.ClinicalMidwiferyUsg) gin.H {
+	return gin.H{
+		"id": uuidJSON(u.ID), "episode_id": uuidJSON(u.CareEpisodeID),
+		"trimester": u.Trimester, "usg_date": dateJSON(u.UsgDate),
+		"crl_mm": numericJSON(u.CrlMm), "gs_mm": numericJSON(u.GsMm),
+		"bpd_mm": numericJSON(u.BpdMm), "hc_mm": numericJSON(u.HcMm),
+		"ac_mm": numericJSON(u.AcMm), "fl_mm": numericJSON(u.FlMm),
+		"efw_g": intText(u.EfwG), "sdp": textJSON(u.Sdp), "row_version": u.RowVersion,
+	}
+}
+
+// CreateKebidananUsgHandler godoc
+// @Summary Record one USG examination of a pregnancy episode
+// @Tags clinical
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param request body createKebidananUsgRequest true "USG data"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /clinical/midwifery/usg [post]
+func CreateKebidananUsgHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalMidwiferyWrite, merchantID) {
+		return
+	}
+	var req createKebidananUsgRequest
+	if !bindJSONOrFields(c, &req) {
+		return
+	}
+	episodeID, okID := parseUUID(req.EpisodeID)
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode_id"})
+		return
+	}
+	if req.Trimester != "t1" && req.Trimester != "t3" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "trimester tidak valid"})
+		return
+	}
+	usgDate, err := time.Parse("2006-01-02", req.UsgDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "usg_date tidak valid"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	if _, okEp := kebEpisodeByID(c, merchantID, episodeID); !okEp {
+		return
+	}
+	usg, err := q.CreateMidwiferyUsg(c.Request.Context(), sqlcgen.CreateMidwiferyUsgParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID, CareEpisodeID: episodeID,
+		Trimester: req.Trimester, UsgDate: pgtype.Date{Time: usgDate, Valid: true},
+		CrlMm: numericFromFloat(req.CrlMm), GsMm: numericFromFloat(req.GsMm),
+		BpdMm: numericFromFloat(req.BpdMm), HcMm: numericFromFloat(req.HcMm),
+		AcMm: numericFromFloat(req.AcMm), FlMm: numericFromFloat(req.FlMm),
+		EfwG: kebIntPtr(req.EfwG), Sdp: kebTextPtr(req.Sdp),
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": kebUsgJSON(usg), "meta": gin.H{}})
+}
+
+// ListKebidananUsgHandler godoc
+// @Summary USG records of an episode (usg_date DESC)
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param episode_id query string true "Care episode UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /clinical/midwifery/usg [get]
+func ListKebidananUsgHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalRecordView, merchantID) {
+		return
+	}
+	episodeID, okID := parseUUID(c.Query("episode_id"))
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode_id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	if _, okEp := kebEpisodeByID(c, merchantID, episodeID); !okEp {
+		return
+	}
+	rows, err := q.ListUsgByEpisode(c.Request.Context(), episodeID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		data = append(data, kebUsgJSON(r))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
+}
+
+// kebPeFactors — 5 faktor literal Task 1 (spec §4.4). Missing key = false.
+type kebPeFactors struct {
+	Primigravida      *bool `json:"primigravida"`
+	JarakGt10Th       *bool `json:"jarak_gt10th"`
+	RiwayatPeKeluarga *bool `json:"riwayat_pe_keluarga"`
+	ImtGt30           *bool `json:"imt_gt30"`
+	Multipel          *bool `json:"multipel"`
+}
+
+type createPeScreenRequest struct {
+	EpisodeID string        `json:"episode_id" binding:"required"`
+	Factors   *kebPeFactors `json:"factors"`
+}
+
+func (f *kebPeFactors) countTrue() int {
+	n := 0
+	for _, b := range []*bool{f.Primigravida, f.JarakGt10Th, f.RiwayatPeKeluarga, f.ImtGt30, f.Multipel} {
+		if b != nil && *b {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *kebPeFactors) json() []byte {
+	out, _ := json.Marshal(map[string]bool{
+		"primigravida":        f.Primigravida != nil && *f.Primigravida,
+		"jarak_gt10th":        f.JarakGt10Th != nil && *f.JarakGt10Th,
+		"riwayat_pe_keluarga": f.RiwayatPeKeluarga != nil && *f.RiwayatPeKeluarga,
+		"imt_gt30":            f.ImtGt30 != nil && *f.ImtGt30,
+		"multipel":            f.Multipel != nil && *f.Multipel,
+	})
+	return out
+}
+
+// kebPeBand — RULE LITERAL kontrak Task 3 step 3: 0 faktor = 'rendah',
+// 1 = 'sedang', ≥2 = 'tinggi'; rujukan_flag = band != 'rendah'.
+func kebPeBand(n int) string {
+	switch {
+	case n >= 2:
+		return "tinggi"
+	case n == 1:
+		return "sedang"
+	default:
+		return "rendah"
+	}
+}
+
+func kebPeScreenJSON(s sqlcgen.ClinicalMidwiferyPeScreen) gin.H {
+	var factors map[string]bool
+	_ = json.Unmarshal(s.Factors, &factors)
+	return gin.H{
+		"id": uuidJSON(s.ID), "episode_id": uuidJSON(s.CareEpisodeID),
+		"screened_at": tsJSON(s.ScreenedAt), "factors": factors,
+		"band": s.Band, "rujukan_flag": s.RujukanFlag, "row_version": s.RowVersion,
+	}
+}
+
+// CreatePeScreenHandler godoc
+// @Summary PE risk screening of a pregnancy episode (band computed server-side)
+// @Tags clinical
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param request body createPeScreenRequest true "Screening factors"
+// @Success 201 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /clinical/midwifery/pe-screen [post]
+func CreatePeScreenHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalMidwiferyWrite, merchantID) {
+		return
+	}
+	var req createPeScreenRequest
+	if !bindJSONOrFields(c, &req) {
+		return
+	}
+	episodeID, okID := parseUUID(req.EpisodeID)
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode_id"})
+		return
+	}
+	if req.Factors == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "factors wajib"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	if _, okEp := kebEpisodeByID(c, merchantID, episodeID); !okEp {
+		return
+	}
+	n := req.Factors.countTrue()
+	band := kebPeBand(n)
+	screen, err := q.CreatePeScreen(c.Request.Context(), sqlcgen.CreatePeScreenParams{
+		CompanyID: AuthCompanyID(c), MerchantID: merchantID, CareEpisodeID: episodeID,
+		ScreenedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		Factors:    req.Factors.json(), Band: band, RujukanFlag: band != "rendah",
+	})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": kebPeScreenJSON(screen), "meta": gin.H{}})
+}
+
+// ListPeScreensHandler godoc
+// @Summary PE screenings of an episode (screened_at DESC)
+// @Tags clinical
+// @Produce json
+// @Security BearerAuth
+// @Param X-Merchant-ID header string true "Active merchant UUID"
+// @Param episode_id query string true "Care episode UUID"
+// @Success 200 {object} apiResponse
+// @Failure 400 {object} apiErrorResponse
+// @Failure 404 {object} apiErrorResponse
+// @Router /clinical/midwifery/pe-screen [get]
+func ListPeScreensHandler(c *gin.Context) {
+	merchantID, ok := requireMerchantHeader(c)
+	if !ok {
+		return
+	}
+	if !RequirePermissionForMerchant(c, PermClinicalRecordView, merchantID) {
+		return
+	}
+	episodeID, okID := parseUUID(c.Query("episode_id"))
+	if !okID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid episode_id"})
+		return
+	}
+	q := sqlcgen.New(TxFromContext(c))
+	if _, okEp := kebEpisodeByID(c, merchantID, episodeID); !okEp {
+		return
+	}
+	rows, err := q.ListPeScreensByEpisode(c.Request.Context(), episodeID)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		data = append(data, kebPeScreenJSON(r))
 	}
 	c.JSON(http.StatusOK, gin.H{"data": data, "meta": gin.H{}})
 }
