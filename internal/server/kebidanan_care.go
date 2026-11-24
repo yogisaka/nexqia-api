@@ -1139,7 +1139,7 @@ type createPersonVaccinationRequest struct {
 
 // kebVaksinSchedule — ref.immunization_schedule rows of one antigen for
 // kategori 'ibu_hamil' ordered by dosis_ke (seed migration 000109: Td 1–5).
-func kebVaksinSchedule(c *gin.Context, q *sqlcgen.Queries, antigen string) ([]sqlcgen.RefImmunizationSchedule, bool) {
+func kebVaksinSchedule(c *gin.Context, q *sqlcgen.Queries, antigen string) ([]sqlcgen.GetImmunizationScheduleRow, bool) {
 	rows, err := q.GetImmunizationSchedule(c.Request.Context(), sqlcgen.GetImmunizationScheduleParams{
 		AntigenSlug: antigen, Kategori: "ibu_hamil",
 	})
@@ -1154,7 +1154,7 @@ func kebVaksinSchedule(c *gin.Context, q *sqlcgen.Queries, antigen string) ([]sq
 // protect_until = year(given_date)+masa_perlindungan_tahun(N); riwayat kosong
 // → 'belum_lengkap' + next.dosis_ke=1. next (jika jadwal punya dosis N+1) =
 // {dosis_ke, min_date = last.given_date + interval_hari(N+1)}.
-func kebVaksinBand(rows []sqlcgen.ClinicalPersonRiwayatVaksin, sched []sqlcgen.RefImmunizationSchedule) gin.H {
+func kebVaksinBand(rows []sqlcgen.ClinicalPersonRiwayatVaksin, sched []sqlcgen.GetImmunizationScheduleRow) gin.H {
 	band := gin.H{"status": "belum_lengkap", "protect_until": nil, "next": nil}
 	if len(rows) == 0 {
 		band["next"] = gin.H{"dosis_ke": 1, "min_date": nil}
@@ -1166,7 +1166,7 @@ func kebVaksinBand(rows []sqlcgen.ClinicalPersonRiwayatVaksin, sched []sqlcgen.R
 			last = r
 		}
 	}
-	var cur sqlcgen.RefImmunizationSchedule
+	var cur sqlcgen.GetImmunizationScheduleRow
 	for _, s := range sched {
 		if s.DosisKe == last.DosisKe {
 			cur = s
@@ -1248,7 +1248,7 @@ func CreatePersonVaccinationHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !RequirePermissionForMerchant(c, PermClinicalMidwiferyWrite, merchantID) {
+	if !RequireAnyPermissionForMerchant(c, merchantID, PermClinicalMidwiferyWrite, PermClinicalNutritionWrite) {
 		return
 	}
 	var req createPersonVaccinationRequest
@@ -1274,7 +1274,8 @@ func CreatePersonVaccinationHandler(c *gin.Context) {
 		return
 	}
 	q := sqlcgen.New(TxFromContext(c))
-	if _, okP := kebPersonByCompany(c, q, personID); !okP {
+	person, okP := kebPersonByCompany(c, q, personID)
+	if !okP {
 		return
 	}
 	sched, okS := kebVaksinSchedule(c, q, req.AntigenSlug)
@@ -1290,11 +1291,48 @@ func CreatePersonVaccinationHandler(c *gin.Context) {
 		return
 	}
 	dosisKe := int32(len(rows) + 1)
+	// Guard A2 (a) anti-ngarang: pasangan antigen+dosis hasil resolusi HARUS
+	// ada di ref.immunization_schedule kategori/source_version apa pun — 422
+	// SEBELUM write pertama (respons ≥400 auto-rollback ambient tx).
+	known, err := q.ExistsImmunizationScheduleDosis(c.Request.Context(),
+		sqlcgen.ExistsImmunizationScheduleDosisParams{AntigenSlug: req.AntigenSlug, DosisKe: dosisKe})
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if !known {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "antigen/dosis tidak ada di jadwal program"})
+		return
+	}
+	// Guard A2 (b) lebih-cepat: baris jadwal match GLOBAL — pasangan
+	// antigen_slug body + dosis_ke hasil resolusi ordinal, lintas kategori
+	// (ListProgramImmunizationSchedule, ORDER BY antigen_slug, dosis_ke) —
+	// BUKAN sched ibu_hamil (antigen program A2 tidak ada di situ). Match
+	// ber-usia_min_bln NOT NULL dan usia_bln(given_date) < usia_min_bln →
+	// 422. usia_min NULL (Td ibu_hamil) atau tanpa match → lolos guard ini.
+	progSched, err := q.ListProgramImmunizationSchedule(c.Request.Context())
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	for _, s := range progSched {
+		if s.AntigenSlug != req.AntigenSlug || s.DosisKe != dosisKe {
+			continue
+		}
+		if s.UsiaMinBln.Valid && person.BirthDate.Valid {
+			givenBln := imunPersonMonths(givenDate, person.BirthDate.Time)
+			if givenBln < int(s.UsiaMinBln.Int32) {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "imunisasi tidak boleh diberikan lebih cepat dari jadwal"})
+				return
+			}
+		}
+		break
+	}
 	if len(rows) > 0 {
 		// Guard keras interval (spec §5): given_date < last.given_date +
 		// interval_hari(dosis_ke) → 422, TIDAK tersimpan (respons ≥400
 		// auto-rollback ambient RunRequestTx).
-		var cur sqlcgen.RefImmunizationSchedule
+		var cur sqlcgen.GetImmunizationScheduleRow
 		for _, s := range sched {
 			if s.DosisKe == dosisKe {
 				cur = s
