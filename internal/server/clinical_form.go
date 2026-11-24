@@ -59,6 +59,8 @@ func RegisterClinicalRoutes(rg *gin.RouterGroup) {
 	RegisterGrowthSeriesRoutes(rg)
 	// Kebidanan: episode kehamilan (plan 2026-11-22-kebidanan-anc-f1 Task 2).
 	RegisterKebidananCareRoutes(rg)
+	// Imunisasi anak per jenjang (plan 2026-11-24-anak-a2-imunisasi Task 2).
+	RegisterImunisasiRoutes(rg)
 }
 
 type clinicalSectionOption struct {

@@ -1255,10 +1255,9 @@ func CreatePersonVaccinationHandler(c *gin.Context) {
 	if !bindJSONOrFields(c, &req) {
 		return
 	}
-	if req.AntigenSlug != "td" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "antigen_slug hanya td"})
-		return
-	}
+	// Gate antigen F1 `hanya td` DIHAPUS (plan 2026-11-24-anak-a2-imunisasi
+	// Task 3, spec §5.2): guard A2 (a) ExistsImmunizationScheduleDosis di
+	// bawah mengambil alih penolakan antigen/dosis di luar jadwal program.
 	if req.Tempat != "faskes_ini" && req.Tempat != "luar" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "tempat tidak valid"})
 		return
