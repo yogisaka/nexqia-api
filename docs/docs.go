@@ -3992,6 +3992,738 @@ const docTemplate = `{
                 }
             }
         },
+        "/clinical/immunization/status": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Mesin status spec §4: diberikan/na/terjadwal/telat/lewat_masa per dosis + agregat + berikutnya; status = properti person (episode gizi aktif tidak disyaratkan).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Immunization schedule status of an admission's person (server-computed)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Admission UUID",
+                        "name": "admission_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/midwifery/anc-summary": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Untuk tab Gizi (G4Bumil G4AncData): pregnancy aktif + latest visit + latest USG; tanpa episode aktif → 200 semua null.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "ANC summary read-model of a person's active pregnancy (all null-able)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "person_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/midwifery/anc-visit": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "ANC visits of an episode (visited_at DESC)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Care episode UUID",
+                        "name": "episode_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Record one ANC visit (kunjungan) of a pregnancy episode",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Visit data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createAncVisitRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/midwifery/episode": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Active pregnancy episode of an admission's person (null bila kosong)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Admission UUID",
+                        "name": "admission_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/midwifery/episode/{id}": {
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Patch pregnancy fields (row_version optimistic; HPL recompute)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Care episode UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Pregnancy patch",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.updateKebidananEpisodeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/midwifery/episode/{id}/close": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Close a pregnancy episode (step-2 confirm) + optional new pregnancy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Care episode UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Close payload",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.closeKebidananEpisodeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/midwifery/episodes": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Pregnancy episode history of one person (riwayat, desc ordinal)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "person_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Open a pregnancy (kehamilan) episode for an admission's person",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Episode data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createKebidananEpisodeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/midwifery/pe-screen": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "PE screenings of an episode (screened_at DESC)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Care episode UUID",
+                        "name": "episode_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "PE risk screening of a pregnancy episode (band computed server-side)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Screening factors",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createPeScreenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/midwifery/usg": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "USG records of an episode (usg_date DESC)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Care episode UUID",
+                        "name": "episode_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Record one USG examination of a pregnancy episode",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "USG data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createKebidananUsgRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/clinical/nutrition-episode": {
             "get": {
                 "security": [
@@ -4577,6 +5309,172 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/person-growth-context": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Upsert the small-baby growth context (BBL + gestational age)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Growth context data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createGiziGrowthContextRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/clinical/person-vaccination": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Td vaccination history of a person + protection band (server)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Person UUID",
+                        "name": "person_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Antigen slug (td)",
+                        "name": "antigen",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "dosis_ke = ordinal berikutnya dari riwayat person+antigen; given_date \u003c last.given_date + interval_hari → 422 tanpa tersimpan (spec §5).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "clinical"
+                ],
+                "summary": "Record one Td vaccination of a person (dosis_ke computed server-side)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Active merchant UUID",
+                        "name": "X-Merchant-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Vaccination data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.createPersonVaccinationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
                         "schema": {
                             "$ref": "#/definitions/server.apiErrorResponse"
                         }
@@ -15357,6 +16255,12 @@ const docTemplate = `{
                         "description": "umum|bpjs|asuransi",
                         "name": "service_type",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Admission UUID (filter via media_link)",
+                        "name": "admission_id",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -22487,6 +23391,17 @@ const docTemplate = `{
                 }
             }
         },
+        "server.closeKebidananEpisodeRequest": {
+            "type": "object",
+            "properties": {
+                "confirm": {
+                    "type": "boolean"
+                },
+                "new_pregnancy": {
+                    "$ref": "#/definitions/server.newPregnancyRequest"
+                }
+            }
+        },
         "server.consentInput": {
             "type": "object",
             "properties": {
@@ -22702,6 +23617,9 @@ const docTemplate = `{
                 }
             }
         },
+        "server.createAncVisitRequest": {
+            "type": "object"
+        },
         "server.createAppUserRequest": {
             "type": "object",
             "required": [
@@ -22869,6 +23787,27 @@ const docTemplate = `{
         },
         "server.createGiziAnthropometryRequest": {
             "type": "object"
+        },
+        "server.createGiziGrowthContextRequest": {
+            "type": "object",
+            "required": [
+                "bbl_kg",
+                "person_id"
+            ],
+            "properties": {
+                "bbl_kg": {
+                    "type": "number"
+                },
+                "person_id": {
+                    "type": "string"
+                },
+                "source_ref": {
+                    "type": "string"
+                },
+                "usia_gestasi_mgg": {
+                    "type": "integer"
+                }
+            }
         },
         "server.createGiziNutritionEpisodeRequest": {
             "type": "object"
@@ -23043,6 +23982,82 @@ const docTemplate = `{
                 }
             }
         },
+        "server.createKebidananEpisodeRequest": {
+            "type": "object",
+            "required": [
+                "admission_id",
+                "hpht"
+            ],
+            "properties": {
+                "abortus": {
+                    "type": "integer"
+                },
+                "admission_id": {
+                    "type": "string"
+                },
+                "close_active": {
+                    "type": "boolean"
+                },
+                "gravida": {
+                    "type": "integer"
+                },
+                "hpht": {
+                    "type": "string"
+                },
+                "jarak_kehamilan_th": {
+                    "type": "integer"
+                },
+                "para": {
+                    "type": "integer"
+                },
+                "riwayat_persalinan": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.createKebidananUsgRequest": {
+            "type": "object",
+            "required": [
+                "episode_id",
+                "trimester",
+                "usg_date"
+            ],
+            "properties": {
+                "ac_mm": {
+                    "type": "number"
+                },
+                "bpd_mm": {
+                    "type": "number"
+                },
+                "crl_mm": {
+                    "type": "number"
+                },
+                "efw_g": {
+                    "type": "integer"
+                },
+                "episode_id": {
+                    "type": "string"
+                },
+                "fl_mm": {
+                    "type": "number"
+                },
+                "gs_mm": {
+                    "type": "number"
+                },
+                "hc_mm": {
+                    "type": "number"
+                },
+                "sdp": {
+                    "type": "string"
+                },
+                "trimester": {
+                    "type": "string"
+                },
+                "usg_date": {
+                    "type": "string"
+                }
+            }
+        },
         "server.createLocationRequest": {
             "type": "object",
             "required": [
@@ -23171,6 +24186,20 @@ const docTemplate = `{
                 }
             }
         },
+        "server.createPeScreenRequest": {
+            "type": "object",
+            "required": [
+                "episode_id"
+            ],
+            "properties": {
+                "episode_id": {
+                    "type": "string"
+                },
+                "factors": {
+                    "$ref": "#/definitions/server.kebPeFactors"
+                }
+            }
+        },
         "server.createPersonConsentRequest": {
             "type": "object",
             "required": [
@@ -23189,6 +24218,38 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "text_version": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.createPersonVaccinationRequest": {
+            "type": "object",
+            "required": [
+                "antigen_slug",
+                "given_date",
+                "person_id",
+                "tempat"
+            ],
+            "properties": {
+                "antigen_slug": {
+                    "type": "string"
+                },
+                "given_date": {
+                    "type": "string"
+                },
+                "no_batch": {
+                    "type": "string"
+                },
+                "pemberi": {
+                    "type": "string"
+                },
+                "person_id": {
+                    "type": "string"
+                },
+                "tempat": {
+                    "type": "string"
+                },
+                "tempat_keterangan": {
                     "type": "string"
                 }
             }
@@ -24025,6 +25086,26 @@ const docTemplate = `{
                 }
             }
         },
+        "server.kebPeFactors": {
+            "type": "object",
+            "properties": {
+                "imt_gt30": {
+                    "type": "boolean"
+                },
+                "jarak_gt10th": {
+                    "type": "boolean"
+                },
+                "multipel": {
+                    "type": "boolean"
+                },
+                "primigravida": {
+                    "type": "boolean"
+                },
+                "riwayat_pe_keluarga": {
+                    "type": "boolean"
+                }
+            }
+        },
         "server.loginRequest": {
             "type": "object",
             "required": [
@@ -24163,6 +25244,32 @@ const docTemplate = `{
             ],
             "properties": {
                 "format": {
+                    "type": "string"
+                }
+            }
+        },
+        "server.newPregnancyRequest": {
+            "type": "object",
+            "required": [
+                "hpht"
+            ],
+            "properties": {
+                "abortus": {
+                    "type": "integer"
+                },
+                "gravida": {
+                    "type": "integer"
+                },
+                "hpht": {
+                    "type": "string"
+                },
+                "jarak_kehamilan_th": {
+                    "type": "integer"
+                },
+                "para": {
+                    "type": "integer"
+                },
+                "riwayat_persalinan": {
                     "type": "string"
                 }
             }
@@ -26131,6 +27238,39 @@ const docTemplate = `{
                 },
                 "kfa_packaging_code": {
                     "type": "string"
+                }
+            }
+        },
+        "server.updateKebidananEpisodeRequest": {
+            "type": "object",
+            "properties": {
+                "abortus": {
+                    "type": "integer"
+                },
+                "gravida": {
+                    "type": "integer"
+                },
+                "hpht": {
+                    "type": "string"
+                },
+                "jarak_kehamilan_th": {
+                    "type": "integer"
+                },
+                "para": {
+                    "type": "integer"
+                },
+                "riwayat_persalinan": {
+                    "type": "string"
+                },
+                "row_version": {
+                    "description": "Pointer + cek manual: row_version awal baris baru = 0 (trg_touch_row\nhanya menaikkan pada UPDATE) — binding \"required\" akan menolak 0.",
+                    "type": "integer"
+                },
+                "uk_source": {
+                    "type": "string"
+                },
+                "uk_usg_t1_weeks": {
+                    "type": "number"
                 }
             }
         },

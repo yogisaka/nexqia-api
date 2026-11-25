@@ -191,6 +191,13 @@ definitions:
     required:
     - status
     type: object
+  server.closeKebidananEpisodeRequest:
+    properties:
+      confirm:
+        type: boolean
+      new_pregnancy:
+        $ref: '#/definitions/server.newPregnancyRequest'
+    type: object
   server.consentInput:
     properties:
       method:
@@ -339,6 +346,8 @@ definitions:
     - department_id
     - person_id
     type: object
+  server.createAncVisitRequest:
+    type: object
   server.createAppUserRequest:
     properties:
       company_id:
@@ -452,6 +461,20 @@ definitions:
         type: string
     type: object
   server.createGiziAnthropometryRequest:
+    type: object
+  server.createGiziGrowthContextRequest:
+    properties:
+      bbl_kg:
+        type: number
+      person_id:
+        type: string
+      source_ref:
+        type: string
+      usia_gestasi_mgg:
+        type: integer
+    required:
+    - bbl_kg
+    - person_id
     type: object
   server.createGiziNutritionEpisodeRequest:
     type: object
@@ -569,6 +592,57 @@ definitions:
     - factor
     - unit_id
     type: object
+  server.createKebidananEpisodeRequest:
+    properties:
+      abortus:
+        type: integer
+      admission_id:
+        type: string
+      close_active:
+        type: boolean
+      gravida:
+        type: integer
+      hpht:
+        type: string
+      jarak_kehamilan_th:
+        type: integer
+      para:
+        type: integer
+      riwayat_persalinan:
+        type: string
+    required:
+    - admission_id
+    - hpht
+    type: object
+  server.createKebidananUsgRequest:
+    properties:
+      ac_mm:
+        type: number
+      bpd_mm:
+        type: number
+      crl_mm:
+        type: number
+      efw_g:
+        type: integer
+      episode_id:
+        type: string
+      fl_mm:
+        type: number
+      gs_mm:
+        type: number
+      hc_mm:
+        type: number
+      sdp:
+        type: string
+      trimester:
+        type: string
+      usg_date:
+        type: string
+    required:
+    - episode_id
+    - trimester
+    - usg_date
+    type: object
   server.createLocationRequest:
     properties:
       capacity:
@@ -656,6 +730,15 @@ definitions:
     - name
     - payer_type
     type: object
+  server.createPeScreenRequest:
+    properties:
+      episode_id:
+        type: string
+      factors:
+        $ref: '#/definitions/server.kebPeFactors'
+    required:
+    - episode_id
+    type: object
   server.createPersonConsentRequest:
     properties:
       consent_type:
@@ -670,6 +753,28 @@ definitions:
     - consent_type
     - method
     - text_version
+    type: object
+  server.createPersonVaccinationRequest:
+    properties:
+      antigen_slug:
+        type: string
+      given_date:
+        type: string
+      no_batch:
+        type: string
+      pemberi:
+        type: string
+      person_id:
+        type: string
+      tempat:
+        type: string
+      tempat_keterangan:
+        type: string
+    required:
+    - antigen_slug
+    - given_date
+    - person_id
+    - tempat
     type: object
   server.createPhysicianLeaveRequest:
     properties:
@@ -1237,6 +1342,19 @@ definitions:
       strength_unit:
         type: string
     type: object
+  server.kebPeFactors:
+    properties:
+      imt_gt30:
+        type: boolean
+      jarak_gt10th:
+        type: boolean
+      multipel:
+        type: boolean
+      primigravida:
+        type: boolean
+      riwayat_pe_keluarga:
+        type: boolean
+    type: object
   server.loginRequest:
     properties:
       password:
@@ -1330,6 +1448,23 @@ definitions:
         type: string
     required:
     - format
+    type: object
+  server.newPregnancyRequest:
+    properties:
+      abortus:
+        type: integer
+      gravida:
+        type: integer
+      hpht:
+        type: string
+      jarak_kehamilan_th:
+        type: integer
+      para:
+        type: integer
+      riwayat_persalinan:
+        type: string
+    required:
+    - hpht
     type: object
   server.openedContainerRequest:
     properties:
@@ -2661,6 +2796,30 @@ definitions:
         type: boolean
       kfa_packaging_code:
         type: string
+    type: object
+  server.updateKebidananEpisodeRequest:
+    properties:
+      abortus:
+        type: integer
+      gravida:
+        type: integer
+      hpht:
+        type: string
+      jarak_kehamilan_th:
+        type: integer
+      para:
+        type: integer
+      riwayat_persalinan:
+        type: string
+      row_version:
+        description: |-
+          Pointer + cek manual: row_version awal baris baru = 0 (trg_touch_row
+          hanya menaikkan pada UPDATE) — binding "required" akan menolak 0.
+        type: integer
+      uk_source:
+        type: string
+      uk_usg_t1_weeks:
+        type: number
     type: object
   server.updateLocationRequest:
     properties:
@@ -5612,6 +5771,476 @@ paths:
       summary: 'Growth series: WHO LMS curve + patient points, or bumil weight bands'
       tags:
       - clinical
+  /clinical/immunization/status:
+    get:
+      description: 'Mesin status spec §4: diberikan/na/terjadwal/telat/lewat_masa
+        per dosis + agregat + berikutnya; status = properti person (episode gizi aktif
+        tidak disyaratkan).'
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Admission UUID
+        in: query
+        name: admission_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Immunization schedule status of an admission's person (server-computed)
+      tags:
+      - clinical
+  /clinical/midwifery/anc-summary:
+    get:
+      description: 'Untuk tab Gizi (G4Bumil G4AncData): pregnancy aktif + latest visit
+        + latest USG; tanpa episode aktif → 200 semua null.'
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Person UUID
+        in: query
+        name: person_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: ANC summary read-model of a person's active pregnancy (all null-able)
+      tags:
+      - clinical
+  /clinical/midwifery/anc-visit:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Care episode UUID
+        in: query
+        name: episode_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: ANC visits of an episode (visited_at DESC)
+      tags:
+      - clinical
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Visit data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createAncVisitRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Record one ANC visit (kunjungan) of a pregnancy episode
+      tags:
+      - clinical
+  /clinical/midwifery/episode:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Admission UUID
+        in: query
+        name: admission_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Active pregnancy episode of an admission's person (null bila kosong)
+      tags:
+      - clinical
+  /clinical/midwifery/episode/{id}:
+    patch:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Care episode UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Pregnancy patch
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.updateKebidananEpisodeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Patch pregnancy fields (row_version optimistic; HPL recompute)
+      tags:
+      - clinical
+  /clinical/midwifery/episode/{id}/close:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Care episode UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Close payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.closeKebidananEpisodeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Close a pregnancy episode (step-2 confirm) + optional new pregnancy
+      tags:
+      - clinical
+  /clinical/midwifery/episodes:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Person UUID
+        in: query
+        name: person_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Pregnancy episode history of one person (riwayat, desc ordinal)
+      tags:
+      - clinical
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Episode data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createKebidananEpisodeRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Open a pregnancy (kehamilan) episode for an admission's person
+      tags:
+      - clinical
+  /clinical/midwifery/pe-screen:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Care episode UUID
+        in: query
+        name: episode_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: PE screenings of an episode (screened_at DESC)
+      tags:
+      - clinical
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Screening factors
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createPeScreenRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: PE risk screening of a pregnancy episode (band computed server-side)
+      tags:
+      - clinical
+  /clinical/midwifery/usg:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Care episode UUID
+        in: query
+        name: episode_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: USG records of an episode (usg_date DESC)
+      tags:
+      - clinical
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: USG data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createKebidananUsgRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Record one USG examination of a pregnancy episode
+      tags:
+      - clinical
   /clinical/nutrition-episode:
     get:
       parameters:
@@ -5990,6 +6619,113 @@ paths:
       security:
       - BearerAuth: []
       summary: Signed clinical form entries of one person ("Salin dari catatan lalu")
+      tags:
+      - clinical
+  /clinical/person-growth-context:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Growth context data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createGiziGrowthContextRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Upsert the small-baby growth context (BBL + gestational age)
+      tags:
+      - clinical
+  /clinical/person-vaccination:
+    get:
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Person UUID
+        in: query
+        name: person_id
+        required: true
+        type: string
+      - description: Antigen slug (td)
+        in: query
+        name: antigen
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Td vaccination history of a person + protection band (server)
+      tags:
+      - clinical
+    post:
+      consumes:
+      - application/json
+      description: dosis_ke = ordinal berikutnya dari riwayat person+antigen; given_date
+        < last.given_date + interval_hari → 422 tanpa tersimpan (spec §5).
+      parameters:
+      - description: Active merchant UUID
+        in: header
+        name: X-Merchant-ID
+        required: true
+        type: string
+      - description: Vaccination data
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/server.createPersonVaccinationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/server.apiResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/server.apiErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Record one Td vaccination of a person (dosis_ke computed server-side)
       tags:
       - clinical
   /companies/{id}:
@@ -12454,6 +13190,10 @@ paths:
       - description: umum|bpjs|asuransi
         in: query
         name: service_type
+        type: string
+      - description: Admission UUID (filter via media_link)
+        in: query
+        name: admission_id
         type: string
       produces:
       - application/json
